@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userName       String?
+  intakeComplete Boolean @default(false)
+
+  memories      Memory[]
+  conversations Conversation[]
+  tasks         Task[]
+}
+
+model Memory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId  String
+  profile    Profile @relation(fields: [profileId], references: [id])
+
+  category   String
+  content    String
+  importance Int    @default(5)
+}
+
+model Conversation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  type     String
+  messages Message[]
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+
+  role    String
+  content String
+}
+
+model Task {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  title       String
+  description String?
+  dueDate     DateTime?
+  priority    Int      @default(5)
+  status      String   @default("pending")
+  pennyNotes  String?
+}
