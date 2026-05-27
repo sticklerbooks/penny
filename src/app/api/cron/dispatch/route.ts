@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { sendSMS } from '@/lib/twilio'
+import { sendNotification } from '@/lib/pushover'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
 
   const results = await Promise.allSettled(
     due.map(async (msg) => {
-      await sendSMS(msg.message)
+      await sendNotification(msg.message)
       await prisma.scheduledMessage.update({
         where: { id: msg.id },
         data: { sent: true, sentAt: new Date() },
