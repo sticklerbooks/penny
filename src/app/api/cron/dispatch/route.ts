@@ -9,8 +9,8 @@ import { sendSMS } from '@/lib/twilio'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  // Verify secret
-  const secret = req.headers.get('x-cron-secret')
+  // Verify secret (accepts either query param or header)
+  const secret = req.nextUrl.searchParams.get('secret') ?? req.headers.get('x-cron-secret')
   if (!secret || secret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
