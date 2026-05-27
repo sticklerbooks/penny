@@ -3,6 +3,36 @@
 
 import { prisma } from './db'
 
+// Parse "YYYY-MM-DD HH:MM" as local time in a given IANA timezone.
+// Falls back to direct Date parsing for ISO strings.
+function parseSendAt(at: string, tz: string): Date {
+  // Try "YYYY-MM-DD HH:MM" format
+  const m = at.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$/)
+  if (m) {
+    // Use Intl to figure out the UTC offset for this local time in the given tz
+    const localStr = `${m[1]}T${m[2]}:00`
+    // Create a date object interpreting the string as UTC, then shift
+    const naive = new Date(localStr + 'Z')
+    // Get what this UTC time looks like in the target timezone
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    })
+    // Binary search would be precise; for simplicity, use offset estimation
+    // Get offset by comparing UTC interpretation vs local representation
+    const parts = formatter.formatToParts(naive)
+    const p = Object.fromEntries(parts.map(p => [p.type, p.value]))
+    const tzStr = `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`
+    const tzDate = new Date(tzStr)
+    const offsetMs = tzDate.getTime() - naive.getTime()
+    return new Date(naive.getTime() - offsetMs)
+  }
+  // Fallback: let Date parse it (handles ISO strings)
+  return new Date(at)
+}
+
 export type PennyAction =
   | { kind: 'create_task'; title: string; due?: string; priority?: number; category?: string; clientId?: string; description?: string }
   | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string }
@@ -16,6 +46,8 @@ export type PennyAction =
   | { kind: 'create_client'; name: string; contactName?: string; contactSecondary?: string; phone?: string; email?: string; businessStructure?: string; status?: string; services?: string; grossRevenue?: number; billingStatus?: string; notes?: string }
   | { kind: 'update_client'; id: string; name?: string; contactName?: string; contactSecondary?: string; phone?: string; email?: string; businessStructure?: string; status?: string; services?: string; grossRevenue?: number; billingStatus?: string; notes?: string }
   | { kind: 'delete_client'; id: string }
+  | { kind: 'schedule_sms'; sendAt: string; message: string; label?: string }
+  | { kind: 'cancel_sms'; id: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -30,6 +62,8 @@ const DELETE_NOTE_RE = /<delete_note\s+id=["']([^"']+)["']\s*\/?>/gi
 const CLIENT_RE = /<client\s+([^>]*)>(?:([\s\S]*?))<\/client>/gi
 const UPDATE_CLIENT_RE = /<update_client\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/update_client>)/gi
 const DELETE_CLIENT_RE = /<delete_client\s+id=["']([^"']+)["']\s*\/?>/gi
+const SCHEDULE_SMS_RE = /<schedule_sms\s+([^>]*)>([\s\S]*?)<\/schedule_sms>/gi
+const CANCEL_SMS_RE = /<cancel_sms\s+id=["']([^"']+)["']\s*\/?>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -175,6 +209,24 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'delete_client', id: m[1] })
   }
 
+  // schedule_sms
+  for (const m of text.matchAll(SCHEDULE_SMS_RE)) {
+    const attrs = parseAttrs(m[1])
+    const message = m[2].trim()
+    if (!attrs.at || !message) continue
+    actions.push({
+      kind: 'schedule_sms',
+      sendAt: attrs.at,
+      message,
+      label: attrs.label,
+    })
+  }
+
+  // cancel_sms
+  for (const m of text.matchAll(CANCEL_SMS_RE)) {
+    actions.push({ kind: 'cancel_sms', id: m[1] })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -189,6 +241,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(CLIENT_RE, '')
     .replace(UPDATE_CLIENT_RE, '')
     .replace(DELETE_CLIENT_RE, '')
+    .replace(SCHEDULE_SMS_RE, '')
+    .replace(CANCEL_SMS_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -314,6 +368,30 @@ export async function executeActions(
 
         case 'delete_client':
           await prisma.client.delete({ where: { id: action.id } })
+          break
+
+        case 'schedule_sms': {
+          // Parse "YYYY-MM-DD HH:MM" in the configured timezone
+          const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+          // Build a timezone-aware date by appending tz offset
+          const sendAt = parseSendAt(action.sendAt, tz)
+          if (!sendAt || isNaN(sendAt.getTime())) {
+            console.error(`Invalid schedule_sms date: ${action.sendAt}`)
+            break
+          }
+          await prisma.scheduledMessage.create({
+            data: {
+              profileId,
+              message: action.message,
+              sendAt,
+              label: action.label ?? null,
+            },
+          })
+          break
+        }
+
+        case 'cancel_sms':
+          await prisma.scheduledMessage.delete({ where: { id: action.id } }).catch(() => {})
           break
       }
     } catch (e) {

@@ -15,11 +15,12 @@ model Profile {
   userName       String?
   intakeComplete Boolean @default(false)
 
-  memories         Memory[]
-  conversations    Conversation[]
-  tasks            Task[]
-  nextSessionNotes NextSessionNote[]
-  clients          Client[]
+  memories          Memory[]
+  conversations     Conversation[]
+  tasks             Task[]
+  nextSessionNotes  NextSessionNote[]
+  clients           Client[]
+  scheduledMessages ScheduledMessage[]
 }
 
 model Client {
@@ -112,4 +113,18 @@ model NextSessionNote {
 
   content  String
   resolved Boolean @default(false)
+}
+
+model ScheduledMessage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  message   String
+  sendAt    DateTime
+  sent      Boolean  @default(false)
+  sentAt    DateTime?
+  label     String?  // optional label so Penny can reference it, e.g. "morning briefing"
 }

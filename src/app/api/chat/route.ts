@@ -39,8 +39,8 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
-  // Load context — memories, tasks, notes, and clients
-  const [memories, tasks, nextSessionNotes, clients] = await Promise.all([
+  // Load context — memories, tasks, notes, clients, and scheduled messages
+  const [memories, tasks, nextSessionNotes, clients, scheduledMessages] = await Promise.all([
     prisma.memory.findMany({
       where: { profileId: profile.id, archived: false },
       orderBy: { importance: 'desc' },
@@ -57,6 +57,10 @@ export async function POST(req: NextRequest) {
       where: { profileId: profile.id },
       orderBy: { updatedAt: 'desc' },
     }),
+    prisma.scheduledMessage.findMany({
+      where: { profileId: profile.id, sent: false },
+      orderBy: { sendAt: 'asc' },
+    }),
   ])
 
   const systemPrompt = buildSystemPrompt(
@@ -65,6 +69,7 @@ export async function POST(req: NextRequest) {
     tasks,
     nextSessionNotes,
     clients,
+    scheduledMessages,
     !profile.intakeComplete
   )
 

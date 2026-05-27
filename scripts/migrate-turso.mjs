@@ -96,6 +96,17 @@ const statements = [
     resolved INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (profileId) REFERENCES Profile(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS ScheduledMessage (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    message TEXT NOT NULL,
+    sendAt DATETIME NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    sentAt DATETIME,
+    label TEXT,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
 ]
 
 // ALTER statements for existing tables (idempotent via try/catch)

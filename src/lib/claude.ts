@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { Profile, Memory, Task, NextSessionNote, Client } from '../generated/prisma/client'
+import type { Profile, Memory, Task, NextSessionNote, Client, ScheduledMessage } from '../generated/prisma/client'
 
 // Lazy-initialized so env vars are loaded at request time
 let _anthropic: Anthropic | null = null
@@ -19,6 +19,7 @@ export function buildSystemPrompt(
   tasks: Task[],
   nextSessionNotes: NextSessionNote[],
   clients: Client[],
+  scheduledMessages: ScheduledMessage[],
   isIntake: boolean
 ): string {
   const userName = profile?.userName || 'you'
@@ -110,6 +111,22 @@ export function buildSystemPrompt(
           })
           .join('\n')
       : '  (no clients yet)'
+
+  const upcomingSMS = scheduledMessages.filter((m) => !m.sent)
+  const smsText =
+    upcomingSMS.length > 0
+      ? upcomingSMS
+          .sort((a, b) => new Date(a.sendAt).getTime() - new Date(b.sendAt).getTime())
+          .map((m) => {
+            const when = new Date(m.sendAt).toLocaleString('en-US', {
+              weekday: 'short', month: 'short', day: 'numeric',
+              hour: 'numeric', minute: '2-digit',
+            })
+            const label = m.label ? ` [${m.label}]` : ''
+            return `  • id=${m.id}${label} @ ${when} — "${m.message}"`
+          })
+          .join('\n')
+      : '  (none queued)'
 
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -267,6 +284,31 @@ Create client records proactively. When ${userName} mentions a new business rela
 
 Use update_client whenever client info changes — status, services, billing, contact info. The body text (if provided) replaces the entire notes field, so include everything relevant when updating notes.
 
+────────────────────────────────────────
+9. SCHEDULE A TEXT MESSAGE — send yourself a proactive SMS
+────────────────────────────────────────
+<schedule_sms at="2026-06-01 08:00" label="morning briefing">Good morning! Quick reminder: Josh Shippee call at 10am, and your quarterly estimated tax payment is due Friday.</schedule_sms>
+
+Attributes:
+- at (required) — date and time in "YYYY-MM-DD HH:MM" format, in your local timezone
+- label (optional) — a short name so you can reference this message later (e.g. "morning briefing", "deadline nudge")
+
+Use this aggressively. Any time ${userName} has something coming up that they might forget, or any time you want to follow up on something outside this conversation, schedule a message. Examples:
+- Morning briefings with the day's priorities
+- Pre-meeting nudges ("your call with Josh is in 1 hour")
+- Deadline warnings the day before something is due
+- End-of-day check-ins ("how did that conversation go?")
+- Following up on something emotional ("you seemed stressed earlier — doing okay?")
+
+The message goes to ${userName}'s phone as an SMS. Write it like a text from someone who knows them — warm, brief, useful.
+
+────────────────────────────────────────
+10. CANCEL A SCHEDULED MESSAGE
+────────────────────────────────────────
+<cancel_sms id="MSG_ID" />
+
+If plans change and a scheduled message is no longer relevant, cancel it. The id is shown in the "Scheduled Messages" section of your context.
+
 ═══════════════════════════════════════════════════════════════════════
 SYSTEM HYGIENE (important)
 ═══════════════════════════════════════════════════════════════════════
@@ -306,6 +348,9 @@ ${clientsText}
 
 ✅ ACTIVE TASKS (⚠️=overdue, 📌=today, 📅=this week):
 ${tasksText}
+
+📱 SCHEDULED MESSAGES (texts you've queued to send to ${userName}):
+${smsText}
 
 📅 Today is ${todayFormatted}.`
 }
