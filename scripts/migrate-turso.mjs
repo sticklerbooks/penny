@@ -28,6 +28,24 @@ const statements = [
     userName TEXT,
     intakeComplete INTEGER NOT NULL DEFAULT 0
   )`,
+  `CREATE TABLE IF NOT EXISTS Client (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    name TEXT NOT NULL,
+    contactName TEXT,
+    contactSecondary TEXT,
+    phone TEXT,
+    email TEXT,
+    businessStructure TEXT,
+    status TEXT NOT NULL DEFAULT 'prospect',
+    services TEXT,
+    grossRevenue REAL,
+    billingStatus TEXT,
+    notes TEXT,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS Memory (
     id TEXT PRIMARY KEY,
     createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -35,6 +53,8 @@ const statements = [
     category TEXT NOT NULL,
     content TEXT NOT NULL,
     importance INTEGER NOT NULL DEFAULT 5,
+    archived INTEGER NOT NULL DEFAULT 0,
+    lastReferenced DATETIME,
     FOREIGN KEY (profileId) REFERENCES Profile(id)
   )`,
   `CREATE TABLE IF NOT EXISTS Conversation (
@@ -57,6 +77,7 @@ const statements = [
     createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     profileId TEXT NOT NULL,
+    clientId TEXT,
     title TEXT NOT NULL,
     description TEXT,
     dueDate DATETIME,
@@ -64,7 +85,8 @@ const statements = [
     status TEXT NOT NULL DEFAULT 'pending',
     category TEXT,
     pennyNotes TEXT,
-    FOREIGN KEY (profileId) REFERENCES Profile(id)
+    FOREIGN KEY (profileId) REFERENCES Profile(id),
+    FOREIGN KEY (clientId) REFERENCES Client(id)
   )`,
   `CREATE TABLE IF NOT EXISTS NextSessionNote (
     id TEXT PRIMARY KEY,
@@ -79,6 +101,9 @@ const statements = [
 // ALTER statements for existing tables (idempotent via try/catch)
 const alters = [
   `ALTER TABLE Task ADD COLUMN category TEXT`,
+  `ALTER TABLE Task ADD COLUMN clientId TEXT`,
+  `ALTER TABLE Memory ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE Memory ADD COLUMN lastReferenced DATETIME`,
 ]
 
 console.log('Creating tables in Turso...')

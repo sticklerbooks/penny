@@ -39,10 +39,10 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
-  // Load context — memories, tasks, AND notes Penny left for herself
-  const [memories, tasks, nextSessionNotes] = await Promise.all([
+  // Load context — memories, tasks, notes, and clients
+  const [memories, tasks, nextSessionNotes, clients] = await Promise.all([
     prisma.memory.findMany({
-      where: { profileId: profile.id },
+      where: { profileId: profile.id, archived: false },
       orderBy: { importance: 'desc' },
       take: 80,
     }),
@@ -53,6 +53,10 @@ export async function POST(req: NextRequest) {
       where: { profileId: profile.id, resolved: false },
       orderBy: { createdAt: 'desc' },
     }),
+    prisma.client.findMany({
+      where: { profileId: profile.id },
+      orderBy: { updatedAt: 'desc' },
+    }),
   ])
 
   const systemPrompt = buildSystemPrompt(
@@ -60,6 +64,7 @@ export async function POST(req: NextRequest) {
     memories,
     tasks,
     nextSessionNotes,
+    clients,
     !profile.intakeComplete
   )
 

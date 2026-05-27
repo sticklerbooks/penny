@@ -19,18 +19,45 @@ model Profile {
   conversations    Conversation[]
   tasks            Task[]
   nextSessionNotes NextSessionNote[]
+  clients          Client[]
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  name              String
+  contactName       String?
+  contactSecondary  String?
+  phone             String?
+  email             String?
+  businessStructure String?
+  // status: prospect | onboarding | active | inactive | former
+  status            String  @default("prospect")
+  services          String? // comma-separated: "bookkeeping, payroll, tax_prep"
+  grossRevenue      Float?
+  billingStatus     String?
+  notes             String?
+
+  tasks Task[]
 }
 
 model Memory {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
 
-  profileId  String
-  profile    Profile @relation(fields: [profileId], references: [id])
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  category   String
-  content    String
-  importance Int    @default(5)
+  category       String
+  content        String
+  importance     Int      @default(5)
+  archived       Boolean  @default(false)
+  lastReferenced DateTime?
 }
 
 model Conversation {
@@ -63,10 +90,14 @@ model Task {
   profileId String
   profile   Profile  @relation(fields: [profileId], references: [id])
 
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id])
+
   title       String
   description String?
   dueDate     DateTime?
   priority    Int      @default(5)
+  // status: pending | in_progress | done | deferred
   status      String   @default("pending")
   category    String?
   pennyNotes  String?

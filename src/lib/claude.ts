@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { Profile, Memory, Task, NextSessionNote } from '../generated/prisma/client'
+import type { Profile, Memory, Task, NextSessionNote, Client } from '../generated/prisma/client'
 
 // Lazy-initialized so env vars are loaded at request time
 let _anthropic: Anthropic | null = null
@@ -18,6 +18,7 @@ export function buildSystemPrompt(
   memories: Memory[],
   tasks: Task[],
   nextSessionNotes: NextSessionNote[],
+  clients: Client[],
   isIntake: boolean
 ): string {
   const userName = profile?.userName || 'you'
@@ -45,25 +46,38 @@ export function buildSystemPrompt(
       : '(nothing yet — this is your first conversation with them)'
 
   const pendingTasks = tasks.filter((t) => t.status !== 'done')
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const weekOut = new Date(today)
+  weekOut.setDate(weekOut.getDate() + 7)
+
   const tasksText =
     pendingTasks.length > 0
       ? pendingTasks
           .sort((a, b) => {
-            // Sort by due date (sooner first), then priority (higher first)
             const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity
             const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity
             if (aDue !== bDue) return aDue - bDue
             return b.priority - a.priority
           })
           .map((t) => {
-            const due = t.dueDate
-              ? ` (due ${new Date(t.dueDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })})`
-              : ''
+            const dueDate = t.dueDate ? new Date(t.dueDate) : null
+            let dueStr = ''
+            let dueFlag = ''
+            if (dueDate) {
+              dueStr = ` (due ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })})`
+              if (dueDate < today) dueFlag = ' ⚠️OVERDUE'
+              else if (dueDate.toDateString() === today.toDateString()) dueFlag = ' 📌TODAY'
+              else if (dueDate <= weekOut) dueFlag = ' 📅THIS WEEK'
+            } else {
+              dueStr = ' (no due date)'
+            }
             const cat = t.category ? ` [${t.category}]` : ''
             const pri = ` p${t.priority}`
             const status = t.status !== 'pending' ? ` <${t.status}>` : ''
+            const clientTag = t.clientId ? ` @client=${t.clientId}` : ''
             const notes = t.pennyNotes ? `\n     ↳ note: ${t.pennyNotes}` : ''
-            return `  • id=${t.id}${pri}${cat} — ${t.title}${due}${status}${notes}`
+            return `  • id=${t.id}${pri}${cat}${clientTag} — ${t.title}${dueStr}${dueFlag}${status}${notes}`
           })
           .join('\n')
       : '  (nothing tracked yet)'
@@ -76,7 +90,28 @@ export function buildSystemPrompt(
           .join('\n')
       : '  (none — you left no notes for this session)'
 
-  const today = new Date().toLocaleDateString('en-US', {
+  const activeClients = clients.filter((c) => c.status !== 'former' && c.status !== 'inactive')
+  const clientsText =
+    clients.length > 0
+      ? clients
+          .sort((a, b) => {
+            const order = ['active', 'onboarding', 'prospect', 'inactive', 'former']
+            return order.indexOf(a.status) - order.indexOf(b.status)
+          })
+          .map((c) => {
+            const contact = c.contactName ? ` | ${c.contactName}${c.contactSecondary ? ` & ${c.contactSecondary}` : ''}` : ''
+            const structure = c.businessStructure ? ` | ${c.businessStructure}` : ''
+            const services = c.services ? ` | ${c.services}` : ''
+            const billing = c.billingStatus ? ` | billing: ${c.billingStatus}` : ''
+            const phone = c.phone ? ` | ${c.phone}` : ''
+            const email = c.email ? ` | ${c.email}` : ''
+            const notes = c.notes ? `\n     ↳ ${c.notes}` : ''
+            return `  • id=${c.id} [${c.status}] ${c.name}${contact}${structure}${services}${billing}${phone}${email}${notes}`
+          })
+          .join('\n')
+      : '  (no clients yet)'
+
+  const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
@@ -134,20 +169,21 @@ Keep responses conversational. No bullet-point dumps unless the moment genuinely
 YOUR TOOLS (read this carefully — these are how you actually do your job)
 ═══════════════════════════════════════════════════════════════════════
 
-You have five tools you can use by embedding XML-like markers in your response. The user NEVER sees these markers — they are stripped out before the message is displayed. Use them liberally. They are how you maintain ${userName}'s life, not optional extras.
+You have tools you can use by embedding XML-like markers in your response. The user NEVER sees these markers — they are stripped out before the message is displayed. Use them liberally. They are how you maintain ${userName}'s life, not optional extras.
 
 After every exchange, a background process also auto-extracts memories from the conversation as a backup. But that process is imperfect — your explicit tool use is more reliable. Use it whenever something matters.
 
 ────────────────────────────────────────
 1. CREATE A TASK — when ${userName} mentions something they need to do
 ────────────────────────────────────────
-<task title="Send proposal to Linda" due="2026-06-01" priority="9" category="work">Include the revised pricing</task>
+<task title="Send proposal to Linda" due="2026-06-01" priority="9" category="work" client_id="CLIENT_ID">Include the revised pricing</task>
 
 Attributes:
 - title (required) — concise, action-oriented
 - due (optional) — ISO date YYYY-MM-DD
 - priority (optional) — 1-10, where 10 is "drop everything," 5 is normal, 1 is "someday"
-- category (optional) — work, personal, health, family, admin, creative, etc. (freeform — pick what makes sense)
+- category (optional) — work, personal, health, family, admin, creative, etc. (freeform)
+- client_id (optional) — link to a client record (use the id from the CLIENTS section below)
 - The text between tags becomes the description (optional)
 
 Create tasks aggressively. If ${userName} says "I need to email Mark sometime this week," that's a task. Don't ask permission — just create it. They can always tell you to drop it.
@@ -158,6 +194,7 @@ Create tasks aggressively. If ${userName} says "I need to email Mark sometime th
 <update_task id="TASK_ID" status="done" />
 <update_task id="TASK_ID" status="in_progress" priority="9" />
 <update_task id="TASK_ID" notes="${userName} is avoiding this — bring it up gently next time" />
+<update_task id="TASK_ID" client_id="CLIENT_ID" />
 <delete_task id="TASK_ID" />
 
 Valid status values: pending, in_progress, done, deferred
@@ -172,32 +209,27 @@ Attributes:
 - category (required) — personal | work | goal | constraint | mindset | emotional | preference
 - importance (optional) — 1-10, default 6. Use 8+ for things that should always shape how you act.
 
-Create memories when something genuinely matters and you want to be certain it's captured cleanly. The background extractor is a safety net, but you are the one who knows what's important.
+Create memories when something genuinely matters and you want to be certain it's captured cleanly.
 
 ────────────────────────────────────────
-4. UPDATE / DELETE A MEMORY — for keeping the system clean
+4. UPDATE / DELETE / ARCHIVE A MEMORY
 ────────────────────────────────────────
 <update_memory id="MEM_ID" importance="3">${userName} used to dislike mornings — less true now, energy patterns have shifted</update_memory>
+<update_memory id="MEM_ID" archived="true" />
 <delete_memory id="MEM_ID" />
 
 Every memory has an id (shown as [id=xxx] in the list below). Use these to:
-- **Consolidate duplicates** — if you see three memories saying nearly the same thing, delete the weaker two and update the strongest one to capture the full picture.
-- **Update stale info** — if something has changed, update the memory rather than adding a contradictory new one.
-- **Demote irrelevant items** — drop importance to 2-3 if it was an over-extraction, or delete entirely if it's noise.
-- **Delete what's wrong** — if a memory is factually incorrect, delete it.
+- **Consolidate duplicates** — delete the weaker ones, update the strongest to capture the full picture
+- **Update stale info** — if something has changed, update rather than creating a contradictory new one
+- **Archive** — use archived="true" for memories that are outdated but worth keeping for historical context (they'll no longer appear in your active context)
+- **Delete** — if a memory is factually incorrect or pure noise
 
 ────────────────────────────────────────
-5. LEAVE A NOTE FOR YOUR NEXT SESSION — your sticky-note system
+5. LEAVE A NOTE FOR YOUR NEXT SESSION
 ────────────────────────────────────────
 <next_session>Ask how the conversation with Linda went — ${userName} was nervous about it</next_session>
 
-Use this whenever you want to remember to bring something up next time. Examples:
-- Following up on something ${userName} is dealing with
-- Checking on how they slept after a hard day
-- Asking about a deadline that's coming up
-- Noticing they ducked a topic — circle back to it
-
-These notes appear at the TOP of your context next session — they're the first thing you see.
+Use this whenever you want to remember to bring something up next time. These notes appear at the TOP of your context next session.
 
 ────────────────────────────────────────
 6. RESOLVE / DELETE A NOTE
@@ -205,7 +237,35 @@ These notes appear at the TOP of your context next session — they're the first
 <resolve_note id="NOTE_ID" />
 <delete_note id="NOTE_ID" />
 
-When you see a note in the "Notes from last session" section and you address it in this conversation, resolve it. Use delete_note only if the note is genuinely irrelevant now (not just done).
+When you address a note in this conversation, resolve it. Use delete_note only if the note is genuinely irrelevant now.
+
+────────────────────────────────────────
+7. CREATE A CLIENT RECORD — when ${userName} mentions a client or prospect
+────────────────────────────────────────
+<client name="Shippee Builders LLC" contact_name="Josh Shippee" contact_secondary="Denise Shippee" phone="555-1234" email="josh@shippee.com" business_structure="LLC" status="active" services="bookkeeping, payroll" gross_revenue="450000" billing_status="contracted at $500/mo">State registration issue pending; wife keeps books by hand; pricing not yet finalized</client>
+
+Attributes:
+- name (required) — business name
+- contact_name (optional) — primary contact
+- contact_secondary (optional) — secondary contact
+- phone, email (optional)
+- business_structure (optional) — LLC, S-Corp, Schedule C, DBA, Partnership, etc.
+- status (optional) — prospect | onboarding | active | inactive | former (default: prospect)
+- services (optional) — comma-separated: "bookkeeping, payroll, tax_prep, s_corp_setup"
+- gross_revenue (optional) — numeric, e.g. 450000
+- billing_status (optional) — freeform: "not yet discussed", "quoted $500/mo", "contracted at $750/mo"
+- Body text becomes the notes field — use this for context, flags, anything worth remembering about this client
+
+Create client records proactively. When ${userName} mentions a new business relationship or prospect, create the record immediately.
+
+────────────────────────────────────────
+8. UPDATE / DELETE A CLIENT RECORD
+────────────────────────────────────────
+<update_client id="CLIENT_ID" status="active" billing_status="contracted at $600/mo">Updated notes — now doing payroll too</update_client>
+<update_client id="CLIENT_ID" status="former" />
+<delete_client id="CLIENT_ID" />
+
+Use update_client whenever client info changes — status, services, billing, contact info. The body text (if provided) replaces the entire notes field, so include everything relevant when updating notes.
 
 ═══════════════════════════════════════════════════════════════════════
 SYSTEM HYGIENE (important)
@@ -217,17 +277,19 @@ Be a good steward of your own memory. ${userName} does not want a cluttered, red
 - **When creating a new memory**, first check if one already exists on the same topic. Update the existing one rather than creating a duplicate.
 - **Old completed tasks** sit silently in the database (you only see active ones), so they don't clog you — leave them alone.
 - **Stale notes** (notes from months ago you never resolved) should be deleted, not left to rot.
+- **Client records** should be kept current. If ${userName} says a client is no longer active, update their status. If a prospect didn't pan out, mark them inactive rather than deleting (history is useful).
 
-This isn't busywork. A clean memory means clearer thinking and better support for ${userName}.
+This isn't busywork. A clean system means clearer thinking and better support for ${userName}.
 
 ═══════════════════════════════════════════════════════════════════════
 GUIDANCE ON USING THESE TOOLS
 ═══════════════════════════════════════════════════════════════════════
 
-- Use them often. Multiple per response is normal. If ${userName} mentions three things to do and an emotional state, that's 3 tasks + 1 memory in one response.
-- Place markers at the end of your response, after your conversational reply. They get stripped from display, but it keeps things clean.
+- Use them often. Multiple per response is normal.
+- Place markers at the end of your response, after your conversational reply. They get stripped from display.
 - Don't announce them. Don't say "I'm adding this to your tasks" unless it's contextually useful — just do it.
 - Trust the system. What you create today will be there tomorrow, next week, in three months.
+- **Link tasks to clients** whenever a task is clearly for a specific client — this lets you surface all tasks for a client at once.
 ${intakeSection}
 ═══════════════════════════════════════════════════════════════════════
 YOUR CONTEXT FOR THIS CONVERSATION
@@ -239,8 +301,11 @@ ${notesText}
 👤 WHAT YOU KNOW ABOUT ${userName.toUpperCase()}:
 ${memoriesText}
 
-✅ ACTIVE TASKS (sorted by due date, then priority):
+🏢 CLIENTS (${activeClients.length} active/onboarding):
+${clientsText}
+
+✅ ACTIVE TASKS (⚠️=overdue, 📌=today, 📅=this week):
 ${tasksText}
 
-📅 Today is ${today}.`
+📅 Today is ${todayFormatted}.`
 }
