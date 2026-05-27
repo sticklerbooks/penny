@@ -115,6 +115,8 @@ const alters = [
   `ALTER TABLE Task ADD COLUMN clientId TEXT`,
   `ALTER TABLE Memory ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE Memory ADD COLUMN lastReferenced DATETIME`,
+  `ALTER TABLE Profile ADD COLUMN emailCalendarSummary TEXT`,
+  `ALTER TABLE Profile ADD COLUMN emailCalendarCachedAt DATETIME`,
 ]
 
 console.log('Creating tables in Turso...')

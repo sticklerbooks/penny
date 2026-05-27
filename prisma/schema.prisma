@@ -15,6 +15,10 @@ model Profile {
   userName       String?
   intakeComplete Boolean @default(false)
 
+  // Cached Haiku-summarized snapshot of email + calendar (refreshed every 30 min)
+  emailCalendarSummary  String?
+  emailCalendarCachedAt DateTime?
+
   memories          Memory[]
   conversations     Conversation[]
   tasks             Task[]

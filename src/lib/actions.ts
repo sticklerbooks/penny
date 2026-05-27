@@ -48,6 +48,8 @@ export type PennyAction =
   | { kind: 'delete_client'; id: string }
   | { kind: 'schedule_sms'; sendAt: string; message: string; label?: string }
   | { kind: 'cancel_sms'; id: string }
+  | { kind: 'search_email'; query: string; label?: string }
+  | { kind: 'search_calendar'; query: string; label?: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -64,6 +66,8 @@ const UPDATE_CLIENT_RE = /<update_client\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/update_c
 const DELETE_CLIENT_RE = /<delete_client\s+id=["']([^"']+)["']\s*\/?>/gi
 const SCHEDULE_SMS_RE = /<schedule_sms\s+([^>]*)>([\s\S]*?)<\/schedule_sms>/gi
 const CANCEL_SMS_RE = /<cancel_sms\s+id=["']([^"']+)["']\s*\/?>/gi
+const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
+const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -227,6 +231,20 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'cancel_sms', id: m[1] })
   }
 
+  // search_email
+  for (const m of text.matchAll(SEARCH_EMAIL_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.query) continue
+    actions.push({ kind: 'search_email', query: attrs.query, label: attrs.label })
+  }
+
+  // search_calendar
+  for (const m of text.matchAll(SEARCH_CALENDAR_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.query) continue
+    actions.push({ kind: 'search_calendar', query: attrs.query, label: attrs.label })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -243,6 +261,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(DELETE_CLIENT_RE, '')
     .replace(SCHEDULE_SMS_RE, '')
     .replace(CANCEL_SMS_RE, '')
+    .replace(SEARCH_EMAIL_RE, '')
+    .replace(SEARCH_CALENDAR_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 

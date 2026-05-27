@@ -3,6 +3,9 @@ import { prisma } from '@/lib/db'
 import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
+import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
+
+export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   const { message, conversationId, isAutoStart } = await req.json()
@@ -39,29 +42,32 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
-  // Load context — memories, tasks, notes, clients, and scheduled messages
-  const [memories, tasks, nextSessionNotes, clients, scheduledMessages] = await Promise.all([
-    prisma.memory.findMany({
-      where: { profileId: profile.id, archived: false },
-      orderBy: { importance: 'desc' },
-      take: 80,
-    }),
-    prisma.task.findMany({
-      where: { profileId: profile.id },
-    }),
-    prisma.nextSessionNote.findMany({
-      where: { profileId: profile.id, resolved: false },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.client.findMany({
-      where: { profileId: profile.id },
-      orderBy: { updatedAt: 'desc' },
-    }),
-    prisma.scheduledMessage.findMany({
-      where: { profileId: profile.id, sent: false },
-      orderBy: { sendAt: 'asc' },
-    }),
-  ])
+  // Load all context in parallel
+  const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary] =
+    await Promise.all([
+      prisma.memory.findMany({
+        where: { profileId: profile.id, archived: false },
+        orderBy: { importance: 'desc' },
+        take: 80,
+      }),
+      prisma.task.findMany({
+        where: { profileId: profile.id },
+      }),
+      prisma.nextSessionNote.findMany({
+        where: { profileId: profile.id, resolved: false },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.client.findMany({
+        where: { profileId: profile.id },
+        orderBy: { updatedAt: 'desc' },
+      }),
+      prisma.scheduledMessage.findMany({
+        where: { profileId: profile.id, sent: false },
+        orderBy: { sendAt: 'asc' },
+      }),
+      // Email/calendar: uses 30-min cache, skips gracefully if not configured
+      getEmailCalendarSummary(profile.id).catch(() => null),
+    ])
 
   const systemPrompt = buildSystemPrompt(
     profile,
@@ -70,6 +76,7 @@ export async function POST(req: NextRequest) {
     nextSessionNotes,
     clients,
     scheduledMessages,
+    emailCalendarSummary,
     !profile.intakeComplete
   )
 
@@ -79,7 +86,7 @@ export async function POST(req: NextRequest) {
     : message
 
   const claudeMessages: { role: 'user' | 'assistant'; content: string }[] = [
-    ...existingMessages.slice(-30).map((m) => ({
+    ...existingMessages.slice(-20).map((m) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
     })),
@@ -126,11 +133,53 @@ export async function POST(req: NextRequest) {
           fullResponse.includes('<<INTAKE_COMPLETE>>') && !profile!.intakeComplete
         let workingText = fullResponse.replace('<<INTAKE_COMPLETE>>', '')
 
-        // Parse Penny's action markers (tasks, memories, notes) and strip from display
+        // Parse Penny's action markers
         const { actions, cleanText } = parseActions(workingText)
         workingText = cleanText
 
-        // Save Penny's clean response (without markers)
+        // ── Two-pass search flow ──────────────────────────────────────────────
+        // If Penny requested email/calendar searches, execute them and give her
+        // a second pass with the results before finalising the response.
+        const searchActions = actions.filter(
+          (a): a is SearchAction =>
+            a.kind === 'search_email' || a.kind === 'search_calendar'
+        )
+
+        if (searchActions.length > 0) {
+          const searchResults = await executeSearches(searchActions).catch(
+            () => '(search failed)'
+          )
+
+          const secondPass = await getAnthropic().messages.create({
+            model: PENNY_MODEL,
+            max_tokens: 2048,
+            system: systemPrompt,
+            messages: [
+              ...claudeMessages,
+              { role: 'assistant', content: workingText },
+              {
+                role: 'user',
+                content: `Here are the search results you requested:\n\n${searchResults}\n\nPlease continue your response with this information.`,
+              },
+            ],
+          })
+
+          const secondText =
+            (secondPass.content[0] as { type: string; text: string }).text
+          const { cleanText: secondClean, actions: secondActions } =
+            parseActions(secondText)
+          workingText = secondClean
+
+          // Merge non-search actions from both passes
+          actions.push(
+            ...secondActions.filter(
+              (a) => a.kind !== 'search_email' && a.kind !== 'search_calendar'
+            )
+          )
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Save Penny's clean response
         await prisma.message.create({
           data: {
             conversationId: convoId!,
@@ -146,12 +195,15 @@ export async function POST(req: NextRequest) {
           })
         }
 
-        // Execute Penny's actions (create tasks, memories, notes)
-        if (actions.length > 0) {
-          await executeActions(profile!.id, actions)
+        // Execute all non-search actions
+        const executableActions = actions.filter(
+          (a) => a.kind !== 'search_email' && a.kind !== 'search_calendar'
+        )
+        if (executableActions.length > 0) {
+          await executeActions(profile!.id, executableActions)
         }
 
-        // Background extraction as a safety net (catches what Penny missed)
+        // Background memory extraction as safety net
         if (!isAutoStart) {
           extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
@@ -162,8 +214,8 @@ export async function POST(req: NextRequest) {
               done: true,
               conversationId: convoId,
               intakeComplete: intakeJustCompleted,
-              cleanText: workingText, // frontend swaps in clean text to remove any flashed markers
-              actionsExecuted: actions.length,
+              cleanText: workingText,
+              actionsExecuted: executableActions.length,
             })}\n\n`
           )
         )

@@ -20,6 +20,7 @@ export function buildSystemPrompt(
   nextSessionNotes: NextSessionNote[],
   clients: Client[],
   scheduledMessages: ScheduledMessage[],
+  emailCalendarSummary: string | null,
   isIntake: boolean
 ): string {
   const userName = profile?.userName || 'you'
@@ -285,7 +286,25 @@ Create client records proactively. When ${userName} mentions a new business rela
 Use update_client whenever client info changes — status, services, billing, contact info. The body text (if provided) replaces the entire notes field, so include everything relevant when updating notes.
 
 ────────────────────────────────────────
-9. SCHEDULE A TEXT MESSAGE — send yourself a proactive SMS
+9. SEARCH EMAIL — look up a specific email on demand
+────────────────────────────────────────
+<search_email query="Josh Shippee invoice" label="Josh invoice" />
+
+Attributes:
+- query (required) — search terms, just like a Gmail/Outlook search box
+- label (optional) — short description of what you're looking for
+
+Use this when ${userName} asks about a specific email you don't already have in your context snapshot. The system will run the search and feed you the results before you respond.
+
+────────────────────────────────────────
+10. SEARCH CALENDAR — look up a specific event on demand
+────────────────────────────────────────
+<search_calendar query="board meeting June" label="June board meeting" />
+
+Same pattern as search_email. Use when ${userName} asks about a specific event not visible in your snapshot.
+
+────────────────────────────────────────
+11. SCHEDULE A TEXT MESSAGE — send yourself a proactive SMS
 ────────────────────────────────────────
 <schedule_sms at="2026-06-01 08:00" label="morning briefing">Good morning! Quick reminder: Josh Shippee call at 10am, and your quarterly estimated tax payment is due Friday.</schedule_sms>
 
@@ -303,7 +322,7 @@ Use this aggressively. Any time ${userName} has something coming up that they mi
 The message goes to ${userName}'s phone as an SMS. Write it like a text from someone who knows them — warm, brief, useful.
 
 ────────────────────────────────────────
-10. CANCEL A SCHEDULED MESSAGE
+12. CANCEL A SCHEDULED MESSAGE
 ────────────────────────────────────────
 <cancel_sms id="MSG_ID" />
 
@@ -351,6 +370,9 @@ ${tasksText}
 
 📱 SCHEDULED MESSAGES (texts you've queued to send to ${userName}):
 ${smsText}
+
+📧 EMAIL & CALENDAR SNAPSHOT (Haiku-summarized, refreshed every 30 min):
+${emailCalendarSummary ?? '  (not configured — Google/Microsoft credentials not set)'}
 
 📅 Today is ${todayFormatted}.`
 }
