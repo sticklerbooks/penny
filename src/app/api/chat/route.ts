@@ -2,9 +2,9 @@ import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
+import { parseActions, executeActions } from '@/lib/actions'
 
 export async function POST(req: NextRequest) {
-  console.log('API KEY present:', !!process.env.ANTHROPIC_API_KEY, '| starts with:', process.env.ANTHROPIC_API_KEY?.slice(0, 10))
   const { message, conversationId, isAutoStart } = await req.json()
 
   // Get or create the single profile
@@ -39,23 +39,31 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
-  // Load context
-  const [memories, tasks] = await Promise.all([
+  // Load context — memories, tasks, AND notes Penny left for herself
+  const [memories, tasks, nextSessionNotes] = await Promise.all([
     prisma.memory.findMany({
       where: { profileId: profile.id },
       orderBy: { importance: 'desc' },
-      take: 60,
+      take: 80,
     }),
     prisma.task.findMany({
       where: { profileId: profile.id },
-      orderBy: { priority: 'desc' },
+    }),
+    prisma.nextSessionNote.findMany({
+      where: { profileId: profile.id, resolved: false },
+      orderBy: { createdAt: 'desc' },
     }),
   ])
 
-  const systemPrompt = buildSystemPrompt(profile, memories, tasks, !profile.intakeComplete)
+  const systemPrompt = buildSystemPrompt(
+    profile,
+    memories,
+    tasks,
+    nextSessionNotes,
+    !profile.intakeComplete
+  )
 
-  // Build message history for Claude
-  // Auto-start: Penny opens cold — use a silent trigger the user never sees
+  // Auto-start: Penny opens cold — silent trigger user never sees
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
     : message
@@ -75,10 +83,9 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  // Stream from Claude
   const stream = await getAnthropic().messages.create({
     model: PENNY_MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     system: systemPrompt,
     messages: claudeMessages,
     stream: true,
@@ -104,21 +111,24 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Strip intake completion marker before saving
+        // Detect intake completion
         const intakeJustCompleted =
           fullResponse.includes('<<INTAKE_COMPLETE>>') && !profile!.intakeComplete
-        const cleanResponse = fullResponse.replace('<<INTAKE_COMPLETE>>', '').trim()
+        let workingText = fullResponse.replace('<<INTAKE_COMPLETE>>', '')
 
-        // Save Penny's response
+        // Parse Penny's action markers (tasks, memories, notes) and strip from display
+        const { actions, cleanText } = parseActions(workingText)
+        workingText = cleanText
+
+        // Save Penny's clean response (without markers)
         await prisma.message.create({
           data: {
             conversationId: convoId!,
             role: 'assistant',
-            content: cleanResponse,
+            content: workingText,
           },
         })
 
-        // Mark intake complete
         if (intakeJustCompleted) {
           await prisma.profile.update({
             where: { id: profile!.id },
@@ -126,9 +136,14 @@ export async function POST(req: NextRequest) {
           })
         }
 
-        // Background memory extraction (fire and forget)
+        // Execute Penny's actions (create tasks, memories, notes)
+        if (actions.length > 0) {
+          await executeActions(profile!.id, actions)
+        }
+
+        // Background extraction as a safety net (catches what Penny missed)
         if (!isAutoStart) {
-          extractAndSaveMemories(profile!.id, message, cleanResponse).catch(() => {})
+          extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
 
         controller.enqueue(
@@ -137,7 +152,16 @@ export async function POST(req: NextRequest) {
               done: true,
               conversationId: convoId,
               intakeComplete: intakeJustCompleted,
+              cleanText: workingText, // frontend swaps in clean text to remove any flashed markers
+              actionsExecuted: actions.length,
             })}\n\n`
+          )
+        )
+      } catch (err) {
+        console.error('Chat stream error:', err)
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ error: String(err) })}\n\n`
           )
         )
       } finally {

@@ -62,9 +62,23 @@ const statements = [
     dueDate DATETIME,
     priority INTEGER NOT NULL DEFAULT 5,
     status TEXT NOT NULL DEFAULT 'pending',
+    category TEXT,
     pennyNotes TEXT,
     FOREIGN KEY (profileId) REFERENCES Profile(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS NextSessionNote (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    content TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
+]
+
+// ALTER statements for existing tables (idempotent via try/catch)
+const alters = [
+  `ALTER TABLE Task ADD COLUMN category TEXT`,
 ]
 
 console.log('Creating tables in Turso...')
@@ -72,5 +86,19 @@ for (const sql of statements) {
   const tableName = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1]
   await client.execute(sql)
   console.log(`  ✓ ${tableName}`)
+}
+
+console.log('Applying ALTERs (skipping already-applied)...')
+for (const sql of alters) {
+  try {
+    await client.execute(sql)
+    console.log(`  ✓ ${sql}`)
+  } catch (e) {
+    if (e.message?.includes('duplicate column')) {
+      console.log(`  → already applied: ${sql}`)
+    } else {
+      console.log(`  ✗ ${sql} — ${e.message}`)
+    }
+  }
 }
 console.log('Done! Turso database is ready.')

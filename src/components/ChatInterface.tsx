@@ -142,13 +142,18 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
               if (data.done) {
                 setConversationId(data.conversationId)
+                // Swap displayed content for the cleaned text (markers removed)
+                const finalText = data.cleanText ?? fullText
                 setMessages((prev) => {
                   const next = [...prev]
                   const last = next[next.length - 1]
-                  if (last?.streaming) last.streaming = false
+                  if (last?.streaming) {
+                    last.content = finalText
+                    last.streaming = false
+                  }
                   return next
                 })
-                speak(fullText)
+                speak(finalText)
                 if (data.intakeComplete && onIntakeComplete) {
                   setTimeout(onIntakeComplete, 2000)
                 }

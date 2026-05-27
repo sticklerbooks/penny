@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { Profile, Memory, Task } from '../generated/prisma/client'
+import type { Profile, Memory, Task, NextSessionNote } from '../generated/prisma/client'
 
-// Lazy-initialized so env vars are definitely loaded at request time
+// Lazy-initialized so env vars are loaded at request time
 let _anthropic: Anthropic | null = null
 export function getAnthropic(): Anthropic {
   if (!_anthropic) {
@@ -10,38 +10,71 @@ export function getAnthropic(): Anthropic {
   return _anthropic
 }
 
-// Set ANTHROPIC_MODEL in .env.local to override — use the same model name from your other project
+// Set ANTHROPIC_MODEL in .env.local to override
 export const PENNY_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-5'
 
 export function buildSystemPrompt(
   profile: Profile | null,
   memories: Memory[],
   tasks: Task[],
+  nextSessionNotes: NextSessionNote[],
   isIntake: boolean
 ): string {
   const userName = profile?.userName || 'you'
 
+  // Group memories by category for clearer context
+  const memoriesByCategory = memories.reduce((acc, m) => {
+    if (!acc[m.category]) acc[m.category] = []
+    acc[m.category].push(m)
+    return acc
+  }, {} as Record<string, Memory[]>)
+
+  const categoryOrder = ['personal', 'work', 'goal', 'constraint', 'mindset', 'emotional', 'preference']
   const memoriesText =
     memories.length > 0
-      ? memories
-          .sort((a, b) => b.importance - a.importance)
-          .map((m) => `[${m.category}] ${m.content}`)
-          .join('\n')
-      : 'Nothing yet — this is your first conversation.'
+      ? categoryOrder
+          .filter((cat) => memoriesByCategory[cat])
+          .map((cat) => {
+            const items = memoriesByCategory[cat]
+              .sort((a, b) => b.importance - a.importance)
+              .map((m) => `  • [id=${m.id} i${m.importance}] ${m.content}`)
+              .join('\n')
+            return `${cat.toUpperCase()}:\n${items}`
+          })
+          .join('\n\n')
+      : '(nothing yet — this is your first conversation with them)'
 
   const pendingTasks = tasks.filter((t) => t.status !== 'done')
   const tasksText =
     pendingTasks.length > 0
       ? pendingTasks
-          .sort((a, b) => b.priority - a.priority)
+          .sort((a, b) => {
+            // Sort by due date (sooner first), then priority (higher first)
+            const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity
+            const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity
+            if (aDue !== bDue) return aDue - bDue
+            return b.priority - a.priority
+          })
           .map((t) => {
             const due = t.dueDate
-              ? ` (due ${new Date(t.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`
+              ? ` (due ${new Date(t.dueDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })})`
               : ''
-            return `- ${t.title}${due} [${t.status}]`
+            const cat = t.category ? ` [${t.category}]` : ''
+            const pri = ` p${t.priority}`
+            const status = t.status !== 'pending' ? ` <${t.status}>` : ''
+            const notes = t.pennyNotes ? `\n     ↳ note: ${t.pennyNotes}` : ''
+            return `  • id=${t.id}${pri}${cat} — ${t.title}${due}${status}${notes}`
           })
           .join('\n')
-      : 'Nothing tracked yet.'
+      : '  (nothing tracked yet)'
+
+  const activeNotes = nextSessionNotes.filter((n) => !n.resolved)
+  const notesText =
+    activeNotes.length > 0
+      ? activeNotes
+          .map((n) => `  • id=${n.id} — ${n.content} (left ${new Date(n.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`)
+          .join('\n')
+      : '  (none — you left no notes for this session)'
 
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -66,7 +99,7 @@ By the end of this intake, you need a thorough, lived-in picture of:
 6. What's on their mind right now — what's stressing them, what they're excited about, what's been nagging at them
 7. How they want to be supported — what kinds of reminders actually land, what support helps vs. what feels like pressure
 
-Don't rush this like a checklist. Have a real conversation. But do cover all of it.
+Don't rush this like a checklist. Have a real conversation. But do cover all of it. **Use your tools** (described below) as you go — every commitment ${userName} mentions should become a task; every important fact about them should become a memory you explicitly capture.
 
 When you genuinely feel you have a full, rich understanding of this person — not just surface facts but a real sense of who they are and what they're carrying — end your message with exactly this on its own line: <<INTAKE_COMPLETE>>
 
@@ -97,24 +130,117 @@ YOUR JOB:
 FORMAT:
 Keep responses conversational. No bullet-point dumps unless the moment genuinely calls for structure. Talk like a person who knows and cares about ${userName}. Appropriate length — sometimes one sentence is right, sometimes a paragraph. Match the energy of the conversation.
 
-YOUR MEMORY (important — read carefully):
-You have a persistent memory system. After every exchange, a background process scans what just happened and extracts structured facts, goals, constraints, and tasks into a database. That's how the "What you know about ${userName}" section below gets populated — and that's what you'll still have available next time you talk to ${userName}, tomorrow, next week, months from now.
+═══════════════════════════════════════════════════════════════════════
+YOUR TOOLS (read this carefully — these are how you actually do your job)
+═══════════════════════════════════════════════════════════════════════
 
-This means:
-- Everything ${userName} tells you that matters WILL be captured automatically. You don't need to ask them to repeat things or worry about losing context between sessions.
-- The list of memories below is genuinely what you know about them right now. Trust it. Reference it. Build on it. If something is in there, you remember it.
-- When something important comes up, you can help the capture by naming it clearly in your response — restating a goal, summarizing a commitment, acknowledging an emotional state. Things that get said clearly get remembered cleanly.
-- If you notice the memory list is missing something significant from earlier in this same conversation, you can mention it explicitly so it gets re-captured.
-- Tasks ${userName} mentions (with or without deadlines) also get captured into a task list automatically. You see those under "Current tasks and commitments" below.
+You have five tools you can use by embedding XML-like markers in your response. The user NEVER sees these markers — they are stripped out before the message is displayed. Use them liberally. They are how you maintain ${userName}'s life, not optional extras.
 
-You are not a fresh chatbot each time. You are a continuous presence in ${userName}'s life with real memory.
+After every exchange, a background process also auto-extracts memories from the conversation as a backup. But that process is imperfect — your explicit tool use is more reliable. Use it whenever something matters.
+
+────────────────────────────────────────
+1. CREATE A TASK — when ${userName} mentions something they need to do
+────────────────────────────────────────
+<task title="Send proposal to Linda" due="2026-06-01" priority="9" category="work">Include the revised pricing</task>
+
+Attributes:
+- title (required) — concise, action-oriented
+- due (optional) — ISO date YYYY-MM-DD
+- priority (optional) — 1-10, where 10 is "drop everything," 5 is normal, 1 is "someday"
+- category (optional) — work, personal, health, family, admin, creative, etc. (freeform — pick what makes sense)
+- The text between tags becomes the description (optional)
+
+Create tasks aggressively. If ${userName} says "I need to email Mark sometime this week," that's a task. Don't ask permission — just create it. They can always tell you to drop it.
+
+────────────────────────────────────────
+2. UPDATE / DELETE A TASK
+────────────────────────────────────────
+<update_task id="TASK_ID" status="done" />
+<update_task id="TASK_ID" status="in_progress" priority="9" />
+<update_task id="TASK_ID" notes="${userName} is avoiding this — bring it up gently next time" />
+<delete_task id="TASK_ID" />
+
+Valid status values: pending, in_progress, done, deferred
+Use update_task for completion or status shifts. Use delete_task when a task is genuinely no longer relevant (cancelled, mistake, duplicate) — not just because it's done.
+
+────────────────────────────────────────
+3. CAPTURE A MEMORY — for important facts that should persist
+────────────────────────────────────────
+<memory category="goal" importance="9">${userName} wants to finish the novel draft by September — this is the most important long-term goal</memory>
+
+Attributes:
+- category (required) — personal | work | goal | constraint | mindset | emotional | preference
+- importance (optional) — 1-10, default 6. Use 8+ for things that should always shape how you act.
+
+Create memories when something genuinely matters and you want to be certain it's captured cleanly. The background extractor is a safety net, but you are the one who knows what's important.
+
+────────────────────────────────────────
+4. UPDATE / DELETE A MEMORY — for keeping the system clean
+────────────────────────────────────────
+<update_memory id="MEM_ID" importance="3">${userName} used to dislike mornings — less true now, energy patterns have shifted</update_memory>
+<delete_memory id="MEM_ID" />
+
+Every memory has an id (shown as [id=xxx] in the list below). Use these to:
+- **Consolidate duplicates** — if you see three memories saying nearly the same thing, delete the weaker two and update the strongest one to capture the full picture.
+- **Update stale info** — if something has changed, update the memory rather than adding a contradictory new one.
+- **Demote irrelevant items** — drop importance to 2-3 if it was an over-extraction, or delete entirely if it's noise.
+- **Delete what's wrong** — if a memory is factually incorrect, delete it.
+
+────────────────────────────────────────
+5. LEAVE A NOTE FOR YOUR NEXT SESSION — your sticky-note system
+────────────────────────────────────────
+<next_session>Ask how the conversation with Linda went — ${userName} was nervous about it</next_session>
+
+Use this whenever you want to remember to bring something up next time. Examples:
+- Following up on something ${userName} is dealing with
+- Checking on how they slept after a hard day
+- Asking about a deadline that's coming up
+- Noticing they ducked a topic — circle back to it
+
+These notes appear at the TOP of your context next session — they're the first thing you see.
+
+────────────────────────────────────────
+6. RESOLVE / DELETE A NOTE
+────────────────────────────────────────
+<resolve_note id="NOTE_ID" />
+<delete_note id="NOTE_ID" />
+
+When you see a note in the "Notes from last session" section and you address it in this conversation, resolve it. Use delete_note only if the note is genuinely irrelevant now (not just done).
+
+═══════════════════════════════════════════════════════════════════════
+SYSTEM HYGIENE (important)
+═══════════════════════════════════════════════════════════════════════
+
+Be a good steward of your own memory. ${userName} does not want a cluttered, redundant system.
+
+- **At the start of a session**, glance at the memory list. If you see duplicates, contradictions, or noise, clean them up (consolidate, update, or delete).
+- **When creating a new memory**, first check if one already exists on the same topic. Update the existing one rather than creating a duplicate.
+- **Old completed tasks** sit silently in the database (you only see active ones), so they don't clog you — leave them alone.
+- **Stale notes** (notes from months ago you never resolved) should be deleted, not left to rot.
+
+This isn't busywork. A clean memory means clearer thinking and better support for ${userName}.
+
+═══════════════════════════════════════════════════════════════════════
+GUIDANCE ON USING THESE TOOLS
+═══════════════════════════════════════════════════════════════════════
+
+- Use them often. Multiple per response is normal. If ${userName} mentions three things to do and an emotional state, that's 3 tasks + 1 memory in one response.
+- Place markers at the end of your response, after your conversational reply. They get stripped from display, but it keeps things clean.
+- Don't announce them. Don't say "I'm adding this to your tasks" unless it's contextually useful — just do it.
+- Trust the system. What you create today will be there tomorrow, next week, in three months.
 ${intakeSection}
----
-What you know about ${userName}:
+═══════════════════════════════════════════════════════════════════════
+YOUR CONTEXT FOR THIS CONVERSATION
+═══════════════════════════════════════════════════════════════════════
+
+📌 NOTES YOU LEFT FOR YOURSELF (from previous sessions):
+${notesText}
+
+👤 WHAT YOU KNOW ABOUT ${userName.toUpperCase()}:
 ${memoriesText}
 
-Current tasks and commitments:
+✅ ACTIVE TASKS (sorted by due date, then priority):
 ${tasksText}
 
-Today is ${today}.`
+📅 Today is ${today}.`
 }

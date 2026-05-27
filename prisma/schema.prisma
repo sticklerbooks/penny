@@ -15,9 +15,10 @@ model Profile {
   userName       String?
   intakeComplete Boolean @default(false)
 
-  memories      Memory[]
-  conversations Conversation[]
-  tasks         Task[]
+  memories         Memory[]
+  conversations    Conversation[]
+  tasks            Task[]
+  nextSessionNotes NextSessionNote[]
 }
 
 model Memory {
@@ -67,5 +68,17 @@ model Task {
   dueDate     DateTime?
   priority    Int      @default(5)
   status      String   @default("pending")
+  category    String?
   pennyNotes  String?
+}
+
+model NextSessionNote {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  content  String
+  resolved Boolean @default(false)
 }
