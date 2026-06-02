@@ -6,7 +6,7 @@ export async function GET() {
   if (!profile) return NextResponse.json(null)
 
   const lastConversation = await prisma.conversation.findFirst({
-    where: { profileId: profile.id },
+    where: { profileId: profile.id, closed: false },
     orderBy: { createdAt: 'desc' },
     include: {
       messages: {

@@ -274,8 +274,9 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'run_subroutine', name })
   }
 
-  // complete_session
-  if (COMPLETE_SESSION_RE.test(text)) {
+  // complete_session — use a fresh non-global regex for .test() to avoid
+  // mutating lastIndex on the module-level COMPLETE_SESSION_RE used in replace()
+  if (/<complete_session\s*\/?>/i.test(text)) {
     actions.push({ kind: 'complete_session' })
   }
 

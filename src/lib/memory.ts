@@ -1,4 +1,4 @@
-import { getAnthropic, PENNY_MODEL } from './claude'
+import { getAnthropic, PENNY_FAST_MODEL } from './claude'
 import { prisma } from '@/lib/db'
 
 interface ExtractedMemory {
@@ -57,7 +57,7 @@ Respond with valid JSON only:
 
   try {
     const response = await getAnthropic().messages.create({
-      model: PENNY_MODEL,
+      model: PENNY_FAST_MODEL,
       max_tokens: 800,
       messages: [{ role: 'user', content: prompt }],
     })

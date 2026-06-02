@@ -10,8 +10,14 @@ export function getAnthropic(): Anthropic {
   return _anthropic
 }
 
-// Set ANTHROPIC_MODEL in .env.local to override
+// Main conversational model — set ANTHROPIC_MODEL to override
 export const PENNY_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-5'
+
+// Search second-pass — needs Penny's voice to synthesise results; defaults to main model
+export const PENNY_SEARCH_MODEL = process.env.PENNY_SEARCH_MODEL || PENNY_MODEL
+
+// Fast model for mechanical work: subroutines, memory extraction
+export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haiku-20241022'
 
 export function buildSystemPrompt(
   profile: Profile | null,

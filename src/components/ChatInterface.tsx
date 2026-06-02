@@ -3,6 +3,35 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceControls from './VoiceControls'
 
+// Block-level marker tags that may contain long prose content.
+// Strip these from the live stream so the user never sees raw XML.
+const BLOCK_TAGS = [
+  'update_user_profile',
+  'update_self_notes',
+  'memory',
+  'update_memory',
+  'client',
+  'update_client',
+  'schedule_sms',
+  'next_session',
+]
+
+function stripStreamingMarkers(text: string): string {
+  let result = text
+  for (const tag of BLOCK_TAGS) {
+    // Remove fully closed blocks
+    result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'), '')
+    // Remove still-open blocks (streaming in progress)
+    result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*$`, 'gi'), '')
+  }
+  // Remove self-closing action tags
+  result = result.replace(
+    /<(task|update_task|delete_task|delete_memory|update_memory|resolve_note|delete_note|delete_client|cancel_sms|run_subroutine|complete_session|search_email|search_calendar)[^>]*\/?>/gi,
+    ''
+  )
+  return result.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -135,7 +164,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 setMessages((prev) => {
                   const next = [...prev]
                   const last = next[next.length - 1]
-                  if (last?.streaming) last.content = fullText
+                  if (last?.streaming) last.content = stripStreamingMarkers(fullText)
                   return next
                 })
               }

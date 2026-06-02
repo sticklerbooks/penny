@@ -79,6 +79,7 @@ model Conversation {
   profile   Profile  @relation(fields: [profileId], references: [id])
 
   type     String
+  closed   Boolean  @default(false)
   messages Message[]
 }
 

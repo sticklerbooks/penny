@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
+import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
           )
 
           const secondPass = await getAnthropic().messages.create({
-            model: PENNY_MODEL,
+            model: PENNY_SEARCH_MODEL,
             max_tokens: 2048,
             system: systemPrompt,
             messages: [
@@ -217,7 +217,7 @@ export async function POST(req: NextRequest) {
               : 'Please run the requested subroutine(s) now. Execute all relevant actions.'
 
             const subroutinePass = await getAnthropic().messages.create({
-              model: PENNY_MODEL,
+              model: PENNY_FAST_MODEL,
               max_tokens: 2048,
               system: systemPrompt + '\n\n' + subroutineContent,
               messages: [
@@ -251,14 +251,20 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Handle session completion — create fresh-start note, signal frontend
+        // Handle session completion — close conversation, create fresh-start note
         if (isCompleting) {
-          await prisma.nextSessionNote.create({
-            data: {
-              profileId: profile!.id,
-              content: `🔄 Fresh session — hygiene was run on ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`,
-            },
-          })
+          await Promise.all([
+            prisma.conversation.update({
+              where: { id: convoId! },
+              data: { closed: true },
+            }),
+            prisma.nextSessionNote.create({
+              data: {
+                profileId: profile!.id,
+                content: `🔄 Fresh session — hygiene was run on ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`,
+              },
+            }),
+          ])
         }
         // ─────────────────────────────────────────────────────────────────
 

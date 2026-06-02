@@ -121,6 +121,7 @@ const alters = [
   `ALTER TABLE Profile ADD COLUMN aboutUserUpdatedAt DATETIME`,
   `ALTER TABLE Profile ADD COLUMN aboutSelf TEXT`,
   `ALTER TABLE Profile ADD COLUMN aboutSelfUpdatedAt DATETIME`,
+  `ALTER TABLE Conversation ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`,
 ]
 
 console.log('Creating tables in Turso...')
