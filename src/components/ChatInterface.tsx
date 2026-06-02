@@ -265,14 +265,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setInCall(true)}
-              className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95"
-              style={{ background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }}
-              title="Start a voice call with Penny"
-            >📞 Call</button>
-          </div>
+          <div />
         </div>
 
         {/* Messages */}
@@ -334,6 +327,13 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           style={{ background: C.panel, borderTop: `1px solid ${C.borderBlue}` }}
         >
           <div className="flex items-end gap-2 max-w-2xl mx-auto">
+            {/* Call button — in the input bar so it's always thumb-reachable */}
+            <button
+              onClick={() => setInCall(true)}
+              className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
+              style={{ background: 'rgba(255,105,180,0.15)', border: `1px solid ${C.border}` }}
+              title="Start a voice call with Penny"
+            >📞</button>
             <div className="flex-1">
               <textarea
                 ref={textareaRef}

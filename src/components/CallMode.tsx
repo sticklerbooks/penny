@@ -100,25 +100,27 @@ export default function CallMode({
       if (!activeRef.current) return
       clearTimeout(silenceTimer.current ?? undefined)
 
-      let finalChunk = ''
-      let interim    = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Rebuild full transcript from event.results each time — never manually
+      // append, so re-reported final segments (common with Bluetooth) can't double.
+      let allFinal = ''
+      let interim  = ''
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i]
-        if (result.isFinal) finalChunk += result[0].transcript
+        if (result.isFinal) allFinal += result[0].transcript + ' '
         else interim += result[0].transcript
       }
-      accumulated.current += finalChunk
-      setTranscript(accumulated.current + interim)
+      accumulated.current = allFinal.trim()
+      setTranscript(accumulated.current + (interim ? ' ' + interim : ''))
 
-      // Auto-send after 1.5s of silence
+      // Auto-send after 1.0s of silence
       silenceTimer.current = setTimeout(() => {
-        const text = (accumulated.current + interim).trim()
+        const text = (accumulated.current + ' ' + interim).trim()
         if (text && callStateRef.current === 'listening') {
           accumulated.current = ''
           setTranscript('')
           handleSendRef.current(text)
         }
-      }, 1500)
+      }, 1000)
     }
 
     r.onend = () => {
