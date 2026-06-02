@@ -9,7 +9,7 @@ import { loadSubroutine } from '@/lib/subroutines'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice } = await req.json()
 
   // Get or create the single profile
   let profile = await prisma.profile.findFirst()
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
       getEmailCalendarSummary(profile.id).catch(() => null),
     ])
 
-  const systemPrompt = buildSystemPrompt(
+  let systemPrompt = buildSystemPrompt(
     profile,
     memories,
     tasks,
@@ -80,6 +80,16 @@ export async function POST(req: NextRequest) {
     emailCalendarSummary,
     !profile.intakeComplete
   )
+
+  // Voice/call mode: she's being spoken aloud, so keep it short and natural.
+  if (isVoice) {
+    systemPrompt += `
+
+═══════════════════════════════════════════════════════════════════════
+YOU ARE ON A VOICE CALL RIGHT NOW
+═══════════════════════════════════════════════════════════════════════
+${profile.userName || 'The user'} is talking to you out loud and hearing your reply spoken back. Keep responses SHORT and conversational — usually one to three sentences. No lists, no markdown, no headers. Talk like a real phone call: natural, warm, to the point. If something needs a long answer, give the short version and offer to go deeper. You can still use your tools silently as normal.`
+  }
 
   // Auto-start: Penny opens cold — silent trigger user never sees
   const triggerMessage = isAutoStart

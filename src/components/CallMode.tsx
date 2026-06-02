@@ -67,7 +67,6 @@ export default function CallMode({
   const [supported, setSupported]     = useState(true)
 
   const recognitionRef  = useRef<SpeechRecognizer | null>(null)
-  const silenceTimer    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const accumulated     = useRef('')
   const callStateRef    = useRef<CallState>('listening')
   const audioRef        = useRef<HTMLAudioElement | null>(null)
@@ -85,23 +84,25 @@ export default function CallMode({
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
 
   // ── Speech → text ──────────────────────────────────────────────────────────
+  // continuous = false: one utterance per recognition session. Chrome's own
+  // end-of-speech detection fires onend when you pause — which is exactly our
+  // "send on pause" trigger. This avoids the continuous-mode auto-restart races
+  // on Chrome/Android that caused words to duplicate endlessly.
   const startListening = useCallback(() => {
     if (!activeRef.current) return
     const SR = getSpeechRecognizer()
     if (!SR) { setSupported(false); return }
 
     const r = new SR()
-    r.continuous      = true
+    r.continuous      = false
     r.interimResults  = true
     r.lang            = 'en-US'
     recognitionRef.current = r
+    accumulated.current = ''
 
     r.onresult = (event) => {
       if (!activeRef.current) return
-      clearTimeout(silenceTimer.current ?? undefined)
-
-      // Rebuild full transcript from event.results each time — never manually
-      // append, so re-reported final segments (common with Bluetooth) can't double.
+      // Rebuild this utterance's transcript from scratch each event.
       let allFinal = ''
       let interim  = ''
       for (let i = 0; i < event.results.length; i++) {
@@ -110,52 +111,37 @@ export default function CallMode({
         else interim += result[0].transcript
       }
       accumulated.current = allFinal.trim()
-      setTranscript(accumulated.current + (interim ? ' ' + interim : ''))
-
-      // Auto-send after 1.0s of silence
-      silenceTimer.current = setTimeout(() => {
-        const text = (accumulated.current + ' ' + interim).trim()
-        if (text && callStateRef.current === 'listening') {
-          accumulated.current = ''
-          setTranscript('')
-          handleSendRef.current(text)
-        }
-      }, 1000)
+      setTranscript((accumulated.current + ' ' + interim).trim())
     }
 
     r.onend = () => {
-      // Only restart if THIS recognizer is still the current one.
-      // Without this check, a stale recognizer from a previous listen cycle
-      // restarts itself alongside the new one → both capture the same audio
-      // → every word appears doubled (or worse with Bluetooth).
-      if (
-        activeRef.current &&
-        callStateRef.current === 'listening' &&
-        recognitionRef.current === r
-      ) {
-        setTimeout(() => {
-          if (
-            activeRef.current &&
-            callStateRef.current === 'listening' &&
-            recognitionRef.current === r
-          ) {
-            try { r.start() } catch { /* already started */ }
-          }
-        }, 200)
+      // Ignore if a newer recognizer has replaced this one.
+      if (recognitionRef.current !== r) return
+      if (!activeRef.current || callStateRef.current !== 'listening') return
+
+      const text = accumulated.current.trim()
+      if (text) {
+        setTranscript('')
+        accumulated.current = ''
+        handleSendRef.current(text)   // pause detected with speech → send
+      } else {
+        // No speech captured — keep the mic open for the next utterance.
+        try { r.start() } catch { startListeningRef.current() }
       }
     }
 
     r.onerror = (e) => {
       if (e.error === 'not-allowed') setSupported(false)
+      // 'no-speech'/'aborted' fall through to onend, which restarts.
     }
 
     try { r.start() } catch { /* already started */ }
   }, [])
 
   const stopListening = useCallback(() => {
-    clearTimeout(silenceTimer.current ?? undefined)
-    recognitionRef.current?.stop()
-    recognitionRef.current = null
+    const r = recognitionRef.current
+    recognitionRef.current = null   // null first so onend won't restart
+    r?.stop()
   }, [])
 
   // ── Response → audio ───────────────────────────────────────────────────────
@@ -203,7 +189,7 @@ export default function CallMode({
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, conversationId: conversationIdRef.current }),
+        body: JSON.stringify({ message: text, conversationId: conversationIdRef.current, isVoice: true }),
       })
       if (!res.body) throw new Error('No response')
 
