@@ -124,10 +124,21 @@ export default function CallMode({
     }
 
     r.onend = () => {
-      // Restart automatically if we're still in listening state
-      if (activeRef.current && callStateRef.current === 'listening') {
+      // Only restart if THIS recognizer is still the current one.
+      // Without this check, a stale recognizer from a previous listen cycle
+      // restarts itself alongside the new one → both capture the same audio
+      // → every word appears doubled (or worse with Bluetooth).
+      if (
+        activeRef.current &&
+        callStateRef.current === 'listening' &&
+        recognitionRef.current === r
+      ) {
         setTimeout(() => {
-          if (activeRef.current && callStateRef.current === 'listening') {
+          if (
+            activeRef.current &&
+            callStateRef.current === 'listening' &&
+            recognitionRef.current === r
+          ) {
             try { r.start() } catch { /* already started */ }
           }
         }, 200)
