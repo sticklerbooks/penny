@@ -7,16 +7,17 @@ export default function manifest(): MetadataRoute.Manifest {
     description: 'Your personal assistant',
     start_url: '/',
     display: 'standalone',
-    background_color: '#FAF8F5',
-    theme_color: '#F59E0B',
+    background_color: '#0B0C10',
+    theme_color: '#FF69B4',
     icons: [
       {
-        src: '/icon',
-        sizes: '192x192',
+        src: '/icon.png',
+        sizes: '512x512',
         type: 'image/png',
+        purpose: 'any',
       },
       {
-        src: '/icon',
+        src: '/icon.png',
         sizes: '512x512',
         type: 'image/png',
         purpose: 'maskable',
