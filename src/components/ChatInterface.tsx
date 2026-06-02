@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import VoiceControls from './VoiceControls'
+import CallMode from './CallMode'
 
 // ─── Palette ────────────────────────────────────────────────────────────────
 const C = {
@@ -55,8 +55,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [input, setInput]                     = useState('')
   const [isLoading, setIsLoading]             = useState(false)
   const [conversationId, setConversationId]   = useState<string | null>(null)
-  const [ttsEnabled, setTtsEnabled]           = useState(true)
-  const [voicesLoaded, setVoicesLoaded]       = useState(false)
+  const [inCall, setInCall]                   = useState(false)
   const [avatarImgError, setAvatarImgError]   = useState(false)
   const [thinkingImgError, setThinkingImgError] = useState(false)
 
@@ -64,12 +63,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const textareaRef     = useRef<HTMLTextAreaElement>(null)
   const hasInitialized  = useRef(false)
 
-  // Load voices
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.speechSynthesis.onvoiceschanged = () => setVoicesLoaded(true)
-    if (window.speechSynthesis.getVoices().length > 0) setVoicesLoaded(true)
-  }, [])
 
   // Auto-scroll
   useEffect(() => {
@@ -84,31 +77,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
   }, [input])
 
-  const speak = useCallback((text: string) => {
-    if (!ttsEnabled || typeof window === 'undefined') return
-    window.speechSynthesis.cancel()
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text]
-    const chunks: string[] = []
-    let current = ''
-    for (const s of sentences) {
-      if ((current + s).length > 200) { if (current) chunks.push(current.trim()); current = s }
-      else current += s
-    }
-    if (current.trim()) chunks.push(current.trim())
-    const voices = window.speechSynthesis.getVoices()
-    const voice =
-      voices.find(v => v.name === 'Samantha') ||
-      voices.find(v => v.name.includes('Karen')) ||
-      voices.find(v => v.name.includes('Moira')) ||
-      voices.find(v => v.lang === 'en-US' && v.localService) ||
-      voices.find(v => v.lang.startsWith('en'))
-    chunks.forEach(chunk => {
-      const u = new SpeechSynthesisUtterance(chunk)
-      u.rate = 0.92; u.pitch = 1.05
-      if (voice) u.voice = voice
-      window.speechSynthesis.speak(u)
-    })
-  }, [ttsEnabled, voicesLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = useCallback(async (text: string, isAutoStart = false) => {
     const content = isAutoStart ? '' : text.trim()
@@ -161,7 +129,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 if (last?.streaming) { last.content = finalText; last.streaming = false }
                 return next
               })
-              speak(finalText)
               if (data.intakeComplete && onIntakeComplete) setTimeout(onIntakeComplete, 2000)
               if (data.sessionComplete) {
                 setConversationId(null)
@@ -183,7 +150,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
     setIsLoading(false)
     textareaRef.current?.focus()
-  }, [conversationId, isLoading, speak, onIntakeComplete])
+  }, [conversationId, isLoading, onIntakeComplete])
 
   // Initialize
   useEffect(() => {
@@ -247,9 +214,25 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       />
     )
 
+  // ─── Call mode helpers ─────────────────────────────────────────────────────
+  const addCallMessage = useCallback((role: 'user' | 'assistant', content: string) => {
+    setMessages(prev => [...prev, { role, content }])
+  }, [])
+
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="relative flex flex-col h-screen overflow-hidden" style={{ background: C.base }}>
+
+      {/* Voice call overlay */}
+      {inCall && (
+        <CallMode
+          conversationId={conversationId}
+          onConversationId={setConversationId}
+          onClose={() => setInCall(false)}
+          onMessage={addCallMessage}
+          avatarImgError={avatarImgError}
+        />
+      )}
 
       {/* Faded background image — absolute (not fixed) so iOS Safari renders it correctly */}
       <div className="absolute inset-0 z-0 pointer-events-none select-none" aria-hidden>
@@ -284,19 +267,11 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => typeof window !== 'undefined' && window.speechSynthesis.cancel()}
-              className="text-xs px-2.5 py-1.5 rounded-lg transition-colors"
-              style={{ color: C.textMuted }}
-              title="Stop speaking"
-            >◼</button>
-            <button
-              onClick={() => setTtsEnabled(t => !t)}
-              className="text-xs px-3 py-1.5 rounded-full border transition-colors"
-              style={ttsEnabled
-                ? { background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }
-                : { background: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)', color: C.textMuted }
-              }
-            >{ttsEnabled ? '🔊 Voice on' : '🔇 Voice off'}</button>
+              onClick={() => setInCall(true)}
+              className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95"
+              style={{ background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }}
+              title="Start a voice call with Penny"
+            >📞 Call</button>
           </div>
         </div>
 
@@ -359,10 +334,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           style={{ background: C.panel, borderTop: `1px solid ${C.borderBlue}` }}
         >
           <div className="flex items-end gap-2 max-w-2xl mx-auto">
-            <VoiceControls
-              onTranscript={text => setInput(prev => prev ? prev + ' ' + text : text)}
-              disabled={isLoading}
-            />
             <div className="flex-1">
               <textarea
                 ref={textareaRef}
