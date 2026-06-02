@@ -293,7 +293,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               onClick={() => setTtsEnabled(t => !t)}
               className="text-xs px-3 py-1.5 rounded-full border transition-colors"
               style={ttsEnabled
-                ? { background: 'rgba(255,105,180,0.12)', borderColor: C.borderPink, color: C.pink }
+                ? { background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }
                 : { background: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)', color: C.textMuted }
               }
             >{ttsEnabled ? '🔊 Voice on' : '🔇 Voice off'}</button>
