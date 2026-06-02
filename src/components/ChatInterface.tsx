@@ -8,14 +8,14 @@ const C = {
   base:        '#0B0C10',
   panel:       '#1F2833',
   panelLight:  '#263040',
-  pink:        '#FF69B4',
+  pink:        '#FF69B4',   // Penny's color
   pinkDark:    '#d4539a',
-  blue:        '#4B9CD3',
+  blue:        '#4B9CD3',   // User's color
   blueDark:    '#3a7dab',
   text:        'rgba(232,234,240,0.92)',
   textMuted:   'rgba(232,234,240,0.45)',
-  border:      'rgba(75,156,211,0.18)',
-  borderPink:  'rgba(255,105,180,0.25)',
+  border:      'rgba(255,105,180,0.18)',   // Pink-tinted border
+  borderBlue:  'rgba(75,156,211,0.18)',
 }
 
 // ─── Streaming marker cleanup ────────────────────────────────────────────────
@@ -217,7 +217,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     return avatarImgError ? (
       <div
         className={`${dim} rounded-full flex items-center justify-center text-white font-semibold ${txt} flex-shrink-0 shadow-md`}
-        style={{ background: `linear-gradient(135deg, ${C.blue}, ${C.blueDark})` }}
+        style={{ background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})` }}
       >P</div>
     ) : (
       <img
@@ -235,7 +235,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       <span className="flex gap-1.5 items-center h-5 px-1">
         {[0, 160, 320].map(delay => (
           <span key={delay} className="w-2 h-2 rounded-full animate-bounce"
-            style={{ background: C.blue, animationDelay: `${delay}ms` }} />
+            style={{ background: C.pink, animationDelay: `${delay}ms` }} />
         ))}
       </span>
     ) : (
@@ -251,16 +251,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   return (
     <div className="relative flex flex-col h-screen overflow-hidden" style={{ background: C.base }}>
 
-      {/* Faded background image */}
-      <div className="fixed inset-0 z-0 pointer-events-none select-none" aria-hidden>
+      {/* Faded background image — absolute (not fixed) so iOS Safari renders it correctly */}
+      <div className="absolute inset-0 z-0 pointer-events-none select-none" aria-hidden>
         <div style={{
           position: 'absolute', inset: 0,
           backgroundImage: 'url(/penny-bg.png)',
           backgroundSize: '65%',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
-          opacity: 0.055,
-          filter: 'blur(6px) saturate(0.6)',
+          opacity: 0.07,
+          filter: 'blur(4px) saturate(0.5)',
         }} />
       </div>
 
@@ -301,7 +301,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-5">
           {messages.map((msg, i) => {
             // Session divider
             if (msg.content === '— session closed —') {
@@ -320,16 +320,25 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 {isAssistant && <div className="mb-0.5 flex-shrink-0"><PennyAvatar /></div>}
 
                 <div
-                  className="max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-md"
+                  className="max-w-[80%] shadow-md"
                   style={isAssistant ? {
                     background: C.panel,
                     border: `1px solid ${C.border}`,
                     color: C.text,
-                    borderBottomLeftRadius: '4px',
+                    borderRadius: '20px',
+                    borderBottomLeftRadius: '5px',
+                    padding: '14px 18px',
+                    fontSize: '15px',
+                    lineHeight: '1.7',
+                    fontFamily: 'var(--font-lora), Georgia, serif',
                   } : {
-                    background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})`,
+                    background: `linear-gradient(135deg, ${C.blue}, ${C.blueDark})`,
                     color: 'white',
-                    borderBottomRightRadius: '4px',
+                    borderRadius: '20px',
+                    borderBottomRightRadius: '5px',
+                    padding: '11px 16px',
+                    fontSize: '14px',
+                    lineHeight: '1.55',
                   }}
                 >
                   {msg.content ? (
@@ -347,7 +356,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         {/* Input */}
         <div
           className="px-4 py-3 flex-shrink-0"
-          style={{ background: C.panel, borderTop: `1px solid ${C.border}` }}
+          style={{ background: C.panel, borderTop: `1px solid ${C.borderBlue}` }}
         >
           <div className="flex items-end gap-2 max-w-2xl mx-auto">
             <VoiceControls
@@ -374,14 +383,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   caretColor: C.blue,
                 }}
                 onFocus={e => e.target.style.borderColor = C.blue}
-                onBlur={e => e.target.style.borderColor = C.border}
+                onBlur={e => e.target.style.borderColor = C.borderBlue}
               />
             </div>
             <button
               onClick={() => sendMessage(input)}
               disabled={isLoading || !input.trim()}
               className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 disabled:opacity-25 hover:scale-105 active:scale-95 shadow-md"
-              style={{ background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})` }}
+              style={{ background: `linear-gradient(135deg, ${C.blue}, ${C.blueDark})` }}
             >
               <svg className="w-4 h-4 text-white rotate-90" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
