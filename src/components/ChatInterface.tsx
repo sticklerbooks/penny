@@ -157,6 +157,19 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 if (data.intakeComplete && onIntakeComplete) {
                   setTimeout(onIntakeComplete, 2000)
                 }
+                if (data.sessionComplete) {
+                  // Clear conversation so next message starts a fresh session
+                  setConversationId(null)
+                  // Add a visual session-end divider
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      role: 'assistant' as const,
+                      content: '— session closed —',
+                      streaming: false,
+                    },
+                  ])
+                }
               }
             } catch {
               // Skip malformed chunks
@@ -267,7 +280,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             key={i}
             className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
-            {msg.role === 'assistant' && (
+            {msg.content === '— session closed —' ? (
+              <div className="w-full flex items-center gap-3 py-2">
+                <div className="flex-1 h-px bg-stone-200" />
+                <span className="text-xs text-stone-400 whitespace-nowrap">session closed</span>
+                <div className="flex-1 h-px bg-stone-200" />
+              </div>
+            ) : null}
+            {msg.content !== '— session closed —' && msg.role === 'assistant' && (
               <div
                 className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0 mb-0.5 shadow-sm"
                 style={{ background: 'linear-gradient(135deg, #F59E0B, #D97706)' }}
@@ -276,7 +296,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               </div>
             )}
 
-            <div
+            {msg.content !== '— session closed —' && <div
               className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                 msg.role === 'assistant'
                   ? 'bg-white border border-stone-200 text-stone-700 rounded-bl-sm shadow-sm'
@@ -306,7 +326,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   />
                 </span>
               ) : null}
-            </div>
+            </div>}
           </div>
         ))}
         <div ref={messagesEndRef} />

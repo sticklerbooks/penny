@@ -52,6 +52,8 @@ export type PennyAction =
   | { kind: 'search_calendar'; query: string; label?: string }
   | { kind: 'update_user_profile'; content: string }
   | { kind: 'update_self_notes'; content: string }
+  | { kind: 'run_subroutine'; name: string }
+  | { kind: 'complete_session' }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -72,6 +74,8 @@ const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
 const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_profile>/gi
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
+const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
+const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -263,6 +267,18 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'update_self_notes', content })
   }
 
+  // run_subroutine
+  for (const m of text.matchAll(RUN_SUBROUTINE_RE)) {
+    const name = m[1].trim()
+    if (!name) continue
+    actions.push({ kind: 'run_subroutine', name })
+  }
+
+  // complete_session
+  if (COMPLETE_SESSION_RE.test(text)) {
+    actions.push({ kind: 'complete_session' })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -283,6 +299,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SEARCH_CALENDAR_RE, '')
     .replace(UPDATE_USER_PROFILE_RE, '')
     .replace(UPDATE_SELF_NOTES_RE, '')
+    .replace(RUN_SUBROUTINE_RE, '')
+    .replace(COMPLETE_SESSION_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -434,27 +452,24 @@ export async function executeActions(
           await prisma.scheduledMessage.delete({ where: { id: action.id } }).catch(() => {})
           break
 
-        case 'update_user_profile': {
-          const profile = await prisma.profile.findFirst()
-          if (profile) {
-            await prisma.profile.update({
-              where: { id: profile.id },
-              data: { aboutUser: action.content, aboutUserUpdatedAt: new Date() },
-            })
-          }
+        case 'update_user_profile':
+          await prisma.profile.update({
+            where: { id: profileId },
+            data: { aboutUser: action.content, aboutUserUpdatedAt: new Date() },
+          })
           break
-        }
 
-        case 'update_self_notes': {
-          const profile = await prisma.profile.findFirst()
-          if (profile) {
-            await prisma.profile.update({
-              where: { id: profile.id },
-              data: { aboutSelf: action.content, aboutSelfUpdatedAt: new Date() },
-            })
-          }
+        case 'update_self_notes':
+          await prisma.profile.update({
+            where: { id: profileId },
+            data: { aboutSelf: action.content, aboutSelfUpdatedAt: new Date() },
+          })
           break
-        }
+
+        // Handled in route.ts before executeActions is called — no-op here
+        case 'run_subroutine':
+        case 'complete_session':
+          break
       }
     } catch (e) {
       // Log but don't crash — one bad action shouldn't kill the response

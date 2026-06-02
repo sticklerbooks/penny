@@ -4,6 +4,7 @@ import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
+import { loadSubroutine } from '@/lib/subroutines'
 
 export const dynamic = 'force-dynamic'
 
@@ -195,9 +196,79 @@ export async function POST(req: NextRequest) {
           })
         }
 
-        // Execute all non-search actions
+        // ── Subroutine / session-complete flow ───────────────────────────
+        const isCompleting = actions.some((a) => a.kind === 'complete_session')
+        const subroutineNames = new Set<string>(
+          actions
+            .filter((a): a is Extract<typeof a, { kind: 'run_subroutine' }> => a.kind === 'run_subroutine')
+            .map((a) => a.name)
+        )
+        if (isCompleting) subroutineNames.add('hygiene')
+
+        if (subroutineNames.size > 0) {
+          const subroutineContent = [...subroutineNames]
+            .map((name) => loadSubroutine(name))
+            .filter((s): s is string => s !== null)
+            .join('\n\n---\n\n')
+
+          if (subroutineContent) {
+            const subroutinePrompt = isCompleting
+              ? 'Please complete this session. Work through the hygiene checklist above and execute all relevant actions. Leave a brief next_session note — the one thing most worth carrying forward.'
+              : 'Please run the requested subroutine(s) now. Execute all relevant actions.'
+
+            const subroutinePass = await getAnthropic().messages.create({
+              model: PENNY_MODEL,
+              max_tokens: 2048,
+              system: systemPrompt + '\n\n' + subroutineContent,
+              messages: [
+                ...claudeMessages,
+                { role: 'assistant', content: workingText },
+                { role: 'user', content: subroutinePrompt },
+              ],
+            })
+
+            const subroutineText =
+              (subroutinePass.content[0] as { type: string; text: string }).text
+            const { cleanText: subroutineClean, actions: subroutinePassActions } =
+              parseActions(subroutineText)
+
+            // Execute subroutine actions
+            const executableSubroutineActions = subroutinePassActions.filter(
+              (a) =>
+                a.kind !== 'search_email' &&
+                a.kind !== 'search_calendar' &&
+                a.kind !== 'run_subroutine' &&
+                a.kind !== 'complete_session'
+            )
+            if (executableSubroutineActions.length > 0) {
+              await executeActions(profile!.id, executableSubroutineActions)
+            }
+
+            // Append subroutine response if it has visible content
+            if (subroutineClean.trim()) {
+              workingText = workingText + '\n\n' + subroutineClean
+            }
+          }
+        }
+
+        // Handle session completion — create fresh-start note, signal frontend
+        if (isCompleting) {
+          await prisma.nextSessionNote.create({
+            data: {
+              profileId: profile!.id,
+              content: `🔄 Fresh session — hygiene was run on ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`,
+            },
+          })
+        }
+        // ─────────────────────────────────────────────────────────────────
+
+        // Execute all non-search, non-subroutine actions
         const executableActions = actions.filter(
-          (a) => a.kind !== 'search_email' && a.kind !== 'search_calendar'
+          (a) =>
+            a.kind !== 'search_email' &&
+            a.kind !== 'search_calendar' &&
+            a.kind !== 'run_subroutine' &&
+            a.kind !== 'complete_session'
         )
         if (executableActions.length > 0) {
           await executeActions(profile!.id, executableActions)
@@ -216,6 +287,7 @@ export async function POST(req: NextRequest) {
               intakeComplete: intakeJustCompleted,
               cleanText: workingText,
               actionsExecuted: executableActions.length,
+              sessionComplete: isCompleting ?? false,
             })}\n\n`
           )
         )
