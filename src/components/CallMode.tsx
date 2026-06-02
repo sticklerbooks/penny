@@ -61,15 +61,17 @@ export default function CallMode({
     r.lang            = 'en-US'
     recognitionRef.current = r
 
-    r.onresult = (event: SpeechRecognitionEvent & { resultIndex: number }) => {
+    r.onresult = (event) => {
       if (!activeRef.current) return
       clearTimeout(silenceTimer.current ?? undefined)
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const e = event as any
       let finalChunk = ''
       let interim    = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript
-        if (event.results[i].isFinal) finalChunk += t
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript
+        if (e.results[i].isFinal) finalChunk += t
         else interim += t
       }
       accumulated.current += finalChunk
