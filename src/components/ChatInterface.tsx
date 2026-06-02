@@ -3,28 +3,33 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceControls from './VoiceControls'
 
-// Block-level marker tags that may contain long prose content.
-// Strip these from the live stream so the user never sees raw XML.
+// ─── Palette ────────────────────────────────────────────────────────────────
+const C = {
+  base:        '#0B0C10',
+  panel:       '#1F2833',
+  panelLight:  '#263040',
+  pink:        '#FF69B4',
+  pinkDark:    '#d4539a',
+  blue:        '#4B9CD3',
+  blueDark:    '#3a7dab',
+  text:        'rgba(232,234,240,0.92)',
+  textMuted:   'rgba(232,234,240,0.45)',
+  border:      'rgba(75,156,211,0.18)',
+  borderPink:  'rgba(255,105,180,0.25)',
+}
+
+// ─── Streaming marker cleanup ────────────────────────────────────────────────
 const BLOCK_TAGS = [
-  'update_user_profile',
-  'update_self_notes',
-  'memory',
-  'update_memory',
-  'client',
-  'update_client',
-  'schedule_sms',
-  'next_session',
+  'update_user_profile','update_self_notes','memory','update_memory',
+  'client','update_client','schedule_sms','next_session',
 ]
 
 function stripStreamingMarkers(text: string): string {
   let result = text
   for (const tag of BLOCK_TAGS) {
-    // Remove fully closed blocks
     result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'), '')
-    // Remove still-open blocks (streaming in progress)
     result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*$`, 'gi'), '')
   }
-  // Remove self-closing action tags
   result = result.replace(
     /<(task|update_task|delete_task|delete_memory|update_memory|resolve_note|delete_note|delete_client|cancel_sms|run_subroutine|complete_session|search_email|search_calendar)[^>]*\/?>/gi,
     ''
@@ -32,6 +37,7 @@ function stripStreamingMarkers(text: string): string {
   return result.replace(/\n{3,}/g, '\n\n').trim()
 }
 
+// ─── Types ───────────────────────────────────────────────────────────────────
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -43,22 +49,25 @@ interface ChatInterfaceProps {
   onIntakeComplete?: () => void
 }
 
+// ─── Component ───────────────────────────────────────────────────────────────
 export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [conversationId, setConversationId] = useState<string | null>(null)
-  const [ttsEnabled, setTtsEnabled] = useState(true)
-  const [voicesLoaded, setVoicesLoaded] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const hasInitialized = useRef(false)
+  const [messages, setMessages]               = useState<Message[]>([])
+  const [input, setInput]                     = useState('')
+  const [isLoading, setIsLoading]             = useState(false)
+  const [conversationId, setConversationId]   = useState<string | null>(null)
+  const [ttsEnabled, setTtsEnabled]           = useState(true)
+  const [voicesLoaded, setVoicesLoaded]       = useState(false)
+  const [avatarImgError, setAvatarImgError]   = useState(false)
+  const [thinkingImgError, setThinkingImgError] = useState(false)
 
-  // Load voices (browsers load them async)
+  const messagesEndRef  = useRef<HTMLDivElement>(null)
+  const textareaRef     = useRef<HTMLTextAreaElement>(null)
+  const hasInitialized  = useRef(false)
+
+  // Load voices
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const loadVoices = () => setVoicesLoaded(true)
-    window.speechSynthesis.onvoiceschanged = loadVoices
+    window.speechSynthesis.onvoiceschanged = () => setVoicesLoaded(true)
     if (window.speechSynthesis.getVoices().length > 0) setVoicesLoaded(true)
   }, [])
 
@@ -75,175 +84,122 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
   }, [input])
 
-  const speak = useCallback(
-    (text: string) => {
-      if (!ttsEnabled || typeof window === 'undefined') return
-      window.speechSynthesis.cancel()
+  const speak = useCallback((text: string) => {
+    if (!ttsEnabled || typeof window === 'undefined') return
+    window.speechSynthesis.cancel()
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text]
+    const chunks: string[] = []
+    let current = ''
+    for (const s of sentences) {
+      if ((current + s).length > 200) { if (current) chunks.push(current.trim()); current = s }
+      else current += s
+    }
+    if (current.trim()) chunks.push(current.trim())
+    const voices = window.speechSynthesis.getVoices()
+    const voice =
+      voices.find(v => v.name === 'Samantha') ||
+      voices.find(v => v.name.includes('Karen')) ||
+      voices.find(v => v.name.includes('Moira')) ||
+      voices.find(v => v.lang === 'en-US' && v.localService) ||
+      voices.find(v => v.lang.startsWith('en'))
+    chunks.forEach(chunk => {
+      const u = new SpeechSynthesisUtterance(chunk)
+      u.rate = 0.92; u.pitch = 1.05
+      if (voice) u.voice = voice
+      window.speechSynthesis.speak(u)
+    })
+  }, [ttsEnabled, voicesLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
 
-      // Break long responses into chunks (browsers cut off long utterances)
-      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text]
-      const chunks: string[] = []
-      let current = ''
-      for (const s of sentences) {
-        if ((current + s).length > 200) {
-          if (current) chunks.push(current.trim())
-          current = s
-        } else {
-          current += s
-        }
-      }
-      if (current.trim()) chunks.push(current.trim())
+  const sendMessage = useCallback(async (text: string, isAutoStart = false) => {
+    const content = isAutoStart ? '' : text.trim()
+    if (!isAutoStart && !content) return
+    if (isLoading) return
 
-      const voices = window.speechSynthesis.getVoices()
-      const preferredVoice =
-        voices.find((v) => v.name === 'Samantha') ||
-        voices.find((v) => v.name.includes('Karen')) ||
-        voices.find((v) => v.name.includes('Moira')) ||
-        voices.find((v) => v.lang === 'en-US' && v.localService) ||
-        voices.find((v) => v.lang.startsWith('en'))
+    if (!isAutoStart) {
+      setMessages(prev => [...prev, { role: 'user', content }])
+      setInput('')
+    }
 
-      chunks.forEach((chunk, i) => {
-        const utterance = new SpeechSynthesisUtterance(chunk)
-        utterance.rate = 0.92
-        utterance.pitch = 1.05
-        if (preferredVoice) utterance.voice = preferredVoice
-        // Small gap between chunks
-        if (i > 0) utterance.rate = 0.92
-        window.speechSynthesis.speak(utterance)
+    setIsLoading(true)
+    setMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }])
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content, conversationId, isAutoStart }),
       })
-    },
-    [ttsEnabled, voicesLoaded] // eslint-disable-line react-hooks/exhaustive-deps
-  )
+      if (!res.body) throw new Error('No response body')
 
-  const sendMessage = useCallback(
-    async (text: string, isAutoStart = false) => {
-      const content = isAutoStart ? '' : text.trim()
-      if (!isAutoStart && !content) return
-      if (isLoading) return
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let fullText = ''
 
-      if (!isAutoStart) {
-        setMessages((prev) => [...prev, { role: 'user', content }])
-        setInput('')
-      }
-
-      setIsLoading(true)
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: '', streaming: true },
-      ])
-
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: content,
-            conversationId,
-            isAutoStart,
-          }),
-        })
-
-        if (!res.body) throw new Error('No response body')
-
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let fullText = ''
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          const lines = decoder.decode(value).split('\n')
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const data = JSON.parse(line.slice(6))
-
-              if (data.text) {
-                fullText += data.text
-                setMessages((prev) => {
-                  const next = [...prev]
-                  const last = next[next.length - 1]
-                  if (last?.streaming) last.content = stripStreamingMarkers(fullText)
-                  return next
-                })
-              }
-
-              if (data.done) {
-                setConversationId(data.conversationId)
-                // Swap displayed content for the cleaned text (markers removed)
-                const finalText = data.cleanText ?? fullText
-                setMessages((prev) => {
-                  const next = [...prev]
-                  const last = next[next.length - 1]
-                  if (last?.streaming) {
-                    last.content = finalText
-                    last.streaming = false
-                  }
-                  return next
-                })
-                speak(finalText)
-                if (data.intakeComplete && onIntakeComplete) {
-                  setTimeout(onIntakeComplete, 2000)
-                }
-                if (data.sessionComplete) {
-                  // Clear conversation so next message starts a fresh session
-                  setConversationId(null)
-                  // Add a visual session-end divider
-                  setMessages((prev) => [
-                    ...prev,
-                    {
-                      role: 'assistant' as const,
-                      content: '— session closed —',
-                      streaming: false,
-                    },
-                  ])
-                }
-              }
-            } catch {
-              // Skip malformed chunks
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const lines = decoder.decode(value).split('\n')
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (data.text) {
+              fullText += data.text
+              setMessages(prev => {
+                const next = [...prev]
+                const last = next[next.length - 1]
+                if (last?.streaming) last.content = stripStreamingMarkers(fullText)
+                return next
+              })
             }
-          }
+            if (data.done) {
+              setConversationId(data.conversationId)
+              const finalText = data.cleanText ?? fullText
+              setMessages(prev => {
+                const next = [...prev]
+                const last = next[next.length - 1]
+                if (last?.streaming) { last.content = finalText; last.streaming = false }
+                return next
+              })
+              speak(finalText)
+              if (data.intakeComplete && onIntakeComplete) setTimeout(onIntakeComplete, 2000)
+              if (data.sessionComplete) {
+                setConversationId(null)
+                setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
+              }
+            }
+          } catch { /* skip malformed */ }
         }
-      } catch (err) {
-        console.error(err)
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last?.streaming) {
-            last.content = "I'm having a little trouble right now. Try again in a moment?"
-            last.streaming = false
-          }
-          return next
-        })
       }
+    } catch (err) {
+      console.error(err)
+      setMessages(prev => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (last?.streaming) { last.content = "I'm having a little trouble right now. Try again in a moment?"; last.streaming = false }
+        return next
+      })
+    }
 
-      setIsLoading(false)
-      textareaRef.current?.focus()
-    },
-    [conversationId, isLoading, speak, onIntakeComplete]
-  )
+    setIsLoading(false)
+    textareaRef.current?.focus()
+  }, [conversationId, isLoading, speak, onIntakeComplete])
 
-  // Initialize: auto-start intake or load last chat
+  // Initialize
   useEffect(() => {
     if (hasInitialized.current) return
     hasInitialized.current = true
-
     if (type === 'intake') {
       sendMessage('', true)
     } else {
-      // Load most recent conversation
       fetch('/api/conversation')
-        .then((r) => r.json())
-        .then((data) => {
+        .then(r => r.json())
+        .then(data => {
           if (data?.messages?.length) {
             setConversationId(data.id)
-            setMessages(
-              data.messages.map((m: { role: 'user' | 'assistant'; content: string }) => ({
-                role: m.role,
-                content: m.content,
-              }))
-            )
+            setMessages(data.messages.map((m: { role: 'user' | 'assistant'; content: string }) => ({
+              role: m.role, content: m.content,
+            })))
           }
         })
         .catch(() => {})
@@ -251,150 +207,192 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   }, [type, sendMessage])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage(input)
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input) }
   }
 
-  const stopSpeaking = () => {
-    if (typeof window !== 'undefined') {
-      window.speechSynthesis.cancel()
-    }
+  // ─── Penny avatar ──────────────────────────────────────────────────────────
+  const PennyAvatar = ({ size = 'sm' }: { size?: 'sm' | 'lg' }) => {
+    const dim = size === 'lg' ? 'w-10 h-10' : 'w-7 h-7'
+    const txt = size === 'lg' ? 'text-base' : 'text-xs'
+    return avatarImgError ? (
+      <div
+        className={`${dim} rounded-full flex items-center justify-center text-white font-semibold ${txt} flex-shrink-0 shadow-md`}
+        style={{ background: `linear-gradient(135deg, ${C.blue}, ${C.blueDark})` }}
+      >P</div>
+    ) : (
+      <img
+        src="/penny-avatar.png"
+        onError={() => setAvatarImgError(true)}
+        className={`${dim} rounded-full object-cover flex-shrink-0 shadow-md`}
+        alt="Penny"
+      />
+    )
   }
 
-  return (
-    <div className="flex flex-col h-screen" style={{ background: '#FAF8F5' }}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 bg-white border-b border-stone-100 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div
-            className="w-9 h-9 rounded-full flex items-center justify-center text-white font-semibold text-sm shadow-sm"
-            style={{ background: 'linear-gradient(135deg, #F59E0B, #D97706)' }}
-          >
-            P
-          </div>
-          <div>
-            <h1 className="font-semibold text-stone-800 leading-tight">Penny</h1>
-            <p className="text-xs text-stone-400">
-              {type === 'intake' ? 'Getting to know you' : 'Your personal assistant'}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={stopSpeaking}
-            className="text-xs px-2.5 py-1.5 rounded-lg text-stone-400 hover:text-stone-600 hover:bg-stone-100 transition-colors"
-            title="Stop speaking"
-          >
-            ◼
-          </button>
-          <button
-            onClick={() => setTtsEnabled(!ttsEnabled)}
-            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-              ttsEnabled
-                ? 'bg-amber-50 border-amber-200 text-amber-700'
-                : 'bg-stone-100 border-stone-200 text-stone-400'
-            }`}
-          >
-            {ttsEnabled ? '🔊 Voice on' : '🔇 Voice off'}
-          </button>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            {msg.content === '— session closed —' ? (
-              <div className="w-full flex items-center gap-3 py-2">
-                <div className="flex-1 h-px bg-stone-200" />
-                <span className="text-xs text-stone-400 whitespace-nowrap">session closed</span>
-                <div className="flex-1 h-px bg-stone-200" />
-              </div>
-            ) : null}
-            {msg.content !== '— session closed —' && msg.role === 'assistant' && (
-              <div
-                className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0 mb-0.5 shadow-sm"
-                style={{ background: 'linear-gradient(135deg, #F59E0B, #D97706)' }}
-              >
-                P
-              </div>
-            )}
-
-            {msg.content !== '— session closed —' && <div
-              className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-                msg.role === 'assistant'
-                  ? 'bg-white border border-stone-200 text-stone-700 rounded-bl-sm shadow-sm'
-                  : 'text-white rounded-br-sm shadow-sm'
-              }`}
-              style={
-                msg.role === 'user'
-                  ? { background: 'linear-gradient(135deg, #F59E0B, #D97706)' }
-                  : {}
-              }
-            >
-              {msg.content ? (
-                <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
-              ) : msg.streaming ? (
-                <span className="flex gap-1 items-center h-4 px-1">
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-stone-300 animate-bounce"
-                    style={{ animationDelay: '0ms' }}
-                  />
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-stone-300 animate-bounce"
-                    style={{ animationDelay: '160ms' }}
-                  />
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-stone-300 animate-bounce"
-                    style={{ animationDelay: '320ms' }}
-                  />
-                </span>
-              ) : null}
-            </div>}
-          </div>
+  // ─── Thinking indicator ────────────────────────────────────────────────────
+  const ThinkingIndicator = () =>
+    thinkingImgError ? (
+      <span className="flex gap-1.5 items-center h-5 px-1">
+        {[0, 160, 320].map(delay => (
+          <span key={delay} className="w-2 h-2 rounded-full animate-bounce"
+            style={{ background: C.blue, animationDelay: `${delay}ms` }} />
         ))}
-        <div ref={messagesEndRef} />
+      </span>
+    ) : (
+      <img
+        src="/penny-thinking.png"
+        onError={() => setThinkingImgError(true)}
+        className="w-10 h-10 object-contain animate-pulse"
+        alt="Penny is thinking"
+      />
+    )
+
+  // ─── Render ────────────────────────────────────────────────────────────────
+  return (
+    <div className="relative flex flex-col h-screen overflow-hidden" style={{ background: C.base }}>
+
+      {/* Faded background image */}
+      <div className="fixed inset-0 z-0 pointer-events-none select-none" aria-hidden>
+        <div style={{
+          position: 'absolute', inset: 0,
+          backgroundImage: 'url(/penny-bg.png)',
+          backgroundSize: '65%',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+          opacity: 0.055,
+          filter: 'blur(6px) saturate(0.6)',
+        }} />
       </div>
 
-      {/* Input */}
-      <div className="bg-white border-t border-stone-100 px-4 py-3">
-        <div className="flex items-end gap-2 max-w-2xl mx-auto">
-          <VoiceControls
-            onTranscript={(text) => setInput((prev) => (prev ? prev + ' ' + text : text))}
-            disabled={isLoading}
-          />
-          <div className="flex-1">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={isLoading ? 'Penny is thinking...' : 'Type or tap the mic...'}
-              disabled={isLoading}
-              rows={1}
-              className="w-full resize-none rounded-xl border border-stone-200 px-4 py-2.5 text-sm text-stone-700 placeholder-stone-400 focus:outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100 disabled:bg-stone-50 disabled:text-stone-400 transition-colors"
-              style={{ minHeight: '44px', maxHeight: '128px' }}
-            />
+      {/* Main layout */}
+      <div className="relative z-10 flex flex-col h-full">
+
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-5 py-3.5 shadow-xl flex-shrink-0"
+          style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}
+        >
+          <div className="flex items-center gap-3">
+            <PennyAvatar size="lg" />
+            <div>
+              <h1 className="font-semibold leading-tight" style={{ color: C.text }}>Penny</h1>
+              <p className="text-xs" style={{ color: C.textMuted }}>
+                {type === 'intake' ? 'Getting to know you' : 'Your personal assistant'}
+              </p>
+            </div>
           </div>
-          <button
-            onClick={() => sendMessage(input)}
-            disabled={isLoading || !input.trim()}
-            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 disabled:opacity-30 hover:scale-105 active:scale-95 shadow-sm"
-            style={{ background: 'linear-gradient(135deg, #F59E0B, #D97706)' }}
-          >
-            <svg className="w-4 h-4 text-white rotate-90" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </svg>
-          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => typeof window !== 'undefined' && window.speechSynthesis.cancel()}
+              className="text-xs px-2.5 py-1.5 rounded-lg transition-colors"
+              style={{ color: C.textMuted }}
+              title="Stop speaking"
+            >◼</button>
+            <button
+              onClick={() => setTtsEnabled(t => !t)}
+              className="text-xs px-3 py-1.5 rounded-full border transition-colors"
+              style={ttsEnabled
+                ? { background: 'rgba(255,105,180,0.12)', borderColor: C.borderPink, color: C.pink }
+                : { background: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)', color: C.textMuted }
+              }
+            >{ttsEnabled ? '🔊 Voice on' : '🔇 Voice off'}</button>
+          </div>
         </div>
-        <p className="text-center text-xs text-stone-300 mt-2">
-          Enter to send · Shift+Enter for new line
-        </p>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
+          {messages.map((msg, i) => {
+            // Session divider
+            if (msg.content === '— session closed —') {
+              return (
+                <div key={i} className="flex items-center gap-3 py-2 px-2">
+                  <div className="flex-1 h-px" style={{ background: C.borderPink }} />
+                  <span className="text-xs whitespace-nowrap" style={{ color: C.textMuted }}>session closed</span>
+                  <div className="flex-1 h-px" style={{ background: C.borderPink }} />
+                </div>
+              )
+            }
+
+            const isAssistant = msg.role === 'assistant'
+            return (
+              <div key={i} className={`flex items-end gap-2 ${isAssistant ? 'justify-start' : 'justify-end'}`}>
+                {isAssistant && <div className="mb-0.5 flex-shrink-0"><PennyAvatar /></div>}
+
+                <div
+                  className="max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-md"
+                  style={isAssistant ? {
+                    background: C.panel,
+                    border: `1px solid ${C.border}`,
+                    color: C.text,
+                    borderBottomLeftRadius: '4px',
+                  } : {
+                    background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})`,
+                    color: 'white',
+                    borderBottomRightRadius: '4px',
+                  }}
+                >
+                  {msg.content ? (
+                    <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+                  ) : msg.streaming ? (
+                    <ThinkingIndicator />
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input */}
+        <div
+          className="px-4 py-3 flex-shrink-0"
+          style={{ background: C.panel, borderTop: `1px solid ${C.border}` }}
+        >
+          <div className="flex items-end gap-2 max-w-2xl mx-auto">
+            <VoiceControls
+              onTranscript={text => setInput(prev => prev ? prev + ' ' + text : text)}
+              disabled={isLoading}
+            />
+            <div className="flex-1">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isLoading ? 'Penny is thinking…' : 'Type or tap the mic…'}
+                disabled={isLoading}
+                rows={1}
+                className="w-full resize-none rounded-xl px-4 py-2.5 text-sm transition-colors"
+                style={{
+                  background: C.base,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  minHeight: '44px',
+                  maxHeight: '128px',
+                  outline: 'none',
+                  caretColor: C.blue,
+                }}
+                onFocus={e => e.target.style.borderColor = C.blue}
+                onBlur={e => e.target.style.borderColor = C.border}
+              />
+            </div>
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={isLoading || !input.trim()}
+              className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 disabled:opacity-25 hover:scale-105 active:scale-95 shadow-md"
+              style={{ background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})` }}
+            >
+              <svg className="w-4 h-4 text-white rotate-90" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </div>
+          <p className="text-center text-xs mt-2" style={{ color: C.textMuted }}>
+            Enter to send · Shift+Enter for new line
+          </p>
+        </div>
+
       </div>
     </div>
   )
