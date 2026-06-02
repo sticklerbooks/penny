@@ -25,12 +25,6 @@ interface CallModeProps {
 }
 
 // ─── Speech recognition ───────────────────────────────────────────────────────
-declare global {
-  interface Window {
-    SpeechRecognition: typeof SpeechRecognition
-    webkitSpeechRecognition: typeof SpeechRecognition
-  }
-}
 
 export default function CallMode({
   conversationId,
@@ -57,7 +51,8 @@ export default function CallMode({
   // ── Speech → text ──────────────────────────────────────────────────────────
   const startListening = useCallback(() => {
     if (!activeRef.current) return
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR: (new () => SpeechRecognition) | undefined = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SR) { setSupported(false); return }
 
     const r = new SR()
