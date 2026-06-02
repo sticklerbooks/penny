@@ -24,7 +24,35 @@ interface CallModeProps {
   avatarImgError: boolean
 }
 
-// ─── Speech recognition ───────────────────────────────────────────────────────
+// ─── Minimal Web Speech API types ────────────────────────────────────────────
+// The DOM lib's built-in types are inconsistent across TS versions, so we
+// declare just what we use.
+interface SpeechResultAlt { transcript: string }
+interface SpeechResult { isFinal: boolean; 0: SpeechResultAlt }
+interface SpeechResultEvent {
+  resultIndex: number
+  results: ArrayLike<SpeechResult>
+}
+interface SpeechErrorEvent { error: string }
+interface SpeechRecognizer {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((e: SpeechResultEvent) => void) | null
+  onend: (() => void) | null
+  onerror: ((e: SpeechErrorEvent) => void) | null
+  start: () => void
+  stop: () => void
+}
+type SpeechRecognizerCtor = new () => SpeechRecognizer
+
+function getSpeechRecognizer(): SpeechRecognizerCtor | undefined {
+  const w = window as unknown as {
+    SpeechRecognition?: SpeechRecognizerCtor
+    webkitSpeechRecognition?: SpeechRecognizerCtor
+  }
+  return w.SpeechRecognition || w.webkitSpeechRecognition
+}
 
 export default function CallMode({
   conversationId,
@@ -38,21 +66,28 @@ export default function CallMode({
   const [pennyText, setPennyText]     = useState('')
   const [supported, setSupported]     = useState(true)
 
-  const recognitionRef  = useRef<SpeechRecognition | null>(null)
+  const recognitionRef  = useRef<SpeechRecognizer | null>(null)
   const silenceTimer    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const accumulated     = useRef('')
   const callStateRef    = useRef<CallState>('listening')
   const audioRef        = useRef<HTMLAudioElement | null>(null)
   const activeRef       = useRef(true) // false when call ends
 
-  // Keep ref in sync with state (needed in callbacks)
+  // Refs that keep the latest values/functions available inside the long-lived
+  // speech-recognition callbacks, avoiding stale closures (e.g. a null
+  // conversationId captured on first render forking the conversation).
+  const conversationIdRef = useRef(conversationId)
+  const handleSendRef     = useRef<(text: string) => void>(() => {})
+  const startListeningRef = useRef<() => void>(() => {})
+  const speakRef          = useRef<(text: string) => Promise<void>>(async () => {})
+
   useEffect(() => { callStateRef.current = callState }, [callState])
+  useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
 
   // ── Speech → text ──────────────────────────────────────────────────────────
   const startListening = useCallback(() => {
     if (!activeRef.current) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR: (new () => SpeechRecognition) | undefined = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    const SR = getSpeechRecognizer()
     if (!SR) { setSupported(false); return }
 
     const r = new SR()
@@ -65,14 +100,12 @@ export default function CallMode({
       if (!activeRef.current) return
       clearTimeout(silenceTimer.current ?? undefined)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const e = event as any
       let finalChunk = ''
       let interim    = ''
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript
-        if (e.results[i].isFinal) finalChunk += t
-        else interim += t
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) finalChunk += result[0].transcript
+        else interim += result[0].transcript
       }
       accumulated.current += finalChunk
       setTranscript(accumulated.current + interim)
@@ -83,7 +116,7 @@ export default function CallMode({
         if (text && callStateRef.current === 'listening') {
           accumulated.current = ''
           setTranscript('')
-          handleSend(text)
+          handleSendRef.current(text)
         }
       }, 1500)
     }
@@ -93,7 +126,7 @@ export default function CallMode({
       if (activeRef.current && callStateRef.current === 'listening') {
         setTimeout(() => {
           if (activeRef.current && callStateRef.current === 'listening') {
-            r.start()
+            try { r.start() } catch { /* already started */ }
           }
         }, 200)
       }
@@ -103,58 +136,14 @@ export default function CallMode({
       if (e.error === 'not-allowed') setSupported(false)
     }
 
-    r.start()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    try { r.start() } catch { /* already started */ }
+  }, [])
 
   const stopListening = useCallback(() => {
     clearTimeout(silenceTimer.current ?? undefined)
     recognitionRef.current?.stop()
     recognitionRef.current = null
   }, [])
-
-  // ── Text → Penny response ──────────────────────────────────────────────────
-  const handleSend = useCallback(async (text: string) => {
-    if (!activeRef.current) return
-    stopListening()
-    setCallState('thinking')
-    onMessage('user', text)
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, conversationId }),
-      })
-      if (!res.body) throw new Error('No response')
-
-      const reader  = res.body.getReader()
-      const decoder = new TextDecoder()
-      let fullText  = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        for (const line of decoder.decode(value).split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const data = JSON.parse(line.slice(6))
-            if (data.text) fullText += data.text
-            if (data.done) {
-              if (data.conversationId) onConversationId(data.conversationId)
-              const clean = data.cleanText ?? fullText
-              onMessage('assistant', clean)
-              setPennyText(clean)
-              await speak(clean)
-            }
-          } catch { /* skip */ }
-        }
-      }
-    } catch (err) {
-      console.error('[call] chat error:', err)
-      setCallState('listening')
-      startListening()
-    }
-  }, [conversationId, stopListening, startListening, onConversationId, onMessage])
 
   // ── Response → audio ───────────────────────────────────────────────────────
   const speak = useCallback(async (text: string) => {
@@ -186,9 +175,63 @@ export default function CallMode({
     if (activeRef.current) {
       setPennyText('')
       setCallState('listening')
-      startListening()
+      startListeningRef.current()
     }
-  }, [startListening])
+  }, [])
+
+  // ── Text → Penny response ──────────────────────────────────────────────────
+  const handleSend = useCallback(async (text: string) => {
+    if (!activeRef.current) return
+    stopListening()
+    setCallState('thinking')
+    onMessage('user', text)
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, conversationId: conversationIdRef.current }),
+      })
+      if (!res.body) throw new Error('No response')
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let fullText  = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        for (const line of decoder.decode(value).split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (data.text) fullText += data.text
+            if (data.done) {
+              if (data.conversationId) {
+                conversationIdRef.current = data.conversationId
+                onConversationId(data.conversationId)
+              }
+              const clean = data.cleanText ?? fullText
+              onMessage('assistant', clean)
+              setPennyText(clean)
+              await speakRef.current(clean)
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch (err) {
+      console.error('[call] chat error:', err)
+      setCallState('listening')
+      startListeningRef.current()
+    }
+  }, [stopListening, onConversationId, onMessage])
+
+  // Keep refs pointed at the latest function instances
+  useEffect(() => {
+    handleSendRef.current     = handleSend
+    startListeningRef.current = startListening
+    speakRef.current          = speak
+  }, [handleSend, startListening, speak])
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   useEffect(() => {
