@@ -307,9 +307,9 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             if (msg.content === '— session closed —') {
               return (
                 <div key={i} className="flex items-center gap-3 py-2 px-2">
-                  <div className="flex-1 h-px" style={{ background: C.borderPink }} />
+                  <div className="flex-1 h-px" style={{ background: C.border }} />
                   <span className="text-xs whitespace-nowrap" style={{ color: C.textMuted }}>session closed</span>
-                  <div className="flex-1 h-px" style={{ background: C.borderPink }} />
+                  <div className="flex-1 h-px" style={{ background: C.border }} />
                 </div>
               )
             }
