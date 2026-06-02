@@ -61,7 +61,7 @@ export default function CallMode({
     r.lang            = 'en-US'
     recognitionRef.current = r
 
-    r.onresult = (event) => {
+    r.onresult = (event: SpeechRecognitionEvent & { resultIndex: number }) => {
       if (!activeRef.current) return
       clearTimeout(silenceTimer.current ?? undefined)
 
