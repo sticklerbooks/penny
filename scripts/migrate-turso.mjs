@@ -117,6 +117,10 @@ const alters = [
   `ALTER TABLE Memory ADD COLUMN lastReferenced DATETIME`,
   `ALTER TABLE Profile ADD COLUMN emailCalendarSummary TEXT`,
   `ALTER TABLE Profile ADD COLUMN emailCalendarCachedAt DATETIME`,
+  `ALTER TABLE Profile ADD COLUMN aboutUser TEXT`,
+  `ALTER TABLE Profile ADD COLUMN aboutUserUpdatedAt DATETIME`,
+  `ALTER TABLE Profile ADD COLUMN aboutSelf TEXT`,
+  `ALTER TABLE Profile ADD COLUMN aboutSelfUpdatedAt DATETIME`,
 ]
 
 console.log('Creating tables in Turso...')

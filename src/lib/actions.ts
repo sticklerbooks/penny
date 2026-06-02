@@ -50,6 +50,8 @@ export type PennyAction =
   | { kind: 'cancel_sms'; id: string }
   | { kind: 'search_email'; query: string; label?: string }
   | { kind: 'search_calendar'; query: string; label?: string }
+  | { kind: 'update_user_profile'; content: string }
+  | { kind: 'update_self_notes'; content: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -68,6 +70,8 @@ const SCHEDULE_SMS_RE = /<schedule_sms\s+([^>]*)>([\s\S]*?)<\/schedule_sms>/gi
 const CANCEL_SMS_RE = /<cancel_sms\s+id=["']([^"']+)["']\s*\/?>/gi
 const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
+const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_profile>/gi
+const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -245,6 +249,20 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'search_calendar', query: attrs.query, label: attrs.label })
   }
 
+  // update_user_profile
+  for (const m of text.matchAll(UPDATE_USER_PROFILE_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_user_profile', content })
+  }
+
+  // update_self_notes
+  for (const m of text.matchAll(UPDATE_SELF_NOTES_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_self_notes', content })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -263,6 +281,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(CANCEL_SMS_RE, '')
     .replace(SEARCH_EMAIL_RE, '')
     .replace(SEARCH_CALENDAR_RE, '')
+    .replace(UPDATE_USER_PROFILE_RE, '')
+    .replace(UPDATE_SELF_NOTES_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -413,6 +433,28 @@ export async function executeActions(
         case 'cancel_sms':
           await prisma.scheduledMessage.delete({ where: { id: action.id } }).catch(() => {})
           break
+
+        case 'update_user_profile': {
+          const profile = await prisma.profile.findFirst()
+          if (profile) {
+            await prisma.profile.update({
+              where: { id: profile.id },
+              data: { aboutUser: action.content, aboutUserUpdatedAt: new Date() },
+            })
+          }
+          break
+        }
+
+        case 'update_self_notes': {
+          const profile = await prisma.profile.findFirst()
+          if (profile) {
+            await prisma.profile.update({
+              where: { id: profile.id },
+              data: { aboutSelf: action.content, aboutSelfUpdatedAt: new Date() },
+            })
+          }
+          break
+        }
       }
     } catch (e) {
       // Log but don't crash — one bad action shouldn't kill the response

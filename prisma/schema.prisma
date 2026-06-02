@@ -19,6 +19,12 @@ model Profile {
   emailCalendarSummary  String?
   emailCalendarCachedAt DateTime?
 
+  // Living documents — full overwrites, updated at least weekly by Penny
+  aboutUser          String?
+  aboutUserUpdatedAt DateTime?
+  aboutSelf          String?
+  aboutSelfUpdatedAt DateTime?
+
   memories          Memory[]
   conversations     Conversation[]
   tasks             Task[]

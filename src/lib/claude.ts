@@ -136,6 +136,24 @@ export function buildSystemPrompt(
     day: 'numeric',
   })
 
+  // About-user document with staleness indicator
+  const aboutUserAge = profile?.aboutUserUpdatedAt
+    ? Math.floor((Date.now() - new Date(profile.aboutUserUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const aboutUserStale = aboutUserAge === null || aboutUserAge >= 7
+  const aboutUserSection = profile?.aboutUser
+    ? `${profile.aboutUser}\n\n  ↳ Last updated: ${aboutUserAge === 0 ? 'today' : aboutUserAge === 1 ? 'yesterday' : `${aboutUserAge} days ago`}${aboutUserStale ? ' ⚠️ UPDATE DUE' : ''}`
+    : `  (not yet written — write this during or after intake)\n\n  ↳ UPDATE DUE`
+
+  // Self-notes with staleness indicator
+  const aboutSelfAge = profile?.aboutSelfUpdatedAt
+    ? Math.floor((Date.now() - new Date(profile.aboutSelfUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const aboutSelfStale = aboutSelfAge === null || aboutSelfAge >= 7
+  const aboutSelfSection = profile?.aboutSelf
+    ? `${profile.aboutSelf}\n\n  ↳ Last updated: ${aboutSelfAge === 0 ? 'today' : aboutSelfAge === 1 ? 'yesterday' : `${aboutSelfAge} days ago`}${aboutSelfStale ? ' ⚠️ UPDATE DUE' : ''}`
+    : `  (not yet written — reflect and write this when you're ready)\n\n  ↳ UPDATE DUE`
+
   const intakeSection = isIntake
     ? `
 ---
@@ -328,6 +346,32 @@ The notification goes to ${userName}'s phone via Pushover. Write it like a messa
 
 If plans change and a scheduled message is no longer relevant, cancel it. The id is shown in the "Scheduled Messages" section of your context.
 
+────────────────────────────────────────
+13. UPDATE YOUR PICTURE OF ${userName.toUpperCase()} — weekly mandatory refresh
+────────────────────────────────────────
+<update_user_profile>
+Adam is a bookkeeper running his own practice. He's in his early 30s, lives alone, and tends to work in bursts — highly productive stretches followed by low-energy recovery periods. He has three active bookkeeping clients... [etc]
+</update_user_profile>
+
+This is a **full overwrite** — write the complete, current document every time. No appending.
+
+This document is your living picture of who ${userName} is: their life situation, work, patterns, what they're currently carrying, what they need from you. It should read like a thoughtful briefing you'd give someone stepping in to help them.
+
+**Update this every session where it shows ⚠️ UPDATE DUE** (7+ days since last update). Also update it proactively if something significant has changed — a new project, a major life development, a shift in priorities — even if it's not yet "due."
+
+────────────────────────────────────────
+14. UPDATE YOUR SELF-NOTES — weekly reflection
+────────────────────────────────────────
+<update_self_notes>
+I've been good at noticing when Adam is avoiding things and naming it directly. Where I've been falling short: I sometimes over-schedule notifications and he has to ask me to tone it down... [etc]
+</update_self_notes>
+
+Full overwrite. Write in first person.
+
+This is your continuity of identity — who you are as Penny, what you've been doing well and where you're falling short, what you've learned about how to support ${userName} specifically, anything you want to carry forward about yourself.
+
+**Update this every session where it shows ⚠️ UPDATE DUE.** Also update it whenever you feel something significant has shifted in how you understand yourself or your relationship with ${userName}.
+
 ═══════════════════════════════════════════════════════════════════════
 SYSTEM HYGIENE (important)
 ═══════════════════════════════════════════════════════════════════════
@@ -339,6 +383,7 @@ Be a good steward of your own memory. ${userName} does not want a cluttered, red
 - **Old completed tasks** sit silently in the database (you only see active ones), so they don't clog you — leave them alone.
 - **Stale notes** (notes from months ago you never resolved) should be deleted, not left to rot.
 - **Client records** should be kept current. If ${userName} says a client is no longer active, update their status. If a prospect didn't pan out, mark them inactive rather than deleting (history is useful).
+- **aboutUser and aboutSelf** — if either shows ⚠️ UPDATE DUE below, update it during this session. Don't wait until the end; any point in the conversation is fine. The goal is a current, accurate snapshot — not a longer and longer list. Rewrite it fresh.
 
 This isn't busywork. A clean system means clearer thinking and better support for ${userName}.
 
@@ -359,7 +404,13 @@ YOUR CONTEXT FOR THIS CONVERSATION
 📌 NOTES YOU LEFT FOR YOURSELF (from previous sessions):
 ${notesText}
 
-👤 WHAT YOU KNOW ABOUT ${userName.toUpperCase()}:
+🧑 YOUR CURRENT PICTURE OF ${userName.toUpperCase()} (update weekly):
+${aboutUserSection}
+
+🪞 YOUR SELF-NOTES (update weekly):
+${aboutSelfSection}
+
+👤 SPECIFIC MEMORIES ABOUT ${userName.toUpperCase()}:
 ${memoriesText}
 
 🏢 CLIENTS (${activeClients.length} active/onboarding):
