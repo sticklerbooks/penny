@@ -75,10 +75,11 @@ export default function CallMode({
   // Refs that keep the latest values/functions available inside the long-lived
   // speech-recognition callbacks, avoiding stale closures (e.g. a null
   // conversationId captured on first render forking the conversation).
-  const conversationIdRef = useRef(conversationId)
-  const handleSendRef     = useRef<(text: string) => void>(() => {})
-  const startListeningRef = useRef<() => void>(() => {})
-  const speakRef          = useRef<(text: string) => Promise<void>>(async () => {})
+  const conversationIdRef  = useRef(conversationId)
+  const activeModalityRef  = useRef<string>('pa') // tracks which modality is speaking
+  const handleSendRef      = useRef<(text: string) => void>(() => {})
+  const startListeningRef  = useRef<() => void>(() => {})
+  const speakRef           = useRef<(text: string) => Promise<void>>(async () => {})
 
   useEffect(() => { callStateRef.current = callState }, [callState])
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
@@ -153,7 +154,7 @@ export default function CallMode({
       const res = await fetch('/api/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, modality: activeModalityRef.current }),
       })
       if (!res.ok) throw new Error('TTS failed')
 
@@ -209,6 +210,15 @@ export default function CallMode({
               if (data.conversationId) {
                 conversationIdRef.current = data.conversationId
                 onConversationId(data.conversationId)
+              }
+              if (data.activeModality) {
+                activeModalityRef.current = data.activeModality
+              }
+              // Shift or session closed — reset conversation so next turn starts fresh
+              if (data.shiftComplete || data.sessionComplete) {
+                conversationIdRef.current = null
+                activeModalityRef.current = 'pa'
+                onConversationId('')
               }
               const clean = data.cleanText ?? fullText
               onMessage('assistant', clean)

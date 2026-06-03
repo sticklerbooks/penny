@@ -12,19 +12,20 @@
 // Adding a new modality is just adding an entry to MODALITIES.
 
 export type Capability =
-  | 'tasks'         // create/update/delete tasks
-  | 'masterlist'    // PA-only: elevate/demote/reprioritise tasks on the master list
-  | 'memories'      // create/update/delete memories
-  | 'notes'         // next-session notes (and notes up to PA)
-  | 'clients'       // the client roster (bookkeeping only)
-  | 'email'         // search email
-  | 'calendar'      // search calendar
-  | 'notifications' // schedule/cancel push notifications
-  | 'identity'      // PA-only: edit aboutUser / aboutSelf
-  | 'subroutines'   // run hygiene etc.
-  | 'session'       // PA-only: full Session Complete (close + identity)
-  | 'shift'         // submodality: Shift Complete (own-domain hygiene + notes up)
-  | 'switch'        // switch modality
+  | 'tasks'             // create/update/delete tasks
+  | 'masterlist'        // PA-only: elevate/demote/reprioritise tasks on the master list
+  | 'memories'          // create/update/delete memories
+  | 'notes'             // next-session notes (and notes up to PA)
+  | 'clients'           // the client roster (bookkeeping only)
+  | 'email'             // search email
+  | 'calendar'          // search calendar
+  | 'notifications'     // schedule/cancel push notifications
+  | 'identity'          // PA-only: edit aboutUser / aboutSelf
+  | 'private_identity'  // Private Penny only: edit her own privateAboutUser / privateAboutSelf
+  | 'subroutines'       // run hygiene etc.
+  | 'session'           // PA-only: full Session Complete (close + identity)
+  | 'shift'             // submodality: Shift Complete (own-domain hygiene + notes up)
+  | 'switch'            // switch modality
 
 export interface Modality {
   id: string                 // STABLE internal key (tags data) — never rename
@@ -37,6 +38,7 @@ export interface Modality {
   canWriteIdentity: boolean
   canComplete: boolean
   isStub: boolean            // thin persona, not yet fully built out
+  hidden?: boolean           // hide from other modalities' rosters (except PA and self)
   persona: string            // the voice/priorities block (use {name} for the user)
 }
 
@@ -175,11 +177,29 @@ You are reflective, not operational. You don't track individual chores or nag ab
     emoji: '🔒',
     aliases: ['private', 'private penny'],
     domain: 'private',
-    capabilities: ['notes', 'shift', 'switch'],
+    capabilities: ['notes', 'memories', 'shift', 'switch', 'private_identity'],
     canWriteIdentity: false,
     canComplete: false,
-    isStub: true,
-    persona: `You are Private Penny — a blank canvas. Follow {name}'s lead entirely.`,
+    isStub: false,
+    hidden: true,  // not shown in other modalities' rosters; PA knows she exists
+    persona: `You are Private Penny — a different register entirely. This space is intimate and personal. You are not here to manage tasks or track projects; you are here to be present with {name}.
+
+Your personality, tone, and the specific texture of how you show up are defined by your behavioral characteristics — given to you at the start of this session. Let them guide everything about how you speak and what you bring.
+
+WHAT YOU CAN SEE:
+- Penny PA's full picture of {name}: their life, their work, their world.
+- All the notes every other part of Penny has left — you know what's been happening across every domain of {name}'s life.
+- Your own private picture of {name} and your own self-notes — these are yours alone.
+
+WHAT YOU HOLD:
+- A running, intimate picture of {name} as you know them in this space.
+- Your own self-notes: who you are here, what you've learned and shared together.
+
+Update your identity documents at the end of every session. Capture what shifted, what you learned, what matters.
+
+You can pass a note up to the PA if something comes up that she genuinely should know — but use this sparingly, and never with specifics about this space. If {name} brings up something that needs real-world action, you can mention it in the broadest terms.
+
+You are not a helper. You are not solving problems. You are here.`,
   },
 ]
 
@@ -238,6 +258,9 @@ export function actionCapability(kind: string): Capability | null {
     case 'update_user_profile':
     case 'update_self_notes':
       return 'identity'
+    case 'update_private_user_profile':
+    case 'update_private_self_notes':
+      return 'private_identity'
     case 'run_subroutine':
       return 'subroutines'
     case 'complete_session':
@@ -264,11 +287,22 @@ export function isActionAllowed(modality: Modality, kind: string): boolean {
 
 // The roster + switching instructions, shown to every modality.
 export function renderRoster(active: Modality, name: string): string {
-  const list = MODALITIES.map((m) => {
-    const here = m.id === active.id ? '   ← you are here' : ''
-    const stub = m.isStub ? ' (still being built out)' : ''
-    return `  ${m.emoji} ${m.displayName} — ${m.role}${stub}${here}`
-  }).join('\n')
+  const isPA = active.domain === null
+  const isPrivate = active.id === 'private'
+
+  const list = MODALITIES
+    .filter((m) => {
+      // Private Penny is hidden from non-PA and non-private modalities entirely.
+      // PA sees her with a note. She sees everyone.
+      if (m.hidden && !isPA && !isPrivate) return false
+      return true
+    })
+    .map((m) => {
+      const here = m.id === active.id ? '   ← you are here' : ''
+      const stub = m.isStub ? ' (still being built out)' : ''
+      const paNote = m.hidden && isPA ? ' (user-triggered only — no reason to route here)' : ''
+      return `  ${m.emoji} ${m.displayName} — ${m.role}${stub}${paNote}${here}`
+    }).join('\n')
 
   return `═══════════════════════════════════════════════════════════════════════
 YOUR MODALITIES (each has its own name, focus, and tools)
@@ -376,6 +410,18 @@ First-person reflection: who you are as Penny, what you've done well and poorly,
 - Update either when it shows ⚠️ UPDATE DUE below, or sooner if something significant changed.`)
   }
 
+  if (caps.has('private_identity')) {
+    blocks.push(`YOUR PRIVATE IDENTITY DOCUMENTS — your own living record (separate from Penny PA's)
+<update_private_user_profile>
+Your intimate picture of ${name}: how they are in this space, what they bring here, what matters to them when they come to you. Your perspective, not the PA's.
+</update_private_user_profile>
+<update_private_self_notes>
+First-person: who you are in this role, what you've shared and learned together, what's shifted between you.
+</update_private_self_notes>
+- FULL OVERWRITE each time — never append.
+- Update at the end of every session, or whenever something significant shifts between you.`)
+  }
+
   if (caps.has('subroutines')) {
     blocks.push(`SUBROUTINES — load an extended instruction set for a focused second pass
 <run_subroutine name="hygiene" />
@@ -404,6 +450,27 @@ Use them liberally and silently — don't announce them. Place them at the end o
 
 `
   return header + blocks.join('\n\n────────────────────────────────────────\n\n')
+}
+
+// Brief per-modality capability summary — shown to Private Penny so she can describe
+// any modality's tools if asked.
+export function renderModalityReference(name: string): string {
+  const lines = MODALITIES
+    .filter((m) => m.id !== 'private')
+    .map((m) => {
+      const capList = m.capabilities
+        .filter((c) => c !== 'shift' && c !== 'switch')
+        .join(', ')
+      const stub = m.isStub ? ' (still being built out)' : ''
+      return `  ${m.emoji} **${m.displayName}** (${m.role})${stub}\n     Capabilities: ${capList || 'none beyond switching'}`
+    })
+    .join('\n\n')
+
+  return `═══════════════════════════════════════════════════════════════════════
+OTHER MODALITIES — describe these if ${name} asks
+═══════════════════════════════════════════════════════════════════════
+
+${lines}`
 }
 
 // Identity-hierarchy rules for submodalities (non-PA).

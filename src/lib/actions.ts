@@ -52,6 +52,8 @@ export type PennyAction =
   | { kind: 'search_calendar'; query: string; label?: string }
   | { kind: 'update_user_profile'; content: string }
   | { kind: 'update_self_notes'; content: string }
+  | { kind: 'update_private_user_profile'; content: string }
+  | { kind: 'update_private_self_notes'; content: string }
   | { kind: 'run_subroutine'; name: string }
   | { kind: 'complete_session' }
   | { kind: 'shift_complete' }
@@ -76,6 +78,8 @@ const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
 const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_profile>/gi
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
+const UPDATE_PRIVATE_USER_PROFILE_RE = /<update_private_user_profile>([\s\S]*?)<\/update_private_user_profile>/gi
+const UPDATE_PRIVATE_SELF_NOTES_RE = /<update_private_self_notes>([\s\S]*?)<\/update_private_self_notes>/gi
 const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
 const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
 const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
@@ -273,6 +277,20 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'update_self_notes', content })
   }
 
+  // update_private_user_profile
+  for (const m of text.matchAll(UPDATE_PRIVATE_USER_PROFILE_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_private_user_profile', content })
+  }
+
+  // update_private_self_notes
+  for (const m of text.matchAll(UPDATE_PRIVATE_SELF_NOTES_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_private_self_notes', content })
+  }
+
   // run_subroutine
   for (const m of text.matchAll(RUN_SUBROUTINE_RE)) {
     const name = m[1].trim()
@@ -318,6 +336,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SEARCH_CALENDAR_RE, '')
     .replace(UPDATE_USER_PROFILE_RE, '')
     .replace(UPDATE_SELF_NOTES_RE, '')
+    .replace(UPDATE_PRIVATE_USER_PROFILE_RE, '')
+    .replace(UPDATE_PRIVATE_SELF_NOTES_RE, '')
     .replace(RUN_SUBROUTINE_RE, '')
     .replace(COMPLETE_SESSION_RE, '')
     .replace(SHIFT_COMPLETE_RE, '')
@@ -498,11 +518,29 @@ export async function executeActions(
           })
           break
 
+        case 'update_private_user_profile':
+          await prisma.profile.update({
+            where: { id: profileId },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { privateAboutUser: action.content, privateAboutUserUpdatedAt: new Date() } as any,
+          })
+          break
+
+        case 'update_private_self_notes':
+          await prisma.profile.update({
+            where: { id: profileId },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { privateAboutSelf: action.content, privateAboutSelfUpdatedAt: new Date() } as any,
+          })
+          break
+
         // Handled in route.ts before executeActions is called — no-op here
         case 'run_subroutine':
         case 'complete_session':
         case 'shift_complete':
         case 'switch_modality':
+        case 'search_email':
+        case 'search_calendar':
           break
       }
     } catch (e) {

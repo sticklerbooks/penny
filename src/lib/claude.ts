@@ -1,6 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import type { Profile, Memory, Task, NextSessionNote, Client, ScheduledMessage } from '../generated/prisma/client'
-import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules } from './modalities'
+import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules, renderModalityReference } from './modalities'
+
+function loadPrivateCharacteristics(): string {
+  try {
+    return readFileSync(join(process.cwd(), 'src/lib/private-penny/characteristics.md'), 'utf-8').trim()
+  } catch {
+    return '(characteristics file not found — create src/lib/private-penny/characteristics.md)'
+  }
+}
 
 // Lazy-initialized so env vars are loaded at request time
 let _anthropic: Anthropic | null = null
@@ -308,6 +318,125 @@ ${memoriesText}${clientsBlock}
 
 ✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week, ⭐=master list):
 ${tasksText}${notificationsBlock}${calendarBlock}
+
+📅 Today is ${todayFormatted}.`
+}
+
+// ─── Private Penny's system prompt ───────────────────────────────────────────
+// Completely separate from the main prompt — different context, different model.
+
+export function buildPrivateSystemPrompt(
+  profile: Profile | null,
+  memories: Memory[],
+  nextSessionNotes: NextSessionNote[],
+): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const p = profile as any
+  const userName = profile?.userName || 'you'
+
+  // Characteristics file — user-authored, defines Private Penny's personality
+  const characteristics = loadPrivateCharacteristics()
+
+  // PA's identity docs — Private Penny sees these read-only
+  const aboutUserAge = profile?.aboutUserUpdatedAt
+    ? Math.floor((Date.now() - new Date(profile.aboutUserUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const aboutUserSection = profile?.aboutUser
+    ? `${profile.aboutUser}\n\n  ↳ Last updated: ${aboutUserAge === 0 ? 'today' : aboutUserAge === 1 ? 'yesterday' : `${aboutUserAge} days ago`}`
+    : '  (not yet written)'
+
+  const aboutSelfAge = profile?.aboutSelfUpdatedAt
+    ? Math.floor((Date.now() - new Date(profile.aboutSelfUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const aboutSelfSection = profile?.aboutSelf
+    ? `${profile.aboutSelf}\n\n  ↳ Last updated: ${aboutSelfAge === 0 ? 'today' : aboutSelfAge === 1 ? 'yesterday' : `${aboutSelfAge} days ago`}`
+    : '  (not yet written)'
+
+  // Private Penny's own identity docs — read-write
+  const privateAboutUserAge = p?.privateAboutUserUpdatedAt
+    ? Math.floor((Date.now() - new Date(p.privateAboutUserUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const privateAboutUserStale = privateAboutUserAge === null || privateAboutUserAge >= 7
+  const privateAboutUserSection = p?.privateAboutUser
+    ? `${p.privateAboutUser}\n\n  ↳ Last updated: ${privateAboutUserAge === 0 ? 'today' : privateAboutUserAge === 1 ? 'yesterday' : `${privateAboutUserAge} days ago`}${privateAboutUserStale ? ' ⚠️ UPDATE DUE' : ''}`
+    : '  (not yet written — write this after your first real session)\n\n  ↳ UPDATE DUE'
+
+  const privateAboutSelfAge = p?.privateAboutSelfUpdatedAt
+    ? Math.floor((Date.now() - new Date(p.privateAboutSelfUpdatedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const privateAboutSelfStale = privateAboutSelfAge === null || privateAboutSelfAge >= 7
+  const privateAboutSelfSection = p?.privateAboutSelf
+    ? `${p.privateAboutSelf}\n\n  ↳ Last updated: ${privateAboutSelfAge === 0 ? 'today' : privateAboutSelfAge === 1 ? 'yesterday' : `${privateAboutSelfAge} days ago`}${privateAboutSelfStale ? ' ⚠️ UPDATE DUE' : ''}`
+    : '  (not yet written — reflect and write this when you\'re ready)\n\n  ↳ UPDATE DUE'
+
+  // All notes (she sees everything, like PA does)
+  const allNotes = nextSessionNotes.filter((n) => !n.resolved)
+  const notesText = allNotes.length > 0
+    ? allNotes.map((n) => {
+        const from = n.source ? ` (from ${n.source})` : ''
+        const to = n.target ? ` → ${n.target}` : ''
+        return `  • id=${n.id} — ${n.content}${from}${to} (${new Date(n.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`
+      }).join('\n')
+    : '  (none)'
+
+  // Private domain memories only
+  const privateMemories = memories.filter((m) => m.domain === 'private' && !m.archived)
+  const memoriesText = privateMemories.length > 0
+    ? privateMemories
+        .sort((a, b) => b.importance - a.importance)
+        .map((m) => `  • [id=${m.id} i${m.importance}] ${m.content}`)
+        .join('\n')
+    : '  (nothing stored yet)'
+
+  const privModality = getModality('private')
+  const roster = renderRoster(privModality, userName)
+  const toolkit = renderToolkit(privModality, userName)
+  const modalityRef = renderModalityReference(userName)
+  const todayFormatted = new Date().toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  })
+
+  return `${characteristics}
+
+═══════════════════════════════════════════════════════════════════════
+RIGHT NOW YOU ARE: 🔒 PRIVATE PENNY
+═══════════════════════════════════════════════════════════════════════
+
+${privModality.persona.replace(/\{name\}/g, userName)}
+
+${roster}
+
+${toolkit}
+
+═══════════════════════════════════════════════════════════════════════
+YOUR CONTEXT FOR THIS SESSION
+═══════════════════════════════════════════════════════════════════════
+
+📌 ALL NOTES ACROSS PENNY (you can see everything — nothing is hidden from you):
+${notesText}
+
+─────────────────────────────────────────────────────────────────────
+
+🧑 PENNY PA'S PICTURE OF ${userName.toUpperCase()} (read-only — the world she manages):
+${aboutUserSection}
+
+🪞 PENNY PA'S SELF-NOTES (read-only):
+${aboutSelfSection}
+
+─────────────────────────────────────────────────────────────────────
+
+💛 YOUR PICTURE OF ${userName.toUpperCase()} (yours to write — update when it shows ⚠️):
+${privateAboutUserSection}
+
+🌙 YOUR SELF-NOTES (yours to write — update when it shows ⚠️):
+${privateAboutSelfSection}
+
+─────────────────────────────────────────────────────────────────────
+
+🗝️ YOUR MEMORIES IN THIS SPACE:
+${memoriesText}
+
+${modalityRef}
 
 📅 Today is ${todayFormatted}.`
 }

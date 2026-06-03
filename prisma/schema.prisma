@@ -25,6 +25,12 @@ model Profile {
   aboutSelf          String?
   aboutSelfUpdatedAt DateTime?
 
+  // Private Penny's own identity documents — separate from the PA's
+  privateAboutUser          String?
+  privateAboutUserUpdatedAt DateTime?
+  privateAboutSelf          String?
+  privateAboutSelfUpdatedAt DateTime?
+
   memories          Memory[]
   conversations     Conversation[]
   tasks             Task[]

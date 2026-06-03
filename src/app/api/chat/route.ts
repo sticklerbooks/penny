@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
+import { getAnthropic, buildSystemPrompt, buildPrivateSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
+import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
@@ -85,17 +86,21 @@ export async function POST(req: NextRequest) {
       getEmailCalendarSummary(profile.id).catch(() => null),
     ])
 
-  let systemPrompt = buildSystemPrompt(
-    profile,
-    memories,
-    tasks,
-    nextSessionNotes,
-    clients,
-    scheduledMessages,
-    emailCalendarSummary,
-    !profile.intakeComplete,
-    activeModality
-  )
+  const isPrivateMode = activeModality === 'private'
+
+  let systemPrompt = isPrivateMode
+    ? buildPrivateSystemPrompt(profile, memories, nextSessionNotes)
+    : buildSystemPrompt(
+        profile,
+        memories,
+        tasks,
+        nextSessionNotes,
+        clients,
+        scheduledMessages,
+        emailCalendarSummary,
+        !profile.intakeComplete,
+        activeModality
+      )
 
   // Voice/call mode: she's being spoken aloud, so keep it short and natural.
   if (isVoice) {
@@ -131,31 +136,46 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
     })
   }
 
-  const stream = await getAnthropic().messages.create({
-    model: PENNY_MODEL,
-    max_tokens: 2048,
-    system: systemPrompt,
-    messages: claudeMessages,
-    stream: true,
-  })
-
   const encoder = new TextEncoder()
   let fullResponse = ''
 
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        for await (const chunk of stream) {
-          if (
-            chunk.type === 'content_block_delta' &&
-            chunk.delta.type === 'text_delta'
-          ) {
-            fullResponse += chunk.delta.text
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`
-              )
-            )
+        // ── Main response: Grok for private mode, Anthropic otherwise ──────────
+        if (isPrivateMode) {
+          const grokStream = await getGrok().chat.completions.create({
+            model: PRIVATE_PENNY_MODEL,
+            max_tokens: 2048,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              ...claudeMessages.map((m) => ({
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+              })),
+            ],
+            stream: true,
+          })
+          for await (const chunk of grokStream) {
+            const text = chunk.choices[0]?.delta?.content
+            if (text) {
+              fullResponse += text
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`))
+            }
+          }
+        } else {
+          const anthropicStream = await getAnthropic().messages.create({
+            model: PENNY_MODEL,
+            max_tokens: 2048,
+            system: systemPrompt,
+            messages: claudeMessages,
+            stream: true,
+          })
+          for await (const chunk of anthropicStream) {
+            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+              fullResponse += chunk.delta.text
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
+            }
           }
         }
 
@@ -329,7 +349,10 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           })
         }
 
-        // ── Shift Complete: a submodality wraps up, then hands back to PA ────
+        // ── Shift Complete: a submodality wraps up, conversation closes cleanly ─
+        // We close the conversation (just like session complete) so PA starts the
+        // next session with zero knowledge of this shift's message history.
+        // Only what the modality chose to remember (notes, identity docs) carries over.
         if (isShiftEnd) {
           const shiftInstruction = `SHIFT COMPLETE — wrap up your shift as ${currentModality.displayName} (${currentModality.role}).
 Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memories, resolve notes you've handled. Then pass UP to Penny (the Personal Assistant) anything she should keep track of, using <next_session target="pa">…</next_session> — including any reminders or calendar events you'd like her to schedule (only she can). Work silently; no need to narrate.`
@@ -362,11 +385,16 @@ Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memorie
               modalityId: currentModality.id,
             })
           }
-          await touchCompleted(profile!.id, currentModality.id)
 
-          // Hand the baton back to Penny (the anchor).
-          switchTarget = getModality('pa')
-          willSwitch = true
+          // Close the conversation — no PA handoff inline. Client auto-starts PA fresh.
+          await Promise.all([
+            prisma.conversation.update({ where: { id: convoId! }, data: { closed: true } }),
+            touchCompleted(profile!.id, currentModality.id),
+          ])
+
+          // Don't switch — the conversation is done.
+          willSwitch = false
+          switchTarget = null
         }
 
         // ── Perform the handoff to the new modality ─────────────────────────
@@ -448,6 +476,7 @@ Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memorie
               cleanText: workingText,
               actionsExecuted: executableActions.length,
               sessionComplete: isCompleting ?? false,
+              shiftComplete: isShiftEnd,
               activeModality,
             })}\n\n`
           )

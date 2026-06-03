@@ -21,7 +21,9 @@ const C = {
 
 // ─── Streaming marker cleanup ────────────────────────────────────────────────
 const BLOCK_TAGS = [
-  'update_user_profile','update_self_notes','memory','update_memory',
+  'update_user_profile','update_self_notes',
+  'update_private_user_profile','update_private_self_notes',
+  'memory','update_memory',
   'client','update_client','schedule_sms','next_session',
 ]
 
@@ -139,6 +141,15 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 setConversationId(null)
                 setActiveModality('pa') // fresh session starts as the Personal Assistant
                 setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
+              }
+              if (data.shiftComplete) {
+                // Shift closed — context cleared. Auto-start PA fresh so she greets
+                // with no knowledge of the prior shift's conversation.
+                setConversationId(null)
+                setActiveModality('pa')
+                setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
+                // Slight delay so the divider renders before PA's greeting streams in
+                setTimeout(() => sendMessage('', true), 400)
               }
             }
           } catch { /* skip malformed */ }
@@ -301,7 +312,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                     className="absolute right-0 mt-2 z-50 rounded-xl overflow-hidden shadow-2xl min-w-[200px]"
                     style={{ background: C.panelLight, border: `1px solid ${C.border}` }}
                   >
-                    {MODALITIES.map(m => (
+                    {MODALITIES.filter(m => !m.hidden).map(m => (
                       <button
                         key={m.id}
                         onClick={() => switchModality(m.id)}

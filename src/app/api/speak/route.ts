@@ -19,11 +19,14 @@ function cleanForSpeech(text: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const { text } = await req.json()
+  const { text, modality } = await req.json()
   if (!text?.trim()) return new Response('No text', { status: 400 })
 
   const apiKey = process.env.ELEVENLABS_API_KEY
-  const voiceId = process.env.ELEVENLABS_VOICE_ID
+  // Private Penny uses her own voice; fall back to the default if not set.
+  const voiceId = modality === 'private'
+    ? (process.env.PRIVATE_PENNY_VOICE_ID || process.env.ELEVENLABS_VOICE_ID)
+    : process.env.ELEVENLABS_VOICE_ID
   if (!apiKey || !voiceId) {
     return new Response('ElevenLabs not configured', { status: 503 })
   }
