@@ -29,10 +29,11 @@ export async function POST(req: NextRequest) {
   // modality that doesn't have her own var set.
   //   ELEVENLABS_VOICE_ID     — Penny (PA), default fallback
   //   MARGOT_VOICE_ID         — Bookkeeping Secretary
-  //   MARTHA_VOICE_ID         — Household Manager
+  //   JUNE_VOICE_ID           — Household Manager
   //   IRIS_VOICE_ID           — Creative Partner
   //   SAGE_VOICE_ID           — Friend / Life Coach
   //   VERA_VOICE_ID           — Political Ally
+  //   LILA_VOICE_ID           — Private Companion
   const voiceEnvVarMap: Record<string, string> = {
     pa:          'ELEVENLABS_VOICE_ID',
     bookkeeping: 'MARGOT_VOICE_ID',
@@ -40,6 +41,7 @@ export async function POST(req: NextRequest) {
     creative:    'IRIS_VOICE_ID',
     friend:      'SAGE_VOICE_ID',
     political:   'VERA_VOICE_ID',
+    lila:        'LILA_VOICE_ID',
   }
   const envVar = voiceEnvVarMap[modality] ?? 'ELEVENLABS_VOICE_ID'
   const voiceId = process.env[envVar] || process.env.ELEVENLABS_VOICE_ID

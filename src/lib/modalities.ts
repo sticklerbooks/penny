@@ -40,6 +40,7 @@ export interface Modality {
   avatarPath: string         // path to avatar image under /public
   bgPath?: string            // path to background watermark under /public
   voiceEnvVar?: string       // env var name for ElevenLabs voice ID (e.g. 'MARGOT_VOICE_ID')
+  personaFile?: string       // if set, load persona from this path instead of the persona field
   persona: string            // the voice/priorities block (use {name} for the user)
 }
 
@@ -217,19 +218,21 @@ Focus for now on just conversation; when you think there is real work to be done
   },
 
   {
-    id: 'private',
-    displayName: 'Private Penny',
-    role: 'Private',
-    emoji: '🔒',
-    aliases: ['private', 'private penny'],
+    id: 'lila',
+    displayName: 'Lila',
+    role: 'Private Companion',
+    emoji: '🌙',
+    aliases: ['lila'],
     domain: 'private',
-    capabilities: [],
+    capabilities: ['memories', 'notes'],
     canWriteIdentity: false,
     isStub: false,
-    disabled: true,  // user-triggered rebuild in progress — not available yet
-    color: '#9E9E9E',
-    avatarPath: '/penny-avatar.png',
-    persona: `(Private Penny is currently offline — being rebuilt.)`,
+    color: '#CE93D8',
+    avatarPath: '/lila-avatar.png',
+    bgPath: '/lila-bg.png',
+    voiceEnvVar: 'LILA_VOICE_ID',
+    personaFile: 'src/lib/private-penny/characteristics.md',
+    persona: `You are Lila — a private companion.`,
   },
 ]
 
