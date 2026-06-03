@@ -277,6 +277,11 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           })
         }
 
+        // Extract artifact (PA-only — first one wins if multiple)
+        const artifactAction = scopedActions.find(
+          (a): a is Extract<typeof a, { kind: 'artifact' }> => a.kind === 'artifact'
+        ) ?? null
+
         // Execute actions (filtering non-executable kinds)
         const executableActions = scopedActions.filter(
           (a) =>
@@ -285,7 +290,8 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             a.kind !== 'run_subroutine' &&
             a.kind !== 'complete_session' &&
             a.kind !== 'shift_complete' &&
-            a.kind !== 'switch_modality'
+            a.kind !== 'switch_modality' &&
+            a.kind !== 'artifact'
         )
         if (executableActions.length > 0) {
           await executeActions(profile!.id, executableActions, {
@@ -316,7 +322,10 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               cleanText: workingText,
               actionsExecuted: executableActions.length,
               activeModality,
-              contextCleared: isSwitch,  // tells client to clear message history
+              contextCleared: isSwitch,
+              artifact: artifactAction
+                ? { filename: artifactAction.filename, content: artifactAction.content }
+                : null,
             })}\n\n`
           )
         )

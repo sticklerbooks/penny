@@ -113,8 +113,13 @@ export function buildSystemPrompt(
             const status = t.status !== 'pending' ? ` <${t.status}>` : ''
             const clientTag = t.clientId ? ` @client=${t.clientId}` : ''
             const master = t.onMasterList ? ' ⭐' : ''
+            const timing = t.timing ? ` [${t.timing}]` : ''
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const reviewed = (t as any).lastReviewed
+              ? ` reviewed:${new Date((t as any).lastReviewed).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+              : ''
             const notes = t.pennyNotes ? `\n     ↳ note: ${t.pennyNotes}` : ''
-            return `  • id=${t.id}${pri}${cat}${clientTag}${master} — ${t.title}${dueStr}${dueFlag}${status}${notes}`
+            return `  • id=${t.id}${pri}${cat}${clientTag}${master}${timing}${reviewed} — ${t.title}${dueStr}${dueFlag}${status}${notes}`
           })
           .join('\n')
       : '  (nothing tracked yet)'

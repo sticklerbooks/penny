@@ -24,6 +24,7 @@ export type Capability =
   | 'notifications'  // schedule/cancel push notifications
   | 'identity'       // PA-only: edit aboutUser / aboutSelf
   | 'subroutines'    // run hygiene etc. (reserved for cron — not in chat flow)
+  | 'artifact'       // PA-only: generate a downloadable file for the user
 
 export interface Modality {
   id: string                 // STABLE internal key (tags data) — never rename
@@ -54,7 +55,7 @@ export const MODALITIES: Modality[] = [
     emoji: '🎯',
     aliases: ['pa', 'penny', 'personal assistant', 'assistant', 'anchor'],
     domain: null,
-    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks'],
+    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact'],
     canWriteIdentity: true,
     isStub: false,
     color: '#FF69B4',
@@ -339,10 +340,14 @@ export function renderToolkit(modality: Modality, name: string): string {
   if (caps.has('tasks')) {
     blocks.push(`TASKS — track everything ${name} needs to do
 <task title="Send proposal to Linda" due="2026-06-01" priority="9" category="work" client_id="CLIENT_ID">Include revised pricing</task>
+<task title="Fix leaky faucet" timing="immediate" category="maintenance" last_reviewed="2026-06-03">Call plumber first</task>
 <update_task id="TASK_ID" status="done" />
+<update_task id="TASK_ID" timing="longterm" last_reviewed="2026-06-03" />
 <update_task id="TASK_ID" status="in_progress" priority="9" notes="${name} is avoiding this — nudge gently" />
 <delete_task id="TASK_ID" />
 - due: YYYY-MM-DD · priority: 1-10 · status: pending|in_progress|done|deferred
+- timing: immediate | medium | longterm  (use for household / project planning)
+- last_reviewed: YYYY-MM-DD  (update when you revisit an item — keeps the list honest)
 - Create tasks aggressively; don't ask permission. Mark done when done.
 - Elevate a task to the Personal Assistant's master list when it's important enough that she should track it across everything: add master="true" (e.g. <update_task id="ID" master="true" />).`)
   }
@@ -406,6 +411,21 @@ ${upNote}
 <resolve_note id="NOTE_ID" />   (you handled it)
 <delete_note id="NOTE_ID" />    (no longer relevant)
 These appear at the top of the recipient's context next session.`)
+  }
+
+  if (caps.has('artifact')) {
+    blocks.push(`ARTIFACTS — generate a file ${name} can download
+<artifact filename="june_tasks.csv">
+Task,Type,Timing,Notes,Last Reviewed
+Fix leaky faucet,maintenance,immediate,Call plumber,2026-06-03
+</artifact>
+<artifact filename="weekly_summary.txt">
+Any plain text, markdown, CSV, or HTML content here.
+</artifact>
+- ${name} sees a download button appear in your message — they click to save the file.
+- Use for lists, schedules, summaries, exports, or anything worth saving outside this chat.
+- Supported: .txt  .csv  .md  .html  — name the file accordingly and format the content to match.
+- You can include an artifact alongside normal conversational text — it appears as an attachment below your message.`)
   }
 
   if (caps.has('identity')) {

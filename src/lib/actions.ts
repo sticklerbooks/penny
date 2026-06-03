@@ -34,8 +34,8 @@ function parseSendAt(at: string, tz: string): Date {
 }
 
 export type PennyAction =
-  | { kind: 'create_task'; title: string; due?: string; priority?: number; category?: string; clientId?: string; description?: string }
-  | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string; onMasterList?: boolean }
+  | { kind: 'create_task'; title: string; due?: string; priority?: number; category?: string; clientId?: string; description?: string; timing?: string; lastReviewed?: string }
+  | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string; onMasterList?: boolean; timing?: string; lastReviewed?: string }
   | { kind: 'delete_task'; id: string }
   | { kind: 'create_memory'; category: string; content: string; importance?: number }
   | { kind: 'update_memory'; id: string; content?: string; category?: string; importance?: number; archived?: boolean }
@@ -58,6 +58,7 @@ export type PennyAction =
   | { kind: 'complete_session' }
   | { kind: 'shift_complete' }
   | { kind: 'switch_modality'; name: string }
+  | { kind: 'artifact'; filename: string; content: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -84,6 +85,7 @@ const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
 const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
 const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
 const SWITCH_MODALITY_RE = /<switch_modality\s+name=["']([^"']+)["']\s*\/?>/gi
+const ARTIFACT_RE = /<artifact\s+([^>]*)>([\s\S]*?)<\/artifact>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -109,6 +111,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
       category: attrs.category,
       clientId: attrs.client_id,
       description: (m[2] || attrs.description || '').trim() || undefined,
+      timing: attrs.timing,
+      lastReviewed: attrs.last_reviewed,
     })
   }
 
@@ -125,6 +129,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
       clientId: attrs.client_id,
       pennyNotes: attrs.notes,
       onMasterList: attrs.master !== undefined ? attrs.master === 'true' : undefined,
+      timing: attrs.timing,
+      lastReviewed: attrs.last_reviewed,
     })
   }
 
@@ -316,6 +322,15 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'switch_modality', name })
   }
 
+  // artifact — a file Penny generates for the user to download
+  for (const m of text.matchAll(ARTIFACT_RE)) {
+    const attrs = parseAttrs(m[1])
+    const content = m[2] || ''
+    const filename = attrs.filename || 'penny-output.txt'
+    if (!content.trim()) continue
+    actions.push({ kind: 'artifact', filename, content })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -342,6 +357,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(COMPLETE_SESSION_RE, '')
     .replace(SHIFT_COMPLETE_RE, '')
     .replace(SWITCH_MODALITY_RE, '')
+    .replace(ARTIFACT_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -369,6 +385,8 @@ export async function executeActions(
               category: action.category ?? null,
               clientId: action.clientId ?? null,
               domain,
+              timing: action.timing ?? null,
+              lastReviewed: action.lastReviewed ? new Date(action.lastReviewed) : null,
             },
           })
           break
@@ -381,6 +399,8 @@ export async function executeActions(
           if (action.clientId !== undefined) data.clientId = action.clientId || null
           if (action.pennyNotes) data.pennyNotes = action.pennyNotes
           if (action.onMasterList !== undefined) data.onMasterList = action.onMasterList
+          if (action.timing !== undefined) data.timing = action.timing
+          if (action.lastReviewed) data.lastReviewed = new Date(action.lastReviewed)
           if (Object.keys(data).length === 0) break
           await prisma.task.update({ where: { id: action.id }, data })
           break

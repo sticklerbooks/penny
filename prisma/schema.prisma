@@ -123,6 +123,8 @@ model Task {
   pennyNotes  String?
   domain      String?  // which modality domain owns this task (bookkeeping, household, etc.)
   onMasterList Boolean @default(false) // elevated to the PA's master list
+  timing      String?  // immediate | medium | longterm  (used by June / household)
+  lastReviewed DateTime? // when this item was last looked at
 }
 
 model NextSessionNote {

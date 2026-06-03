@@ -27,6 +27,7 @@ const BLOCK_TAGS = [
   'update_private_user_profile','update_private_self_notes',
   'memory','update_memory',
   'client','update_client','schedule_sms','next_session',
+  'artifact',
 ]
 
 function stripStreamingMarkers(text: string): string {
@@ -47,6 +48,7 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  artifact?: { filename: string; content: string } | null
 }
 
 interface ChatInterfaceProps {
@@ -147,8 +149,9 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 if (last?.streaming) {
                   last.content = finalText
                   last.streaming = false
+                  last.artifact = data.artifact ?? null
                 } else {
-                  next.push({ role: 'assistant', content: finalText, streaming: false })
+                  next.push({ role: 'assistant', content: finalText, streaming: false, artifact: data.artifact ?? null })
                 }
                 return next
               })
@@ -247,6 +250,20 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         alt="Penny is thinking"
       />
     )
+
+  // ─── Artifact download ─────────────────────────────────────────────────────
+  const downloadArtifact = useCallback((filename: string, content: string) => {
+    const ext = filename.split('.').pop()?.toLowerCase() ?? 'txt'
+    const mimeMap: Record<string, string> = {
+      txt: 'text/plain', csv: 'text/csv', md: 'text/markdown', html: 'text/html',
+    }
+    const mime = mimeMap[ext] ?? 'text/plain'
+    const blob = new Blob([content], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }, [])
 
   // ─── Call mode helpers ─────────────────────────────────────────────────────
   const addCallMessage = useCallback((role: 'user' | 'assistant', content: string) => {
@@ -397,6 +414,21 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   ) : msg.streaming ? (
                     <ThinkingIndicator />
                   ) : null}
+                  {msg.artifact && (
+                    <button
+                      onClick={() => downloadArtifact(msg.artifact!.filename, msg.artifact!.content)}
+                      className="flex items-center gap-2 mt-3 px-3 py-1.5 rounded-lg text-xs transition-all hover:scale-105 active:scale-95"
+                      style={{
+                        background: accent + '20',
+                        border: `1px solid ${accentBorder}`,
+                        color: accent,
+                      }}
+                    >
+                      <span>📎</span>
+                      <span>{msg.artifact.filename}</span>
+                      <span style={{ opacity: 0.6 }}>↓</span>
+                    </button>
+                  )}
                 </div>
               </div>
             )

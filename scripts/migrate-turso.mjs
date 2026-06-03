@@ -136,6 +136,8 @@ const alters = [
   `ALTER TABLE Memory ADD COLUMN domain TEXT`,
   `ALTER TABLE NextSessionNote ADD COLUMN source TEXT`,
   `ALTER TABLE NextSessionNote ADD COLUMN target TEXT`,
+  `ALTER TABLE Task ADD COLUMN timing TEXT`,
+  `ALTER TABLE Task ADD COLUMN lastReviewed DATETIME`,
 ]
 
 console.log('Creating tables in Turso...')
