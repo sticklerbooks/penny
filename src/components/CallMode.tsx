@@ -70,6 +70,7 @@ export default function CallMode({
   const [transcript, setTranscript]   = useState('')
   const [pennyText, setPennyText]     = useState('')
   const [supported, setSupported]     = useState(true)
+  const [avatarErr, setAvatarErr]     = useState(avatarImgError)
 
   const recognitionRef  = useRef<SpeechRecognizer | null>(null)
   const accumulated     = useRef('')
@@ -339,7 +340,7 @@ export default function CallMode({
             />
           )}
 
-          {avatarImgError ? (
+          {avatarErr ? (
             <div
               className="w-32 h-32 rounded-full flex items-center justify-center text-white text-4xl font-semibold shadow-2xl"
               style={{ background: `linear-gradient(135deg, ${getModality(activeModality).color}, ${getModality(activeModality).color}bb)` }}
@@ -350,7 +351,7 @@ export default function CallMode({
               className="w-32 h-32 rounded-full object-cover shadow-2xl"
               style={{ border: `3px solid ${callState === 'thinking' ? C.textMuted : getModality(activeModality).color}` }}
               alt={getModality(activeModality).displayName}
-              onError={() => setAvatarImgError(true)}
+              onError={() => setAvatarErr(true)}
             />
           )}
         </div>
