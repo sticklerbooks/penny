@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import type { Profile, Memory, Task, NextSessionNote, Client, ScheduledMessage } from '../generated/prisma/client'
-import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules, renderModalityReference } from './modalities'
+import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules } from './modalities'
 
 function loadPrivateCharacteristics(): string {
   try {
@@ -22,12 +22,13 @@ export function getAnthropic(): Anthropic {
 }
 
 // Main conversational model — set ANTHROPIC_MODEL to override
-export const PENNY_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-5'
+// Sonnet 4.5 is the default; set ANTHROPIC_MODEL=claude-opus-4-5 if you need Opus for a specific use.
+export const PENNY_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5'
 
 // Search second-pass — needs Penny's voice to synthesise results; defaults to main model
 export const PENNY_SEARCH_MODEL = process.env.PENNY_SEARCH_MODEL || PENNY_MODEL
 
-// Fast model for mechanical work: subroutines, memory extraction
+// Fast model for mechanical work: farewell notes on switch, memory extraction
 export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haiku-20241022'
 
 export function buildSystemPrompt(
@@ -174,11 +175,13 @@ export function buildSystemPrompt(
           .join('\n')
       : '  (none queued)'
 
-  const todayFormatted = new Date().toLocaleDateString('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
+  const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+  const now = new Date()
+  const todayFormatted = now.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: tz,
+  })
+  const timeFormatted = now.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz,
   })
 
   // About-user document with staleness indicator
@@ -319,7 +322,7 @@ ${memoriesText}${clientsBlock}
 ✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week, ⭐=master list):
 ${tasksText}${notificationsBlock}${calendarBlock}
 
-📅 Today is ${todayFormatted}.`
+📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)`
 }
 
 // ─── Private Penny's system prompt ───────────────────────────────────────────
@@ -391,9 +394,14 @@ export function buildPrivateSystemPrompt(
   const privModality = getModality('private')
   const roster = renderRoster(privModality, userName)
   const toolkit = renderToolkit(privModality, userName)
-  const modalityRef = renderModalityReference(userName)
-  const todayFormatted = new Date().toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  const modalityRef = ''  // renderModalityReference removed; Private Penny disabled
+  const _tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+  const _now = new Date()
+  const todayFormatted = _now.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: _tz,
+  })
+  const timeFormatted = _now.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZone: _tz,
   })
 
   return `${characteristics}
@@ -438,5 +446,5 @@ ${memoriesText}
 
 ${modalityRef}
 
-📅 Today is ${todayFormatted}.`
+📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)`
 }

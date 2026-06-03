@@ -220,12 +220,9 @@ export default function CallMode({
                 activeModalityRef.current = data.activeModality
                 onModality?.(data.activeModality)
               }
-              // Shift or session closed — reset conversation so next turn starts fresh
-              if (data.shiftComplete || data.sessionComplete) {
-                conversationIdRef.current = null
-                activeModalityRef.current = 'pa'
-                onConversationId('')
-                onModality?.('pa')
+              // On a modality switch, reset so next turn uses the fresh conversation
+              if (data.contextCleared) {
+                conversationIdRef.current = data.conversationId || null
               }
               const clean = data.cleanText ?? fullText
               onMessage('assistant', clean)

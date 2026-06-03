@@ -23,10 +23,26 @@ export async function POST(req: NextRequest) {
   if (!text?.trim()) return new Response('No text', { status: 400 })
 
   const apiKey = process.env.ELEVENLABS_API_KEY
-  // Private Penny uses her own voice; fall back to the default if not set.
-  const voiceId = modality === 'private'
-    ? (process.env.PRIVATE_PENNY_VOICE_ID || process.env.ELEVENLABS_VOICE_ID)
-    : process.env.ELEVENLABS_VOICE_ID
+
+  // Per-modality voice IDs — set these env vars in Railway to give each
+  // modality her own voice. Falls back to ELEVENLABS_VOICE_ID for any
+  // modality that doesn't have her own var set.
+  //   ELEVENLABS_VOICE_ID     — Penny (PA), default fallback
+  //   MARGOT_VOICE_ID         — Bookkeeping Secretary
+  //   MARTHA_VOICE_ID         — Household Manager
+  //   IRIS_VOICE_ID           — Creative Partner
+  //   SAGE_VOICE_ID           — Friend / Life Coach
+  //   VERA_VOICE_ID           — Political Ally
+  const voiceEnvVarMap: Record<string, string> = {
+    pa:          'ELEVENLABS_VOICE_ID',
+    bookkeeping: 'MARGOT_VOICE_ID',
+    household:   'JUNE_VOICE_ID',
+    creative:    'IRIS_VOICE_ID',
+    friend:      'SAGE_VOICE_ID',
+    political:   'VERA_VOICE_ID',
+  }
+  const envVar = voiceEnvVarMap[modality] ?? 'ELEVENLABS_VOICE_ID'
+  const voiceId = process.env[envVar] || process.env.ELEVENLABS_VOICE_ID
   if (!apiKey || !voiceId) {
     return new Response('ElevenLabs not configured', { status: 503 })
   }

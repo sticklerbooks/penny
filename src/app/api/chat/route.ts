@@ -1,26 +1,24 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, buildPrivateSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
-import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
+import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
-import { loadSubroutine } from '@/lib/subroutines'
 import { getModality, resolveModality, isActionAllowed } from '@/lib/modalities'
-import { touchActive, touchCompleted } from '@/lib/modality-state'
+import { touchActive } from '@/lib/modality-state'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart, isVoice, switchTo, paHandoff } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice, switchTo } = await req.json()
 
-  // Get or create the single profile
+  // ── Profile ────────────────────────────────────────────────────────────────
   let profile = await prisma.profile.findFirst()
   if (!profile) {
     profile = await prisma.profile.create({ data: {} })
   }
 
-  // Get or create conversation
+  // ── Conversation: load existing ────────────────────────────────────────────
   let convoId = conversationId as string | null
   let existingMessages: { role: string; content: string }[] = []
   let activeModality = 'pa'
@@ -30,7 +28,7 @@ export async function POST(req: NextRequest) {
       where: { id: convoId },
       include: { messages: { orderBy: { createdAt: 'asc' } } },
     })
-    if (existing) {
+    if (existing && !existing.closed) {
       existingMessages = existing.messages
       activeModality = existing.activeModality || 'pa'
     } else {
@@ -38,38 +36,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (!convoId) {
-    const newConvo = await prisma.conversation.create({
-      data: {
-        profileId: profile.id,
-        type: profile.intakeComplete ? 'daily' : 'intake',
-      },
-    })
-    convoId = newConvo.id
-  }
-
-  // Manual switch (from the header switcher): set the modality before building
-  // the prompt so the very next reply comes from the requested modality.
+  // ── Detect manual switch ───────────────────────────────────────────────────
   const manualSwitch = switchTo ? resolveModality(String(switchTo)) : null
-  if (manualSwitch && manualSwitch.id !== activeModality) {
-    activeModality = manualSwitch.id
-    await prisma.conversation.update({
-      where: { id: convoId },
-      data: { activeModality },
-    })
-  }
+  const outgoingModalityId = activeModality // save before any change
+  const isSwitch = !!manualSwitch && manualSwitch.id !== outgoingModalityId
 
-  // PA handoff: a fresh Penny (PA) session opened right after a submodality's
-  // Session End. Force PA and prompt her to read the notes passed up.
-  if (paHandoff) {
-    activeModality = 'pa'
-    await prisma.conversation.update({
-      where: { id: convoId },
-      data: { activeModality: 'pa' },
-    })
-  }
-
-  // Load all context in parallel
+  // ── Load all context in parallel ───────────────────────────────────────────
+  // Load before the farewell pass (which uses outgoing modality context) and
+  // also before the main pass (which uses incoming modality context).
   const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary] =
     await Promise.all([
       prisma.memory.findMany({
@@ -77,9 +51,7 @@ export async function POST(req: NextRequest) {
         orderBy: { importance: 'desc' },
         take: 80,
       }),
-      prisma.task.findMany({
-        where: { profileId: profile.id },
-      }),
+      prisma.task.findMany({ where: { profileId: profile.id } }),
       prisma.nextSessionNote.findMany({
         where: { profileId: profile.id, resolved: false },
         orderBy: { createdAt: 'desc' },
@@ -92,47 +64,105 @@ export async function POST(req: NextRequest) {
         where: { profileId: profile.id, sent: false },
         orderBy: { sendAt: 'asc' },
       }),
-      // Email/calendar: uses 30-min cache, skips gracefully if not configured
       getEmailCalendarSummary(profile.id).catch(() => null),
     ])
 
-  const isPrivateMode = activeModality === 'private'
+  const outgoingModality = getModality(outgoingModalityId)
 
-  let systemPrompt = isPrivateMode
-    ? buildPrivateSystemPrompt(profile, memories, nextSessionNotes)
-    : buildSystemPrompt(
-        profile,
-        memories,
-        tasks,
-        nextSessionNotes,
-        clients,
-        scheduledMessages,
-        emailCalendarSummary,
-        !profile.intakeComplete,
-        activeModality
+  // ── Farewell note pass (on switch, if there's something to wrap up) ────────
+  // Outgoing modality writes a next_session note summarizing open threads.
+  // Runs before the old convo is closed, so it has message context.
+  if (isSwitch && existingMessages.length > 0) {
+    const farewellSystem = buildSystemPrompt(
+      profile, memories, tasks, nextSessionNotes, clients,
+      scheduledMessages, emailCalendarSummary, false, outgoingModalityId
+    )
+    const farewellInstruction = `CONTEXT HAND-OFF: ${profile.userName || 'The user'} has switched to a different modality. Write exactly ONE <next_session> note summarizing any open threads, pending items, or things your next session should know. Be concise. Use markers only — no visible text. If nothing is open, write: <next_session>Closed cleanly — no open items.</next_session>`
+
+    try {
+      const farewellPass = await getAnthropic().messages.create({
+        model: PENNY_FAST_MODEL,
+        max_tokens: 512,
+        system: farewellSystem + '\n\n' + farewellInstruction,
+        messages: [
+          ...existingMessages.slice(-10).map((m) => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+          })),
+          { role: 'user', content: 'Please write your farewell note now.' },
+        ],
+      })
+      const farewellRaw = (farewellPass.content[0] as { type: string; text: string }).text
+      const { actions: farewellActions } = parseActions(farewellRaw)
+      const farewellNotes = farewellActions.filter(
+        (a) => a.kind === 'next_session_note'
       )
-
-  // Voice/call mode: she's being spoken aloud, so keep it short and natural.
-  if (isVoice) {
-    systemPrompt += `
-
-═══════════════════════════════════════════════════════════════════════
-YOU ARE ON A VOICE CALL RIGHT NOW
-═══════════════════════════════════════════════════════════════════════
-${profile.userName || 'The user'} is talking to you out loud and hearing your reply spoken back. Keep responses SHORT and conversational — usually one to three sentences. No lists, no markdown, no headers. Talk like a real phone call: natural, warm, to the point. If something needs a long answer, give the short version and offer to go deeper. You can still use your tools silently as normal.`
+      if (farewellNotes.length > 0) {
+        await executeActions(profile.id, farewellNotes, {
+          domain: outgoingModality.domain,
+          modalityId: outgoingModalityId,
+        })
+      }
+    } catch (err) {
+      // Farewell pass failing is non-fatal — continue with the switch
+      console.error('[switch] farewell pass failed:', err)
+    }
   }
 
-  // Auto-start: Penny opens cold — silent trigger user never sees.
-  // Manual switch with no message: greet as the new modality.
-  // PA handoff: fresh anchor session after a Session End.
-  const isSilentTrigger = isAutoStart || paHandoff || (manualSwitch && !message?.trim())
+  // ── Close old convo and open fresh one on switch ───────────────────────────
+  if (isSwitch) {
+    if (convoId) {
+      await prisma.conversation.update({
+        where: { id: convoId },
+        data: { closed: true },
+      })
+    }
+    activeModality = manualSwitch!.id
+    const newConvo = await prisma.conversation.create({
+      data: {
+        profileId: profile.id,
+        type: 'daily',
+        activeModality,
+      },
+    })
+    convoId = newConvo.id
+    existingMessages = []
+  } else if (!convoId) {
+    // No existing convo — create one
+    const newConvo = await prisma.conversation.create({
+      data: {
+        profileId: profile.id,
+        type: profile.intakeComplete ? 'daily' : 'intake',
+        activeModality,
+      },
+    })
+    convoId = newConvo.id
+  }
+
+  // ── Build system prompt ────────────────────────────────────────────────────
+  const systemPrompt = buildSystemPrompt(
+    profile, memories, tasks, nextSessionNotes, clients,
+    scheduledMessages, emailCalendarSummary,
+    !profile.intakeComplete, activeModality
+  )
+
+  const currentModality = getModality(activeModality)
+
+  // ── Determine trigger message ──────────────────────────────────────────────
+  const isSilentTrigger = isAutoStart || (isSwitch && !message?.trim())
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
-    : paHandoff
-    ? `A submodality's session just ended and you (Penny, the Personal Assistant) are active now. Read any notes that were passed up to you from the session that just ended, then greet ${profile.userName || 'them'} briefly — surface anything important, otherwise just welcome them back.`
-    : manualSwitch && !message?.trim()
-    ? `You've just been switched into your ${manualSwitch.displayName} modality. Briefly take over in your new voice and pick up the thread.`
+    : isSwitch && !message?.trim()
+    ? `You're starting a fresh session as ${currentModality.displayName} (${currentModality.role}). Greet ${profile.userName || 'them'} briefly and warmly in your own voice.`
     : message
+
+  // Voice mode: keep responses short and spoken-word natural
+  const finalSystemPrompt = isVoice
+    ? systemPrompt + `\n\n═══════════════════════════════════════════════════════════════════════
+YOU ARE ON A VOICE CALL RIGHT NOW
+═══════════════════════════════════════════════════════════════════════
+${profile.userName || 'The user'} is talking to you out loud and hearing your reply spoken back. Keep responses SHORT and conversational — usually one to three sentences. No lists, no markdown, no headers. Talk like a real phone call: natural, warm, to the point. You can still use your tools silently as normal.`
+    : systemPrompt
 
   const claudeMessages: { role: 'user' | 'assistant'; content: string }[] = [
     ...existingMessages.slice(-20).map((m) => ({
@@ -143,9 +173,9 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
   ]
 
   // Save user message (not for silent triggers)
-  if (!isSilentTrigger) {
+  if (!isSilentTrigger && message?.trim()) {
     await prisma.message.create({
-      data: { conversationId: convoId, role: 'user', content: message },
+      data: { conversationId: convoId!, role: 'user', content: message },
     })
   }
 
@@ -155,40 +185,18 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        // ── Main response: Grok for private mode, Anthropic otherwise ──────────
-        if (isPrivateMode) {
-          const grokStream = await getGrok().chat.completions.create({
-            model: PRIVATE_PENNY_MODEL,
-            max_tokens: 2048,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              ...claudeMessages.map((m) => ({
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-              })),
-            ],
-            stream: true,
-          })
-          for await (const chunk of grokStream) {
-            const text = chunk.choices[0]?.delta?.content
-            if (text) {
-              fullResponse += text
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`))
-            }
-          }
-        } else {
-          const anthropicStream = await getAnthropic().messages.create({
-            model: PENNY_MODEL,
-            max_tokens: 2048,
-            system: systemPrompt,
-            messages: claudeMessages,
-            stream: true,
-          })
-          for await (const chunk of anthropicStream) {
-            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-              fullResponse += chunk.delta.text
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
-            }
+        // ── Main response ──────────────────────────────────────────────────
+        const anthropicStream = await getAnthropic().messages.create({
+          model: PENNY_MODEL,
+          max_tokens: 2048,
+          system: finalSystemPrompt,
+          messages: claudeMessages,
+          stream: true,
+        })
+        for await (const chunk of anthropicStream) {
+          if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+            fullResponse += chunk.delta.text
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
           }
         }
 
@@ -197,15 +205,14 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           fullResponse.includes('<<INTAKE_COMPLETE>>') && !profile!.intakeComplete
         let workingText = fullResponse.replace('<<INTAKE_COMPLETE>>', '')
 
-        // Parse Penny's action markers
+        // Parse and scope actions
         const { actions, cleanText } = parseActions(workingText)
         workingText = cleanText
 
-        const currentModality = getModality(activeModality)
+        // Scope to what this modality is allowed to do
+        const scopedActions = actions.filter((a) => isActionAllowed(currentModality, a.kind))
 
-        // ── Two-pass search flow ──────────────────────────────────────────────
-        // If Penny requested email/calendar searches, execute them and give her
-        // a second pass with the results before finalising the response.
+        // ── Two-pass search flow ──────────────────────────────────────────
         const searchActions = actions.filter(
           (a): a is SearchAction =>
             (a.kind === 'search_email' || a.kind === 'search_calendar') &&
@@ -213,14 +220,12 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         )
 
         if (searchActions.length > 0) {
-          const searchResults = await executeSearches(searchActions).catch(
-            () => '(search failed)'
-          )
+          const searchResults = await executeSearches(searchActions).catch(() => '(search failed)')
 
           const secondPass = await getAnthropic().messages.create({
             model: PENNY_SEARCH_MODEL,
             max_tokens: 2048,
-            system: systemPrompt,
+            system: finalSystemPrompt,
             messages: [
               ...claudeMessages,
               { role: 'assistant', content: workingText },
@@ -231,20 +236,16 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             ],
           })
 
-          const secondText =
-            (secondPass.content[0] as { type: string; text: string }).text
-          const { cleanText: secondClean, actions: secondActions } =
-            parseActions(secondText)
+          const secondText = (secondPass.content[0] as { type: string; text: string }).text
+          const { cleanText: secondClean, actions: secondActions } = parseActions(secondText)
           workingText = secondClean
-
-          // Merge non-search actions from both passes
-          actions.push(
-            ...secondActions.filter(
-              (a) => a.kind !== 'search_email' && a.kind !== 'search_calendar'
-            )
+          scopedActions.push(
+            ...secondActions
+              .filter((a) => a.kind !== 'search_email' && a.kind !== 'search_calendar')
+              .filter((a) => isActionAllowed(currentModality, a.kind))
           )
         }
-        // ─────────────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
 
         if (intakeJustCompleted) {
           await prisma.profile.update({
@@ -253,100 +254,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           })
         }
 
-        // Scope this modality's actions — drop anything it isn't allowed to do.
-        const scopedActions = actions.filter((a) => isActionAllowed(currentModality, a.kind))
-
-        // ── Modality switch ────────────────────────────────────────────────
-        // Penny can hand the baton to another modality (last switch wins).
-        const switchAction = [...scopedActions]
-          .reverse()
-          .find((a) => a.kind === 'switch_modality') as { kind: 'switch_modality'; name: string } | undefined
-        let switchTarget = switchAction ? resolveModality(switchAction.name) : null
-        let willSwitch = !!switchTarget && switchTarget.id !== currentModality.id
-
-        // Shift Complete — a submodality wrapping up its shift (then hands back to PA)
-        const isShiftEnd = !currentModality.canComplete && scopedActions.some((a) => a.kind === 'shift_complete')
-        let shiftEnded = false
-
-        // ── Subroutine / session-complete flow (skipped when switching) ──────
-        const isCompleting = !willSwitch && scopedActions.some((a) => a.kind === 'complete_session')
-        const subroutineNames = new Set<string>(
-          scopedActions
-            .filter((a): a is Extract<typeof a, { kind: 'run_subroutine' }> => a.kind === 'run_subroutine')
-            .map((a) => a.name)
-        )
-        if (isCompleting) subroutineNames.add('hygiene')
-
-        if (subroutineNames.size > 0) {
-          const subroutineContent = [...subroutineNames]
-            .map((name) => loadSubroutine(name))
-            .filter((s): s is string => s !== null)
-            .join('\n\n---\n\n')
-
-          if (subroutineContent) {
-            const subroutinePrompt = isCompleting
-              ? 'Please complete this session. Work through the hygiene checklist above and execute all relevant actions. Leave a brief next_session note — the one thing most worth carrying forward.'
-              : 'Please run the requested subroutine(s) now. Execute all relevant actions.'
-
-            const subroutinePass = await getAnthropic().messages.create({
-              model: PENNY_FAST_MODEL,
-              max_tokens: 2048,
-              system: systemPrompt + '\n\n' + subroutineContent,
-              messages: [
-                ...claudeMessages,
-                { role: 'assistant', content: workingText },
-                { role: 'user', content: subroutinePrompt },
-              ],
-            })
-
-            const subroutineText =
-              (subroutinePass.content[0] as { type: string; text: string }).text
-            const { cleanText: subroutineClean, actions: subroutinePassActions } =
-              parseActions(subroutineText)
-
-            // Execute subroutine actions (scoped to the current modality)
-            const executableSubroutineActions = subroutinePassActions.filter(
-              (a) =>
-                isActionAllowed(currentModality, a.kind) &&
-                a.kind !== 'search_email' &&
-                a.kind !== 'search_calendar' &&
-                a.kind !== 'run_subroutine' &&
-                a.kind !== 'complete_session' &&
-                a.kind !== 'switch_modality'
-            )
-            if (executableSubroutineActions.length > 0) {
-              await executeActions(profile!.id, executableSubroutineActions, {
-                domain: currentModality.domain,
-                modalityId: currentModality.id,
-              })
-            }
-
-            // Append subroutine response if it has visible content
-            if (subroutineClean.trim()) {
-              workingText = workingText + '\n\n' + subroutineClean
-            }
-          }
-        }
-
-        // Handle session completion — close conversation, create fresh-start note
-        if (isCompleting) {
-          await Promise.all([
-            prisma.conversation.update({
-              where: { id: convoId! },
-              data: { closed: true },
-            }),
-            prisma.nextSessionNote.create({
-              data: {
-                profileId: profile!.id,
-                content: `🔄 Fresh session — hygiene was run on ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`,
-              },
-            }),
-            touchCompleted(profile!.id, currentModality.id),
-          ])
-        }
-        // ─────────────────────────────────────────────────────────────────
-
-        // Execute this modality's actions, tagged with its domain.
+        // Execute actions (filtering non-executable kinds)
         const executableActions = scopedActions.filter(
           (a) =>
             a.kind !== 'search_email' &&
@@ -363,127 +271,15 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           })
         }
 
-        // ── Shift Complete: a submodality wraps up, conversation closes cleanly ─
-        // We close the conversation (just like session complete) so PA starts the
-        // next session with zero knowledge of this shift's message history.
-        // Only what the modality chose to remember (notes, identity docs) carries over.
-        if (isShiftEnd) {
-          const shiftInstruction = `SHIFT COMPLETE — you are wrapping up your shift as ${currentModality.displayName} (${currentModality.role}). This is a hard close: the conversation is about to be cleared and Penny (the Personal Assistant) takes over fresh.
-
-Respond with MARKERS ONLY — no prose. Do two things:
-1. Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memories, resolve notes you've handled.
-2. You MUST hand off to Penny. For ANYTHING from this conversation she should know — open threads, things you promised ${profile!.userName || 'them'}, their state of mind, reminders or calendar events you want scheduled (only she can do that) — leave a note up:
-   <next_session target="pa">…</next_session>
-If there is genuinely nothing to carry over, leave exactly one: <next_session target="pa">Nothing outstanding from the ${currentModality.role} shift.</next_session> so Penny knows you closed cleanly.`
-
-          const shiftPass = await getAnthropic().messages.create({
-            model: PENNY_FAST_MODEL,
-            max_tokens: 1500,
-            system: systemPrompt + '\n\n' + shiftInstruction,
-            messages: [
-              ...claudeMessages,
-              { role: 'assistant', content: workingText || '(wrapping up)' },
-              { role: 'user', content: 'Run your Shift Complete now. Execute all relevant actions.' },
-            ],
-          })
-          const shiftRaw = (shiftPass.content[0] as { type: string; text: string }).text
-          const { actions: shiftActions } = parseActions(shiftRaw)
-          const shiftExecutable = shiftActions.filter(
-            (a) =>
-              isActionAllowed(currentModality, a.kind) &&
-              a.kind !== 'search_email' &&
-              a.kind !== 'search_calendar' &&
-              a.kind !== 'run_subroutine' &&
-              a.kind !== 'complete_session' &&
-              a.kind !== 'shift_complete' &&
-              a.kind !== 'switch_modality'
-          )
-          if (shiftExecutable.length > 0) {
-            await executeActions(profile!.id, shiftExecutable, {
-              domain: currentModality.domain,
-              modalityId: currentModality.id,
-            })
-          }
-
-          // Close the conversation — no PA handoff inline. Client auto-starts PA fresh.
-          await Promise.all([
-            prisma.conversation.update({ where: { id: convoId! }, data: { closed: true } }),
-            touchCompleted(profile!.id, currentModality.id),
-          ])
-
-          // Don't switch inline — the conversation is done. The client opens a
-          // fresh PA session (paHandoff) where Penny reads the notes passed up.
-          willSwitch = false
-          switchTarget = null
-          shiftEnded = true
-        }
-
-        // ── Perform the handoff to the new modality ─────────────────────────
-        if (willSwitch && switchTarget) {
-          activeModality = switchTarget.id
-          await prisma.conversation.update({
-            where: { id: convoId! },
-            data: { activeModality },
-          })
-
-          const handoffSystem = buildSystemPrompt(
-            profile, memories, tasks, nextSessionNotes, clients,
-            scheduledMessages, emailCalendarSummary, false, activeModality
-          )
-          const handoffPass = await getAnthropic().messages.create({
-            model: PENNY_MODEL,
-            max_tokens: 2048,
-            system: handoffSystem,
-            messages: [
-              ...claudeMessages,
-              { role: 'assistant', content: workingText || '(handing off)' },
-              {
-                role: 'user',
-                content: `(You are now in your ${switchTarget.displayName} modality. Take over in your new voice and pick up the thread with ${profile!.userName || 'them'} — briefly, naturally.)`,
-              },
-            ],
-          })
-          const handoffRaw = (handoffPass.content[0] as { type: string; text: string }).text
-          const { cleanText: handoffClean, actions: handoffActions } = parseActions(handoffRaw)
-          const handoffExecutable = handoffActions.filter(
-            (a) =>
-              isActionAllowed(switchTarget, a.kind) &&
-              a.kind !== 'search_email' &&
-              a.kind !== 'search_calendar' &&
-              a.kind !== 'run_subroutine' &&
-              a.kind !== 'complete_session' &&
-              a.kind !== 'switch_modality'
-          )
-          if (handoffExecutable.length > 0) {
-            await executeActions(profile!.id, handoffExecutable, {
-              domain: switchTarget.domain,
-              modalityId: switchTarget.id,
-            })
-          }
-          if (handoffClean.trim()) {
-            workingText = workingText.trim()
-              ? `${workingText}\n\n${handoffClean}`
-              : handoffClean
-          }
-        }
-
-        // Stamp activity: the modality that worked this turn, and (if switched)
-        // the one that just took over. Drives the nightly "needs completing" check.
+        // Stamp activity for nightly cron tracking
         await touchActive(profile!.id, currentModality.id)
-        if (willSwitch && switchTarget && switchTarget.id !== currentModality.id) {
-          await touchActive(profile!.id, switchTarget.id)
-        }
 
-        // Save Penny's final response (after subroutine + handoff appends)
+        // Save Penny's response
         await prisma.message.create({
-          data: {
-            conversationId: convoId!,
-            role: 'assistant',
-            content: workingText,
-          },
+          data: { conversationId: convoId!, role: 'assistant', content: workingText },
         })
 
-        // Background memory extraction as safety net
+        // Background memory extraction
         if (!isSilentTrigger) {
           extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
@@ -496,18 +292,15 @@ If there is genuinely nothing to carry over, leave exactly one: <next_session ta
               intakeComplete: intakeJustCompleted,
               cleanText: workingText,
               actionsExecuted: executableActions.length,
-              sessionComplete: isCompleting ?? false,
-              shiftComplete: isShiftEnd,
               activeModality,
+              contextCleared: isSwitch,  // tells client to clear message history
             })}\n\n`
           )
         )
       } catch (err) {
         console.error('Chat stream error:', err)
         controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ error: String(err) })}\n\n`
-          )
+          encoder.encode(`data: ${JSON.stringify({ error: String(err) })}\n\n`)
         )
       } finally {
         controller.close()

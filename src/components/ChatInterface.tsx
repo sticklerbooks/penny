@@ -4,19 +4,21 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import CallMode from './CallMode'
 import { MODALITIES, getModality } from '@/lib/modalities'
 
-// ─── Palette ────────────────────────────────────────────────────────────────
+// ─── Base palette (non-modality colours) ─────────────────────────────────────
 const C = {
   base:        '#0B0C10',
   panel:       '#1F2833',
   panelLight:  '#263040',
-  pink:        '#FF69B4',   // Penny's color
-  pinkDark:    '#d4539a',
-  blue:        '#4B9CD3',   // User's color
+  blue:        '#4B9CD3',   // User's color (always blue)
   blueDark:    '#3a7dab',
   text:        'rgba(232,234,240,0.92)',
   textMuted:   'rgba(232,234,240,0.45)',
-  border:      'rgba(255,105,180,0.18)',   // Pink-tinted border
   borderBlue:  'rgba(75,156,211,0.18)',
+}
+
+// Derive per-modality accent colours at render time from current.color
+function modalityBorder(color: string) {
+  return color + '30'  // ~19% opacity hex
 }
 
 // ─── Streaming marker cleanup ────────────────────────────────────────────────
@@ -83,13 +85,13 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   }, [input])
 
 
-  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string, paHandoff = false) => {
-    const content = isAutoStart || paHandoff ? '' : text.trim()
-    if (!isAutoStart && !switchTo && !paHandoff && !content) return
+  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string) => {
+    const content = isAutoStart ? '' : text.trim()
+    if (!isAutoStart && !switchTo && !content) return
     if (isLoading) return
 
-    // Show the user's message bubble (not for auto-start / silent switches / handoffs)
-    if (!isAutoStart && !paHandoff && content) {
+    // Show the user's message bubble (not for auto-start or silent switches)
+    if (!isAutoStart && content) {
       setMessages(prev => [...prev, { role: 'user', content }])
       setInput('')
     }
@@ -101,13 +103,11 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // paHandoff always starts a FRESH conversation (ignore the closed one)
         body: JSON.stringify({
           message: content,
-          conversationId: paHandoff ? null : conversationId,
+          conversationId,
           isAutoStart,
           switchTo,
-          paHandoff,
         }),
       })
       if (!res.body) throw new Error('No response body')
@@ -135,28 +135,23 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             }
             if (data.done) {
               setConversationId(data.conversationId)
-              const finalText = data.cleanText ?? fullText
-              setMessages(prev => {
-                const next = [...prev]
-                const last = next[next.length - 1]
-                if (last?.streaming) { last.content = finalText; last.streaming = false }
-                return next
-              })
               if (data.activeModality) setActiveModality(data.activeModality)
               if (data.intakeComplete && onIntakeComplete) setTimeout(onIntakeComplete, 2000)
-              if (data.sessionComplete) {
-                setConversationId(null)
-                setActiveModality('pa') // fresh session starts as the Personal Assistant
-                setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
-              }
-              if (data.shiftComplete) {
-                // Session End from a submodality: clear the chat completely and
-                // open a fresh Penny (PA) session that reads the notes passed up.
-                setConversationId(null)
-                setActiveModality('pa')
-                setMessages([])
-                setTimeout(() => sendMessage('', false, undefined, true), 300)
-              }
+              const finalText = data.cleanText ?? fullText
+              setMessages(prev => {
+                // contextCleared = we just switched modalities; messages were already
+                // cleared client-side in switchModality() — keep only the greeting bubble
+                const base = data.contextCleared ? [] : prev
+                const next = [...base]
+                const last = next[next.length - 1]
+                if (last?.streaming) {
+                  last.content = finalText
+                  last.streaming = false
+                } else {
+                  next.push({ role: 'assistant', content: finalText, streaming: false })
+                }
+                return next
+              })
             }
             if (data.error) {
               // Server signalled an error mid-flow — stop the spinner instead of
@@ -218,17 +213,19 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const PennyAvatar = ({ size = 'sm' }: { size?: 'sm' | 'lg' }) => {
     const dim = size === 'lg' ? 'w-10 h-10' : 'w-7 h-7'
     const txt = size === 'lg' ? 'text-base' : 'text-xs'
+    const avatarSrc = current.avatarPath || '/penny-avatar.png'
     return avatarImgError ? (
       <div
         className={`${dim} rounded-full flex items-center justify-center text-white font-semibold ${txt} flex-shrink-0 shadow-md`}
-        style={{ background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})` }}
-      >P</div>
+        style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}
+      >{current.displayName[0]}</div>
     ) : (
       <img
-        src="/penny-avatar.png"
+        src={avatarSrc}
         onError={() => setAvatarImgError(true)}
         className={`${dim} rounded-full object-cover flex-shrink-0 shadow-md`}
-        alt="Penny"
+        alt={current.displayName}
+        style={{ border: size === 'lg' ? `2px solid ${accentBorder}` : undefined }}
       />
     )
   }
@@ -239,7 +236,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       <span className="flex gap-1.5 items-center h-5 px-1">
         {[0, 160, 320].map(delay => (
           <span key={delay} className="w-2 h-2 rounded-full animate-bounce"
-            style={{ background: C.pink, animationDelay: `${delay}ms` }} />
+            style={{ background: accent, animationDelay: `${delay}ms` }} />
         ))}
       </span>
     ) : (
@@ -260,11 +257,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const switchModality = useCallback((id: string) => {
     setShowSwitcher(false)
     if (id === activeModality || isLoading) return
+    // Clear messages immediately — fresh context for the new modality
+    setMessages([])
     setActiveModality(id)
     sendMessage('', false, id)
   }, [activeModality, isLoading, sendMessage])
 
   const current = getModality(activeModality)
+  // Per-modality accent (used for borders, rings, active highlights)
+  const accent = current.color
+  const accentBorder = modalityBorder(accent)
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -287,12 +289,12 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       <div className="absolute inset-0 z-0 pointer-events-none select-none" aria-hidden>
         <div style={{
           position: 'absolute', inset: 0,
-          backgroundImage: 'url(/penny-bg.png)',
-          backgroundSize: '65%',
-          backgroundPosition: 'center',
+          backgroundImage: `url(${current.bgPath || current.avatarPath || '/penny-bg.png'})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center top',
           backgroundRepeat: 'no-repeat',
-          opacity: 0.07,
-          filter: 'blur(4px) saturate(0.5)',
+          opacity: 0.15,
+          filter: 'blur(1px) saturate(0.6)',
         }} />
       </div>
 
@@ -302,14 +304,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         {/* Header */}
         <div
           className="flex items-center justify-between px-5 py-3.5 shadow-xl flex-shrink-0"
-          style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}
+          style={{ background: C.panel, borderBottom: `1px solid ${accentBorder}` }}
         >
           <div className="flex items-center gap-3">
             <PennyAvatar size="lg" />
             <div>
-              <h1 className="font-semibold leading-tight" style={{ color: C.text }}>Penny</h1>
+              <h1 className="font-semibold leading-tight" style={{ color: C.text }}>
+                {type === 'intake' ? 'Penny' : current.displayName}
+              </h1>
               <p className="text-xs" style={{ color: C.textMuted }}>
-                {type === 'intake' ? 'Getting to know you' : `${current.emoji} ${current.displayName} · ${current.role}`}
+                {type === 'intake' ? 'Getting to know you' : current.role}
               </p>
             </div>
           </div>
@@ -321,7 +325,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 onClick={() => setShowSwitcher(s => !s)}
                 disabled={isLoading}
                 className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
-                style={{ background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }}
+                style={{ background: accent + '20', borderColor: accentBorder, color: accent }}
                 title="Switch modality"
               >
                 {current.emoji} ▾
@@ -331,16 +335,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   <div className="fixed inset-0 z-40" onClick={() => setShowSwitcher(false)} />
                   <div
                     className="absolute right-0 mt-2 z-50 rounded-xl overflow-y-auto shadow-2xl min-w-[200px]"
-                    style={{ background: C.panelLight, border: `1px solid ${C.border}`, maxHeight: '70vh' }}
+                    style={{ background: C.panelLight, border: `1px solid ${accentBorder}`, maxHeight: '70vh' }}
                   >
-                    {MODALITIES.filter(m => !m.hidden).map(m => (
+                    {MODALITIES.filter(m => !m.disabled).map(m => (
                       <button
                         key={m.id}
                         onClick={() => switchModality(m.id)}
                         className="w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 transition-colors hover:bg-white/5"
                         style={{
-                          color: m.id === activeModality ? C.pink : C.text,
-                          background: m.id === activeModality ? 'rgba(255,105,180,0.08)' : 'transparent',
+                          color: m.id === activeModality ? m.color : C.text,
+                          background: m.id === activeModality ? m.color + '15' : 'transparent',
                         }}
                       >
                         <span>{m.emoji}</span>
@@ -348,7 +352,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                           <span>{m.displayName}</span>
                           <span className="text-[10px]" style={{ color: C.textMuted }}>{m.role}</span>
                         </span>
-                        {m.id === activeModality && <span className="ml-auto text-xs">●</span>}
+                        {m.id === activeModality && <span className="ml-auto text-xs" style={{ color: m.color }}>●</span>}
                       </button>
                     ))}
                   </div>
@@ -361,17 +365,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-6 space-y-5">
           {messages.map((msg, i) => {
-            // Session divider
-            if (msg.content === '— session closed —') {
-              return (
-                <div key={i} className="flex items-center gap-3 py-2 px-2">
-                  <div className="flex-1 h-px" style={{ background: C.border }} />
-                  <span className="text-xs whitespace-nowrap" style={{ color: C.textMuted }}>session closed</span>
-                  <div className="flex-1 h-px" style={{ background: C.border }} />
-                </div>
-              )
-            }
-
             const isAssistant = msg.role === 'assistant'
             return (
               <div key={i} className={`flex items-end gap-2 ${isAssistant ? 'justify-start' : 'justify-end'}`}>
@@ -381,7 +374,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   className="max-w-[80%] shadow-md"
                   style={isAssistant ? {
                     background: C.panel,
-                    border: `1px solid ${C.border}`,
+                    border: `1px solid ${accentBorder}`,
                     color: C.text,
                     borderRadius: '20px',
                     borderBottomLeftRadius: '5px',
@@ -421,7 +414,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             <button
               onClick={() => setInCall(true)}
               className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
-              style={{ background: 'rgba(255,105,180,0.15)', border: `1px solid ${C.border}` }}
+              style={{ background: accent + '20', border: `1px solid ${accentBorder}` }}
               title="Start a voice call with Penny"
             >📞</button>
             <div className="flex-1">
@@ -436,15 +429,15 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 className="w-full resize-none rounded-xl px-4 py-2.5 text-sm transition-colors"
                 style={{
                   background: C.base,
-                  border: `1px solid ${C.border}`,
+                  border: `1px solid ${accentBorder}`,
                   color: C.text,
                   minHeight: '44px',
                   maxHeight: '128px',
                   outline: 'none',
-                  caretColor: C.blue,
+                  caretColor: accent,
                 }}
-                onFocus={e => e.target.style.borderColor = C.blue}
-                onBlur={e => e.target.style.borderColor = C.borderBlue}
+                onFocus={e => e.target.style.borderColor = accent}
+                onBlur={e => e.target.style.borderColor = accentBorder}
               />
             </div>
             <button
