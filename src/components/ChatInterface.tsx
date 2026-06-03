@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import CallMode from './CallMode'
+import { MODALITIES, getModality } from '@/lib/modalities'
 
 // ─── Palette ────────────────────────────────────────────────────────────────
 const C = {
@@ -58,6 +59,8 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [inCall, setInCall]                   = useState(false)
   const [avatarImgError, setAvatarImgError]   = useState(false)
   const [thinkingImgError, setThinkingImgError] = useState(false)
+  const [activeModality, setActiveModality]   = useState('pa')
+  const [showSwitcher, setShowSwitcher]       = useState(false)
 
   const messagesEndRef  = useRef<HTMLDivElement>(null)
   const textareaRef     = useRef<HTMLTextAreaElement>(null)
@@ -78,12 +81,13 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   }, [input])
 
 
-  const sendMessage = useCallback(async (text: string, isAutoStart = false) => {
+  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string) => {
     const content = isAutoStart ? '' : text.trim()
-    if (!isAutoStart && !content) return
+    if (!isAutoStart && !switchTo && !content) return
     if (isLoading) return
 
-    if (!isAutoStart) {
+    // Show the user's message bubble (not for auto-start or silent switches)
+    if (!isAutoStart && content) {
       setMessages(prev => [...prev, { role: 'user', content }])
       setInput('')
     }
@@ -95,7 +99,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, conversationId, isAutoStart }),
+        body: JSON.stringify({ message: content, conversationId, isAutoStart, switchTo }),
       })
       if (!res.body) throw new Error('No response body')
 
@@ -129,9 +133,11 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 if (last?.streaming) { last.content = finalText; last.streaming = false }
                 return next
               })
+              if (data.activeModality) setActiveModality(data.activeModality)
               if (data.intakeComplete && onIntakeComplete) setTimeout(onIntakeComplete, 2000)
               if (data.sessionComplete) {
                 setConversationId(null)
+                setActiveModality('pa') // fresh session starts as the Personal Assistant
                 setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
               }
             }
@@ -164,6 +170,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         .then(data => {
           if (data?.messages?.length) {
             setConversationId(data.id)
+            if (data.activeModality) setActiveModality(data.activeModality)
             setMessages(data.messages.map((m: { role: 'user' | 'assistant'; content: string }) => ({
               role: m.role, content: m.content,
             })))
@@ -219,6 +226,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     setMessages(prev => [...prev, { role, content }])
   }, [])
 
+  // ─── Modality switch (from the header dropdown) ─────────────────────────────
+  const switchModality = useCallback((id: string) => {
+    setShowSwitcher(false)
+    if (id === activeModality || isLoading) return
+    setActiveModality(id)
+    sendMessage('', false, id)
+  }, [activeModality, isLoading, sendMessage])
+
+  const current = getModality(activeModality)
+
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="relative flex flex-col h-screen overflow-hidden" style={{ background: C.base }}>
@@ -260,12 +277,50 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             <div>
               <h1 className="font-semibold leading-tight" style={{ color: C.text }}>Penny</h1>
               <p className="text-xs" style={{ color: C.textMuted }}>
-                {type === 'intake' ? 'Getting to know you' : 'Your personal assistant'}
+                {type === 'intake' ? 'Getting to know you' : `${current.emoji} ${current.displayName}`}
               </p>
             </div>
           </div>
 
-          <div />
+          {/* Modality switcher */}
+          {type !== 'intake' && (
+            <div className="relative">
+              <button
+                onClick={() => setShowSwitcher(s => !s)}
+                disabled={isLoading}
+                className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
+                style={{ background: 'rgba(255,105,180,0.12)', borderColor: C.border, color: C.pink }}
+                title="Switch modality"
+              >
+                {current.emoji} ▾
+              </button>
+              {showSwitcher && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowSwitcher(false)} />
+                  <div
+                    className="absolute right-0 mt-2 z-50 rounded-xl overflow-hidden shadow-2xl min-w-[200px]"
+                    style={{ background: C.panelLight, border: `1px solid ${C.border}` }}
+                  >
+                    {MODALITIES.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => switchModality(m.id)}
+                        className="w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 transition-colors hover:bg-white/5"
+                        style={{
+                          color: m.id === activeModality ? C.pink : C.text,
+                          background: m.id === activeModality ? 'rgba(255,105,180,0.08)' : 'transparent',
+                        }}
+                      >
+                        <span>{m.emoji}</span>
+                        <span>{m.displayName}</span>
+                        {m.id === activeModality && <span className="ml-auto text-xs">●</span>}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Messages */}

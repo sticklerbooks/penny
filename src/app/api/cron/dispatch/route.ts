@@ -1,6 +1,6 @@
 // Cron endpoint — called every 5 minutes by an external scheduler (e.g. cron-job.org)
-// Finds scheduled messages due to be sent and fires them via Twilio SMS.
-// Protected by CRON_SECRET header to prevent unauthorized triggering.
+// Finds scheduled messages due to be sent and fires them via Pushover.
+// Protected by CRON_SECRET query param or header.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
@@ -16,45 +16,50 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date()
+  console.log(`[dispatch] Running at ${now.toISOString()}`)
 
   // Find all unsent messages that are due
   const due = await prisma.scheduledMessage.findMany({
-    where: {
-      sent: false,
-      sendAt: { lte: now },
-    },
-    include: { profile: true },
+    where: { sent: false, sendAt: { lte: now } },
+    orderBy: { sendAt: 'asc' },
   })
 
+  console.log(`[dispatch] Found ${due.length} message(s) due`)
+
   if (due.length === 0) {
-    return NextResponse.json({ sent: 0 })
+    return NextResponse.json({ sent: 0, checked: now.toISOString() })
   }
 
-  const results = await Promise.allSettled(
-    due.map(async (msg) => {
+  // Send one at a time (avoids any Pushover rate limiting)
+  let succeeded = 0
+  const errors: string[] = []
+
+  for (const msg of due) {
+    try {
+      console.log(`[dispatch] Sending id=${msg.id} label="${msg.label ?? ''}" scheduledFor=${msg.sendAt.toISOString()}`)
       await sendNotification(msg.message)
       await prisma.scheduledMessage.update({
         where: { id: msg.id },
         data: { sent: true, sentAt: new Date() },
       })
-      return msg.id
-    })
-  )
-
-  const succeeded = results.filter((r) => r.status === 'fulfilled').length
-  const failed = results.filter((r) => r.status === 'rejected').length
-
-  if (failed > 0) {
-    const errors = results
-      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-      .map((r) => r.reason?.message || String(r.reason))
-    console.error('Failed to send scheduled messages:', errors)
+      console.log(`[dispatch] ✓ Sent id=${msg.id}`)
+      succeeded++
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      console.error(`[dispatch] ✗ Failed id=${msg.id}: ${err}`)
+      errors.push(`id=${msg.id}: ${err}`)
+    }
   }
 
-  return NextResponse.json({ sent: succeeded, failed })
+  return NextResponse.json({
+    sent: succeeded,
+    failed: errors.length,
+    errors: errors.length > 0 ? errors : undefined,
+    checked: now.toISOString(),
+  })
 }
 
-// Also support GET for easy testing from a browser
+// Also support GET for easy manual testing
 export async function GET(req: NextRequest) {
   return POST(req)
 }

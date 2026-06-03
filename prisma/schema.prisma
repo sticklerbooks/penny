@@ -69,6 +69,7 @@ model Memory {
   importance     Int      @default(5)
   archived       Boolean  @default(false)
   lastReferenced DateTime?
+  domain         String?  // which modality domain owns this memory (null = global/identity)
 }
 
 model Conversation {
@@ -78,9 +79,10 @@ model Conversation {
   profileId String
   profile   Profile  @relation(fields: [profileId], references: [id])
 
-  type     String
-  closed   Boolean  @default(false)
-  messages Message[]
+  type           String
+  closed         Boolean  @default(false)
+  activeModality String   @default("pa")
+  messages       Message[]
 }
 
 model Message {
@@ -113,6 +115,8 @@ model Task {
   status      String   @default("pending")
   category    String?
   pennyNotes  String?
+  domain      String?  // which modality domain owns this task (bookkeeping, household, etc.)
+  onMasterList Boolean @default(false) // elevated to the PA's master list
 }
 
 model NextSessionNote {
@@ -124,6 +128,8 @@ model NextSessionNote {
 
   content  String
   resolved Boolean @default(false)
+  source   String? // which modality wrote this note
+  target   String? // which modality it's addressed to (e.g. "pa" for notes up)
 }
 
 model ScheduledMessage {

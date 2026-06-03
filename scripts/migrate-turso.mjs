@@ -122,6 +122,12 @@ const alters = [
   `ALTER TABLE Profile ADD COLUMN aboutSelf TEXT`,
   `ALTER TABLE Profile ADD COLUMN aboutSelfUpdatedAt DATETIME`,
   `ALTER TABLE Conversation ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE Conversation ADD COLUMN activeModality TEXT NOT NULL DEFAULT 'pa'`,
+  `ALTER TABLE Task ADD COLUMN domain TEXT`,
+  `ALTER TABLE Task ADD COLUMN onMasterList INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE Memory ADD COLUMN domain TEXT`,
+  `ALTER TABLE NextSessionNote ADD COLUMN source TEXT`,
+  `ALTER TABLE NextSessionNote ADD COLUMN target TEXT`,
 ]
 
 console.log('Creating tables in Turso...')

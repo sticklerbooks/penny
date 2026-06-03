@@ -35,12 +35,12 @@ function parseSendAt(at: string, tz: string): Date {
 
 export type PennyAction =
   | { kind: 'create_task'; title: string; due?: string; priority?: number; category?: string; clientId?: string; description?: string }
-  | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string }
+  | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string; onMasterList?: boolean }
   | { kind: 'delete_task'; id: string }
   | { kind: 'create_memory'; category: string; content: string; importance?: number }
   | { kind: 'update_memory'; id: string; content?: string; category?: string; importance?: number; archived?: boolean }
   | { kind: 'delete_memory'; id: string }
-  | { kind: 'next_session_note'; content: string }
+  | { kind: 'next_session_note'; content: string; target?: string }
   | { kind: 'resolve_note'; id: string }
   | { kind: 'delete_note'; id: string }
   | { kind: 'create_client'; name: string; contactName?: string; contactSecondary?: string; phone?: string; email?: string; businessStructure?: string; status?: string; services?: string; grossRevenue?: number; billingStatus?: string; notes?: string }
@@ -54,6 +54,7 @@ export type PennyAction =
   | { kind: 'update_self_notes'; content: string }
   | { kind: 'run_subroutine'; name: string }
   | { kind: 'complete_session' }
+  | { kind: 'switch_modality'; name: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -62,7 +63,7 @@ const DELETE_TASK_RE = /<delete_task\s+id=["']([^"']+)["']\s*\/?>/gi
 const MEMORY_RE = /<memory\s+([^>]*)>([\s\S]*?)<\/memory>/gi
 const UPDATE_MEMORY_RE = /<update_memory\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/update_memory>)/gi
 const DELETE_MEMORY_RE = /<delete_memory\s+id=["']([^"']+)["']\s*\/?>/gi
-const NEXT_SESSION_RE = /<next_session>([\s\S]*?)<\/next_session>/gi
+const NEXT_SESSION_RE = /<next_session(\s+[^>]*)?>([\s\S]*?)<\/next_session>/gi
 const RESOLVE_NOTE_RE = /<resolve_note\s+id=["']([^"']+)["']\s*\/?>/gi
 const DELETE_NOTE_RE = /<delete_note\s+id=["']([^"']+)["']\s*\/?>/gi
 const CLIENT_RE = /<client\s+([^>]*)>(?:([\s\S]*?))<\/client>/gi
@@ -76,6 +77,7 @@ const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_pr
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
 const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
 const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
+const SWITCH_MODALITY_RE = /<switch_modality\s+name=["']([^"']+)["']\s*\/?>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -116,6 +118,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
       due: attrs.due,
       clientId: attrs.client_id,
       pennyNotes: attrs.notes,
+      onMasterList: attrs.master !== undefined ? attrs.master === 'true' : undefined,
     })
   }
 
@@ -157,11 +160,12 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'delete_memory', id: m[1] })
   }
 
-  // next_session
+  // next_session (optional target="pa" to pass a note up to the Personal Assistant)
   for (const m of text.matchAll(NEXT_SESSION_RE)) {
-    const content = m[1].trim()
+    const attrs = m[1] ? parseAttrs(m[1]) : {}
+    const content = (m[2] || '').trim()
     if (!content) continue
-    actions.push({ kind: 'next_session_note', content })
+    actions.push({ kind: 'next_session_note', content, target: attrs.target })
   }
 
   // resolve_note
@@ -280,6 +284,13 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'complete_session' })
   }
 
+  // switch_modality
+  for (const m of text.matchAll(SWITCH_MODALITY_RE)) {
+    const name = m[1].trim()
+    if (!name) continue
+    actions.push({ kind: 'switch_modality', name })
+  }
+
   // Strip all marker tags from the displayed/saved text
   const cleanText = text
     .replace(TASK_RE, '')
@@ -302,6 +313,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(UPDATE_SELF_NOTES_RE, '')
     .replace(RUN_SUBROUTINE_RE, '')
     .replace(COMPLETE_SESSION_RE, '')
+    .replace(SWITCH_MODALITY_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -310,8 +322,11 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
 
 export async function executeActions(
   profileId: string,
-  actions: PennyAction[]
+  actions: PennyAction[],
+  ctx: { domain?: string | null; modalityId?: string } = {}
 ): Promise<void> {
+  const domain = ctx.domain ?? null
+  const modalityId = ctx.modalityId ?? 'pa'
   for (const action of actions) {
     try {
       switch (action.kind) {
@@ -325,6 +340,7 @@ export async function executeActions(
               priority: action.priority ?? 5,
               category: action.category ?? null,
               clientId: action.clientId ?? null,
+              domain,
             },
           })
           break
@@ -336,6 +352,7 @@ export async function executeActions(
           if (action.due) data.dueDate = new Date(action.due)
           if (action.clientId !== undefined) data.clientId = action.clientId || null
           if (action.pennyNotes) data.pennyNotes = action.pennyNotes
+          if (action.onMasterList !== undefined) data.onMasterList = action.onMasterList
           if (Object.keys(data).length === 0) break
           await prisma.task.update({ where: { id: action.id }, data })
           break
@@ -352,6 +369,7 @@ export async function executeActions(
               category: action.category,
               content: action.content,
               importance: action.importance ?? 6,
+              domain,
             },
           })
           break
@@ -373,7 +391,12 @@ export async function executeActions(
 
         case 'next_session_note':
           await prisma.nextSessionNote.create({
-            data: { profileId, content: action.content },
+            data: {
+              profileId,
+              content: action.content,
+              source: modalityId,
+              target: action.target ?? null,
+            },
           })
           break
 
@@ -470,6 +493,7 @@ export async function executeActions(
         // Handled in route.ts before executeActions is called — no-op here
         case 'run_subroutine':
         case 'complete_session':
+        case 'switch_modality':
           break
       }
     } catch (e) {

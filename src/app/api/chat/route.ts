@@ -5,11 +5,12 @@ import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
 import { loadSubroutine } from '@/lib/subroutines'
+import { getModality, resolveModality, isActionAllowed } from '@/lib/modalities'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart, isVoice } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice, switchTo } = await req.json()
 
   // Get or create the single profile
   let profile = await prisma.profile.findFirst()
@@ -20,6 +21,7 @@ export async function POST(req: NextRequest) {
   // Get or create conversation
   let convoId = conversationId as string | null
   let existingMessages: { role: string; content: string }[] = []
+  let activeModality = 'pa'
 
   if (convoId) {
     const existing = await prisma.conversation.findUnique({
@@ -28,6 +30,7 @@ export async function POST(req: NextRequest) {
     })
     if (existing) {
       existingMessages = existing.messages
+      activeModality = existing.activeModality || 'pa'
     } else {
       convoId = null
     }
@@ -41,6 +44,17 @@ export async function POST(req: NextRequest) {
       },
     })
     convoId = newConvo.id
+  }
+
+  // Manual switch (from the header switcher): set the modality before building
+  // the prompt so the very next reply comes from the requested modality.
+  const manualSwitch = switchTo ? resolveModality(String(switchTo)) : null
+  if (manualSwitch && manualSwitch.id !== activeModality) {
+    activeModality = manualSwitch.id
+    await prisma.conversation.update({
+      where: { id: convoId },
+      data: { activeModality },
+    })
   }
 
   // Load all context in parallel
@@ -78,7 +92,8 @@ export async function POST(req: NextRequest) {
     clients,
     scheduledMessages,
     emailCalendarSummary,
-    !profile.intakeComplete
+    !profile.intakeComplete,
+    activeModality
   )
 
   // Voice/call mode: she's being spoken aloud, so keep it short and natural.
@@ -91,9 +106,13 @@ YOU ARE ON A VOICE CALL RIGHT NOW
 ${profile.userName || 'The user'} is talking to you out loud and hearing your reply spoken back. Keep responses SHORT and conversational — usually one to three sentences. No lists, no markdown, no headers. Talk like a real phone call: natural, warm, to the point. If something needs a long answer, give the short version and offer to go deeper. You can still use your tools silently as normal.`
   }
 
-  // Auto-start: Penny opens cold — silent trigger user never sees
+  // Auto-start: Penny opens cold — silent trigger user never sees.
+  // Manual switch with no message: greet as the new modality.
+  const isSilentTrigger = isAutoStart || (manualSwitch && !message?.trim())
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
+    : manualSwitch && !message?.trim()
+    ? `You've just been switched into your ${manualSwitch.displayName} modality. Briefly take over in your new voice and pick up the thread.`
     : message
 
   const claudeMessages: { role: 'user' | 'assistant'; content: string }[] = [
@@ -104,8 +123,8 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
     { role: 'user', content: triggerMessage },
   ]
 
-  // Save user message (not for auto-start triggers)
-  if (!isAutoStart) {
+  // Save user message (not for silent triggers)
+  if (!isSilentTrigger) {
     await prisma.message.create({
       data: { conversationId: convoId, role: 'user', content: message },
     })
@@ -148,12 +167,15 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         const { actions, cleanText } = parseActions(workingText)
         workingText = cleanText
 
+        const currentModality = getModality(activeModality)
+
         // ── Two-pass search flow ──────────────────────────────────────────────
         // If Penny requested email/calendar searches, execute them and give her
         // a second pass with the results before finalising the response.
         const searchActions = actions.filter(
           (a): a is SearchAction =>
-            a.kind === 'search_email' || a.kind === 'search_calendar'
+            (a.kind === 'search_email' || a.kind === 'search_calendar') &&
+            isActionAllowed(currentModality, a.kind)
         )
 
         if (searchActions.length > 0) {
@@ -190,15 +212,6 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        // Save Penny's clean response
-        await prisma.message.create({
-          data: {
-            conversationId: convoId!,
-            role: 'assistant',
-            content: workingText,
-          },
-        })
-
         if (intakeJustCompleted) {
           await prisma.profile.update({
             where: { id: profile!.id },
@@ -206,10 +219,21 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           })
         }
 
-        // ── Subroutine / session-complete flow ───────────────────────────
-        const isCompleting = actions.some((a) => a.kind === 'complete_session')
+        // Scope this modality's actions — drop anything it isn't allowed to do.
+        const scopedActions = actions.filter((a) => isActionAllowed(currentModality, a.kind))
+
+        // ── Modality switch ────────────────────────────────────────────────
+        // Penny can hand the baton to another modality (last switch wins).
+        const switchAction = [...scopedActions]
+          .reverse()
+          .find((a) => a.kind === 'switch_modality') as { kind: 'switch_modality'; name: string } | undefined
+        const switchTarget = switchAction ? resolveModality(switchAction.name) : null
+        const willSwitch = !!switchTarget && switchTarget.id !== currentModality.id
+
+        // ── Subroutine / session-complete flow (skipped when switching) ──────
+        const isCompleting = !willSwitch && scopedActions.some((a) => a.kind === 'complete_session')
         const subroutineNames = new Set<string>(
-          actions
+          scopedActions
             .filter((a): a is Extract<typeof a, { kind: 'run_subroutine' }> => a.kind === 'run_subroutine')
             .map((a) => a.name)
         )
@@ -242,16 +266,21 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             const { cleanText: subroutineClean, actions: subroutinePassActions } =
               parseActions(subroutineText)
 
-            // Execute subroutine actions
+            // Execute subroutine actions (scoped to the current modality)
             const executableSubroutineActions = subroutinePassActions.filter(
               (a) =>
+                isActionAllowed(currentModality, a.kind) &&
                 a.kind !== 'search_email' &&
                 a.kind !== 'search_calendar' &&
                 a.kind !== 'run_subroutine' &&
-                a.kind !== 'complete_session'
+                a.kind !== 'complete_session' &&
+                a.kind !== 'switch_modality'
             )
             if (executableSubroutineActions.length > 0) {
-              await executeActions(profile!.id, executableSubroutineActions)
+              await executeActions(profile!.id, executableSubroutineActions, {
+                domain: currentModality.domain,
+                modalityId: currentModality.id,
+              })
             }
 
             // Append subroutine response if it has visible content
@@ -278,20 +307,82 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         }
         // ─────────────────────────────────────────────────────────────────
 
-        // Execute all non-search, non-subroutine actions
-        const executableActions = actions.filter(
+        // Execute this modality's actions, tagged with its domain.
+        const executableActions = scopedActions.filter(
           (a) =>
             a.kind !== 'search_email' &&
             a.kind !== 'search_calendar' &&
             a.kind !== 'run_subroutine' &&
-            a.kind !== 'complete_session'
+            a.kind !== 'complete_session' &&
+            a.kind !== 'switch_modality'
         )
         if (executableActions.length > 0) {
-          await executeActions(profile!.id, executableActions)
+          await executeActions(profile!.id, executableActions, {
+            domain: currentModality.domain,
+            modalityId: currentModality.id,
+          })
         }
 
+        // ── Perform the handoff to the new modality ─────────────────────────
+        if (willSwitch && switchTarget) {
+          activeModality = switchTarget.id
+          await prisma.conversation.update({
+            where: { id: convoId! },
+            data: { activeModality },
+          })
+
+          const handoffSystem = buildSystemPrompt(
+            profile, memories, tasks, nextSessionNotes, clients,
+            scheduledMessages, emailCalendarSummary, false, activeModality
+          )
+          const handoffPass = await getAnthropic().messages.create({
+            model: PENNY_MODEL,
+            max_tokens: 2048,
+            system: handoffSystem,
+            messages: [
+              ...claudeMessages,
+              { role: 'assistant', content: workingText || '(handing off)' },
+              {
+                role: 'user',
+                content: `(You are now in your ${switchTarget.displayName} modality. Take over in your new voice and pick up the thread with ${profile!.userName || 'them'} — briefly, naturally.)`,
+              },
+            ],
+          })
+          const handoffRaw = (handoffPass.content[0] as { type: string; text: string }).text
+          const { cleanText: handoffClean, actions: handoffActions } = parseActions(handoffRaw)
+          const handoffExecutable = handoffActions.filter(
+            (a) =>
+              isActionAllowed(switchTarget, a.kind) &&
+              a.kind !== 'search_email' &&
+              a.kind !== 'search_calendar' &&
+              a.kind !== 'run_subroutine' &&
+              a.kind !== 'complete_session' &&
+              a.kind !== 'switch_modality'
+          )
+          if (handoffExecutable.length > 0) {
+            await executeActions(profile!.id, handoffExecutable, {
+              domain: switchTarget.domain,
+              modalityId: switchTarget.id,
+            })
+          }
+          if (handoffClean.trim()) {
+            workingText = workingText.trim()
+              ? `${workingText}\n\n${handoffClean}`
+              : handoffClean
+          }
+        }
+
+        // Save Penny's final response (after subroutine + handoff appends)
+        await prisma.message.create({
+          data: {
+            conversationId: convoId!,
+            role: 'assistant',
+            content: workingText,
+          },
+        })
+
         // Background memory extraction as safety net
-        if (!isAutoStart) {
+        if (!isSilentTrigger) {
           extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
 
@@ -304,6 +395,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               cleanText: workingText,
               actionsExecuted: executableActions.length,
               sessionComplete: isCompleting ?? false,
+              activeModality,
             })}\n\n`
           )
         )
