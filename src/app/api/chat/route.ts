@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
+import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
@@ -185,18 +186,40 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        // ── Main response ──────────────────────────────────────────────────
-        const anthropicStream = await getAnthropic().messages.create({
-          model: PENNY_MODEL,
-          max_tokens: 2048,
-          system: finalSystemPrompt,
-          messages: claudeMessages,
-          stream: true,
-        })
-        for await (const chunk of anthropicStream) {
-          if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-            fullResponse += chunk.delta.text
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
+        // ── Main response — Grok for Lila, Anthropic for everyone else ────────
+        if (activeModality === 'lila') {
+          const grokStream = await getGrok().chat.completions.create({
+            model: PRIVATE_PENNY_MODEL,
+            max_tokens: 2048,
+            messages: [
+              { role: 'system', content: finalSystemPrompt },
+              ...claudeMessages.map((m) => ({
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+              })),
+            ],
+            stream: true,
+          })
+          for await (const chunk of grokStream) {
+            const text = chunk.choices[0]?.delta?.content
+            if (text) {
+              fullResponse += text
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`))
+            }
+          }
+        } else {
+          const anthropicStream = await getAnthropic().messages.create({
+            model: PENNY_MODEL,
+            max_tokens: 2048,
+            system: finalSystemPrompt,
+            messages: claudeMessages,
+            stream: true,
+          })
+          for await (const chunk of anthropicStream) {
+            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+              fullResponse += chunk.delta.text
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
+            }
           }
         }
 
