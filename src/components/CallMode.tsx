@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { getModality } from '@/lib/modalities'
 
 // ─── Palette (matches ChatInterface) ────────────────────────────────────────
 const C = {
@@ -321,7 +322,7 @@ export default function CallMode({
               className="absolute inset-0 rounded-full animate-ping"
               style={{
                 background: 'transparent',
-                border: `2px solid ${C.pink}`,
+                border: `2px solid ${getModality(activeModality).color}`,
                 opacity: 0.35,
                 transform: 'scale(1.2)',
               }}
@@ -331,8 +332,8 @@ export default function CallMode({
             <div
               className="absolute inset-0 rounded-full animate-pulse"
               style={{
-                background: `${C.pink}22`,
-                border: `2px solid ${C.pink}`,
+                background: `${getModality(activeModality).color}22`,
+                border: `2px solid ${getModality(activeModality).color}`,
                 transform: 'scale(1.15)',
               }}
             />
@@ -341,14 +342,15 @@ export default function CallMode({
           {avatarImgError ? (
             <div
               className="w-32 h-32 rounded-full flex items-center justify-center text-white text-4xl font-semibold shadow-2xl"
-              style={{ background: `linear-gradient(135deg, ${C.pink}, ${C.pinkDark})` }}
-            >P</div>
+              style={{ background: `linear-gradient(135deg, ${getModality(activeModality).color}, ${getModality(activeModality).color}bb)` }}
+            >{getModality(activeModality).displayName[0]}</div>
           ) : (
             <img
-              src="/penny-avatar.png"
+              src={getModality(activeModality).avatarPath}
               className="w-32 h-32 rounded-full object-cover shadow-2xl"
-              style={{ border: `3px solid ${callState === 'thinking' ? C.textMuted : C.pink}` }}
-              alt="Penny"
+              style={{ border: `3px solid ${callState === 'thinking' ? C.textMuted : getModality(activeModality).color}` }}
+              alt={getModality(activeModality).displayName}
+              onError={() => setAvatarImgError(true)}
             />
           )}
         </div>
@@ -359,11 +361,11 @@ export default function CallMode({
             <span className="flex gap-1">
               {[0,150,300].map(d => (
                 <span key={d} className="w-1.5 h-1.5 rounded-full animate-bounce"
-                  style={{ background: C.pink, animationDelay: `${d}ms` }} />
+                  style={{ background: getModality(activeModality).color, animationDelay: `${d}ms` }} />
               ))}
             </span>
           )}
-          <span className="text-sm" style={{ color: callState === 'listening' ? C.pink : C.textMuted }}>
+          <span className="text-sm" style={{ color: callState === 'listening' ? getModality(activeModality).color : C.textMuted }}>
             {stateLabel}
           </span>
         </div>
