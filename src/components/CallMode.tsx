@@ -22,6 +22,8 @@ interface CallModeProps {
   onClose: () => void
   onMessage: (role: 'user' | 'assistant', content: string) => void
   avatarImgError: boolean
+  activeModality: string
+  onModality?: (id: string) => void
 }
 
 // ─── Minimal Web Speech API types ────────────────────────────────────────────
@@ -60,6 +62,8 @@ export default function CallMode({
   onClose,
   onMessage,
   avatarImgError,
+  activeModality,
+  onModality,
 }: CallModeProps) {
   const [callState, setCallState]     = useState<CallState>('listening')
   const [transcript, setTranscript]   = useState('')
@@ -76,13 +80,14 @@ export default function CallMode({
   // speech-recognition callbacks, avoiding stale closures (e.g. a null
   // conversationId captured on first render forking the conversation).
   const conversationIdRef  = useRef(conversationId)
-  const activeModalityRef  = useRef<string>('pa') // tracks which modality is speaking
+  const activeModalityRef  = useRef<string>(activeModality) // tracks which modality is speaking
   const handleSendRef      = useRef<(text: string) => void>(() => {})
   const startListeningRef  = useRef<() => void>(() => {})
   const speakRef           = useRef<(text: string) => Promise<void>>(async () => {})
 
   useEffect(() => { callStateRef.current = callState }, [callState])
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
+  useEffect(() => { activeModalityRef.current = activeModality }, [activeModality])
 
   // ── Speech → text ──────────────────────────────────────────────────────────
   // continuous = false: one utterance per recognition session. Chrome's own
@@ -213,17 +218,27 @@ export default function CallMode({
               }
               if (data.activeModality) {
                 activeModalityRef.current = data.activeModality
+                onModality?.(data.activeModality)
               }
               // Shift or session closed — reset conversation so next turn starts fresh
               if (data.shiftComplete || data.sessionComplete) {
                 conversationIdRef.current = null
                 activeModalityRef.current = 'pa'
                 onConversationId('')
+                onModality?.('pa')
               }
               const clean = data.cleanText ?? fullText
               onMessage('assistant', clean)
               setPennyText(clean)
               await speakRef.current(clean)
+            }
+            if (data.error) {
+              // Server errored mid-flow — don't hang on "thinking"; go back to listening.
+              console.error('[call] server error:', data.error)
+              if (activeRef.current) {
+                setCallState('listening')
+                startListeningRef.current()
+              }
             }
           } catch { /* skip */ }
         }
@@ -233,7 +248,7 @@ export default function CallMode({
       setCallState('listening')
       startListeningRef.current()
     }
-  }, [stopListening, onConversationId, onMessage])
+  }, [stopListening, onConversationId, onMessage, onModality])
 
   // Keep refs pointed at the latest function instances
   useEffect(() => {

@@ -12,7 +12,7 @@ import { touchActive, touchCompleted } from '@/lib/modality-state'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart, isVoice, switchTo } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice, switchTo, paHandoff } = await req.json()
 
   // Get or create the single profile
   let profile = await prisma.profile.findFirst()
@@ -56,6 +56,16 @@ export async function POST(req: NextRequest) {
     await prisma.conversation.update({
       where: { id: convoId },
       data: { activeModality },
+    })
+  }
+
+  // PA handoff: a fresh Penny (PA) session opened right after a submodality's
+  // Session End. Force PA and prompt her to read the notes passed up.
+  if (paHandoff) {
+    activeModality = 'pa'
+    await prisma.conversation.update({
+      where: { id: convoId },
+      data: { activeModality: 'pa' },
     })
   }
 
@@ -114,9 +124,12 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
 
   // Auto-start: Penny opens cold — silent trigger user never sees.
   // Manual switch with no message: greet as the new modality.
-  const isSilentTrigger = isAutoStart || (manualSwitch && !message?.trim())
+  // PA handoff: fresh anchor session after a Session End.
+  const isSilentTrigger = isAutoStart || paHandoff || (manualSwitch && !message?.trim())
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
+    : paHandoff
+    ? `A submodality's session just ended and you (Penny, the Personal Assistant) are active now. Read any notes that were passed up to you from the session that just ended, then greet ${profile.userName || 'them'} briefly — surface anything important, otherwise just welcome them back.`
     : manualSwitch && !message?.trim()
     ? `You've just been switched into your ${manualSwitch.displayName} modality. Briefly take over in your new voice and pick up the thread.`
     : message
@@ -253,6 +266,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
 
         // Shift Complete — a submodality wrapping up its shift (then hands back to PA)
         const isShiftEnd = !currentModality.canComplete && scopedActions.some((a) => a.kind === 'shift_complete')
+        let shiftEnded = false
 
         // ── Subroutine / session-complete flow (skipped when switching) ──────
         const isCompleting = !willSwitch && scopedActions.some((a) => a.kind === 'complete_session')
@@ -354,8 +368,13 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // next session with zero knowledge of this shift's message history.
         // Only what the modality chose to remember (notes, identity docs) carries over.
         if (isShiftEnd) {
-          const shiftInstruction = `SHIFT COMPLETE — wrap up your shift as ${currentModality.displayName} (${currentModality.role}).
-Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memories, resolve notes you've handled. Then pass UP to Penny (the Personal Assistant) anything she should keep track of, using <next_session target="pa">…</next_session> — including any reminders or calendar events you'd like her to schedule (only she can). Work silently; no need to narrate.`
+          const shiftInstruction = `SHIFT COMPLETE — you are wrapping up your shift as ${currentModality.displayName} (${currentModality.role}). This is a hard close: the conversation is about to be cleared and Penny (the Personal Assistant) takes over fresh.
+
+Respond with MARKERS ONLY — no prose. Do two things:
+1. Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memories, resolve notes you've handled.
+2. You MUST hand off to Penny. For ANYTHING from this conversation she should know — open threads, things you promised ${profile!.userName || 'them'}, their state of mind, reminders or calendar events you want scheduled (only she can do that) — leave a note up:
+   <next_session target="pa">…</next_session>
+If there is genuinely nothing to carry over, leave exactly one: <next_session target="pa">Nothing outstanding from the ${currentModality.role} shift.</next_session> so Penny knows you closed cleanly.`
 
           const shiftPass = await getAnthropic().messages.create({
             model: PENNY_FAST_MODEL,
@@ -392,9 +411,11 @@ Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memorie
             touchCompleted(profile!.id, currentModality.id),
           ])
 
-          // Don't switch — the conversation is done.
+          // Don't switch inline — the conversation is done. The client opens a
+          // fresh PA session (paHandoff) where Penny reads the notes passed up.
           willSwitch = false
           switchTarget = null
+          shiftEnded = true
         }
 
         // ── Perform the handoff to the new modality ─────────────────────────

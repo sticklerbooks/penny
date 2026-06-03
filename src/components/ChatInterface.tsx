@@ -83,13 +83,13 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   }, [input])
 
 
-  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string) => {
-    const content = isAutoStart ? '' : text.trim()
-    if (!isAutoStart && !switchTo && !content) return
+  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string, paHandoff = false) => {
+    const content = isAutoStart || paHandoff ? '' : text.trim()
+    if (!isAutoStart && !switchTo && !paHandoff && !content) return
     if (isLoading) return
 
-    // Show the user's message bubble (not for auto-start or silent switches)
-    if (!isAutoStart && content) {
+    // Show the user's message bubble (not for auto-start / silent switches / handoffs)
+    if (!isAutoStart && !paHandoff && content) {
       setMessages(prev => [...prev, { role: 'user', content }])
       setInput('')
     }
@@ -101,7 +101,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, conversationId, isAutoStart, switchTo }),
+        // paHandoff always starts a FRESH conversation (ignore the closed one)
+        body: JSON.stringify({
+          message: content,
+          conversationId: paHandoff ? null : conversationId,
+          isAutoStart,
+          switchTo,
+          paHandoff,
+        }),
       })
       if (!res.body) throw new Error('No response body')
 
@@ -143,14 +150,26 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
               }
               if (data.shiftComplete) {
-                // Shift closed — context cleared. Auto-start PA fresh so she greets
-                // with no knowledge of the prior shift's conversation.
+                // Session End from a submodality: clear the chat completely and
+                // open a fresh Penny (PA) session that reads the notes passed up.
                 setConversationId(null)
                 setActiveModality('pa')
-                setMessages(prev => [...prev, { role: 'assistant', content: '— session closed —', streaming: false }])
-                // Slight delay so the divider renders before PA's greeting streams in
-                setTimeout(() => sendMessage('', true), 400)
+                setMessages([])
+                setTimeout(() => sendMessage('', false, undefined, true), 300)
               }
+            }
+            if (data.error) {
+              // Server signalled an error mid-flow — stop the spinner instead of
+              // leaving the bubble stuck on "thinking".
+              setMessages(prev => {
+                const next = [...prev]
+                const last = next[next.length - 1]
+                if (last?.streaming) {
+                  last.content = fullText.trim() || 'Something hiccupped on my end — try again?'
+                  last.streaming = false
+                }
+                return next
+              })
             }
           } catch { /* skip malformed */ }
         }
@@ -259,6 +278,8 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           onClose={() => setInCall(false)}
           onMessage={addCallMessage}
           avatarImgError={avatarImgError}
+          activeModality={activeModality}
+          onModality={setActiveModality}
         />
       )}
 
@@ -309,8 +330,8 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowSwitcher(false)} />
                   <div
-                    className="absolute right-0 mt-2 z-50 rounded-xl overflow-hidden shadow-2xl min-w-[200px]"
-                    style={{ background: C.panelLight, border: `1px solid ${C.border}` }}
+                    className="absolute right-0 mt-2 z-50 rounded-xl overflow-y-auto shadow-2xl min-w-[200px]"
+                    style={{ background: C.panelLight, border: `1px solid ${C.border}`, maxHeight: '70vh' }}
                   >
                     {MODALITIES.filter(m => !m.hidden).map(m => (
                       <button
