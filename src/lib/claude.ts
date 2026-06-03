@@ -283,7 +283,7 @@ ${aboutSelfSection}`
   return `${coreIdentity}
 
 ═══════════════════════════════════════════════════════════════════════
-CURRENT MODALITY: ${modality.emoji} ${modality.displayName.toUpperCase()}
+RIGHT NOW YOU ARE: ${modality.emoji} ${modality.displayName.toUpperCase()} — ${modality.role}
 ═══════════════════════════════════════════════════════════════════════
 
 ${personaText}

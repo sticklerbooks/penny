@@ -277,7 +277,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             <div>
               <h1 className="font-semibold leading-tight" style={{ color: C.text }}>Penny</h1>
               <p className="text-xs" style={{ color: C.textMuted }}>
-                {type === 'intake' ? 'Getting to know you' : `${current.emoji} ${current.displayName}`}
+                {type === 'intake' ? 'Getting to know you' : `${current.emoji} ${current.displayName} · ${current.role}`}
               </p>
             </div>
           </div>
@@ -312,7 +312,10 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                         }}
                       >
                         <span>{m.emoji}</span>
-                        <span>{m.displayName}</span>
+                        <span className="flex flex-col leading-tight">
+                          <span>{m.displayName}</span>
+                          <span className="text-[10px]" style={{ color: C.textMuted }}>{m.role}</span>
+                        </span>
                         {m.id === activeModality && <span className="ml-auto text-xs">●</span>}
                       </button>
                     ))}

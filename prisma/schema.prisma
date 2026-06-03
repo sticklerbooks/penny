@@ -132,6 +132,17 @@ model NextSessionNote {
   target   String? // which modality it's addressed to (e.g. "pa" for notes up)
 }
 
+model ModalityState {
+  id        String   @id @default(cuid())
+  profileId String
+
+  modalityId     String
+  lastActiveAt   DateTime?  // last time this modality was active in a turn
+  lastCompletedAt DateTime? // last time it ran a Shift/Session Complete
+
+  @@unique([profileId, modalityId])
+}
+
 model ScheduledMessage {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())

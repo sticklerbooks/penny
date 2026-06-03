@@ -6,6 +6,7 @@ import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
 import { loadSubroutine } from '@/lib/subroutines'
 import { getModality, resolveModality, isActionAllowed } from '@/lib/modalities'
+import { touchActive, touchCompleted } from '@/lib/modality-state'
 
 export const dynamic = 'force-dynamic'
 
@@ -227,8 +228,11 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         const switchAction = [...scopedActions]
           .reverse()
           .find((a) => a.kind === 'switch_modality') as { kind: 'switch_modality'; name: string } | undefined
-        const switchTarget = switchAction ? resolveModality(switchAction.name) : null
-        const willSwitch = !!switchTarget && switchTarget.id !== currentModality.id
+        let switchTarget = switchAction ? resolveModality(switchAction.name) : null
+        let willSwitch = !!switchTarget && switchTarget.id !== currentModality.id
+
+        // Shift Complete — a submodality wrapping up its shift (then hands back to PA)
+        const isShiftEnd = !currentModality.canComplete && scopedActions.some((a) => a.kind === 'shift_complete')
 
         // ── Subroutine / session-complete flow (skipped when switching) ──────
         const isCompleting = !willSwitch && scopedActions.some((a) => a.kind === 'complete_session')
@@ -303,6 +307,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
                 content: `🔄 Fresh session — hygiene was run on ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`,
               },
             }),
+            touchCompleted(profile!.id, currentModality.id),
           ])
         }
         // ─────────────────────────────────────────────────────────────────
@@ -314,6 +319,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             a.kind !== 'search_calendar' &&
             a.kind !== 'run_subroutine' &&
             a.kind !== 'complete_session' &&
+            a.kind !== 'shift_complete' &&
             a.kind !== 'switch_modality'
         )
         if (executableActions.length > 0) {
@@ -321,6 +327,46 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             domain: currentModality.domain,
             modalityId: currentModality.id,
           })
+        }
+
+        // ── Shift Complete: a submodality wraps up, then hands back to PA ────
+        if (isShiftEnd) {
+          const shiftInstruction = `SHIFT COMPLETE — wrap up your shift as ${currentModality.displayName} (${currentModality.role}).
+Clean ONLY your own domain: mark done/stale tasks, consolidate duplicate memories, resolve notes you've handled. Then pass UP to Penny (the Personal Assistant) anything she should keep track of, using <next_session target="pa">…</next_session> — including any reminders or calendar events you'd like her to schedule (only she can). Work silently; no need to narrate.`
+
+          const shiftPass = await getAnthropic().messages.create({
+            model: PENNY_FAST_MODEL,
+            max_tokens: 1500,
+            system: systemPrompt + '\n\n' + shiftInstruction,
+            messages: [
+              ...claudeMessages,
+              { role: 'assistant', content: workingText || '(wrapping up)' },
+              { role: 'user', content: 'Run your Shift Complete now. Execute all relevant actions.' },
+            ],
+          })
+          const shiftRaw = (shiftPass.content[0] as { type: string; text: string }).text
+          const { actions: shiftActions } = parseActions(shiftRaw)
+          const shiftExecutable = shiftActions.filter(
+            (a) =>
+              isActionAllowed(currentModality, a.kind) &&
+              a.kind !== 'search_email' &&
+              a.kind !== 'search_calendar' &&
+              a.kind !== 'run_subroutine' &&
+              a.kind !== 'complete_session' &&
+              a.kind !== 'shift_complete' &&
+              a.kind !== 'switch_modality'
+          )
+          if (shiftExecutable.length > 0) {
+            await executeActions(profile!.id, shiftExecutable, {
+              domain: currentModality.domain,
+              modalityId: currentModality.id,
+            })
+          }
+          await touchCompleted(profile!.id, currentModality.id)
+
+          // Hand the baton back to Penny (the anchor).
+          switchTarget = getModality('pa')
+          willSwitch = true
         }
 
         // ── Perform the handoff to the new modality ─────────────────────────
@@ -370,6 +416,13 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               ? `${workingText}\n\n${handoffClean}`
               : handoffClean
           }
+        }
+
+        // Stamp activity: the modality that worked this turn, and (if switched)
+        // the one that just took over. Drives the nightly "needs completing" check.
+        await touchActive(profile!.id, currentModality.id)
+        if (willSwitch && switchTarget && switchTarget.id !== currentModality.id) {
+          await touchActive(profile!.id, switchTarget.id)
         }
 
         // Save Penny's final response (after subroutine + handoff appends)

@@ -96,6 +96,14 @@ const statements = [
     resolved INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (profileId) REFERENCES Profile(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS ModalityState (
+    id TEXT PRIMARY KEY,
+    profileId TEXT NOT NULL,
+    modalityId TEXT NOT NULL,
+    lastActiveAt DATETIME,
+    lastCompletedAt DATETIME,
+    UNIQUE (profileId, modalityId)
+  )`,
   `CREATE TABLE IF NOT EXISTS ScheduledMessage (
     id TEXT PRIMARY KEY,
     createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

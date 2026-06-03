@@ -54,6 +54,7 @@ export type PennyAction =
   | { kind: 'update_self_notes'; content: string }
   | { kind: 'run_subroutine'; name: string }
   | { kind: 'complete_session' }
+  | { kind: 'shift_complete' }
   | { kind: 'switch_modality'; name: string }
 
 // Regex patterns for each marker type
@@ -77,6 +78,7 @@ const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_pr
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
 const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
 const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
+const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
 const SWITCH_MODALITY_RE = /<switch_modality\s+name=["']([^"']+)["']\s*\/?>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
@@ -284,6 +286,11 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'complete_session' })
   }
 
+  // shift_complete (fresh non-global regex for .test())
+  if (/<shift_complete\s*\/?>/i.test(text)) {
+    actions.push({ kind: 'shift_complete' })
+  }
+
   // switch_modality
   for (const m of text.matchAll(SWITCH_MODALITY_RE)) {
     const name = m[1].trim()
@@ -313,6 +320,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(UPDATE_SELF_NOTES_RE, '')
     .replace(RUN_SUBROUTINE_RE, '')
     .replace(COMPLETE_SESSION_RE, '')
+    .replace(SHIFT_COMPLETE_RE, '')
     .replace(SWITCH_MODALITY_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -493,6 +501,7 @@ export async function executeActions(
         // Handled in route.ts before executeActions is called — no-op here
         case 'run_subroutine':
         case 'complete_session':
+        case 'shift_complete':
         case 'switch_modality':
           break
       }
