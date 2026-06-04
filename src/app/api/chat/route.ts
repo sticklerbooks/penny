@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL } from '@/lib/claude'
+import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL, WeeklyBriefSummary } from '@/lib/claude'
 import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
@@ -45,7 +45,10 @@ export async function POST(req: NextRequest) {
   // ── Load all context in parallel ───────────────────────────────────────────
   // Load before the farewell pass (which uses outgoing modality context) and
   // also before the main pass (which uses incoming modality context).
-  const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary] =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any
+
+  const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
@@ -66,6 +69,11 @@ export async function POST(req: NextRequest) {
         orderBy: { sendAt: 'asc' },
       }),
       getEmailCalendarSummary(profile.id).catch(() => null),
+      // Weekly brief — only used by PA, but cheap to load for all modalities
+      db.weeklyBrief.findFirst({
+        where: { profileId: profile.id },
+        orderBy: { createdAt: 'desc' },
+      }).catch(() => null) as Promise<WeeklyBriefSummary | null>,
     ])
 
   const outgoingModality = getModality(outgoingModalityId)
@@ -76,7 +84,7 @@ export async function POST(req: NextRequest) {
   if (isSwitch && existingMessages.length > 0) {
     const farewellSystem = buildSystemPrompt(
       profile, memories, tasks, nextSessionNotes, clients,
-      scheduledMessages, emailCalendarSummary, false, outgoingModalityId
+      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null
     )
     const farewellInstruction = `CONTEXT HAND-OFF: ${profile.userName || 'The user'} has switched to a different modality. Write exactly ONE <next_session> note summarizing any open threads, pending items, or things your next session should know. Be concise. Use markers only — no visible text. If nothing is open, write: <next_session>Closed cleanly — no open items.</next_session>`
 
@@ -144,7 +152,7 @@ export async function POST(req: NextRequest) {
   const systemPrompt = buildSystemPrompt(
     profile, memories, tasks, nextSessionNotes, clients,
     scheduledMessages, emailCalendarSummary,
-    !profile.intakeComplete, activeModality
+    !profile.intakeComplete, activeModality, weeklyBrief
   )
 
   const currentModality = getModality(activeModality)

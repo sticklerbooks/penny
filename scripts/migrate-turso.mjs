@@ -140,7 +140,30 @@ const alters = [
   `ALTER TABLE Task ADD COLUMN lastReviewed DATETIME`,
 ]
 
-console.log('Creating tables in Turso...')
+// New tables added after initial schema — created only if they don't exist yet.
+const newTables = [
+  `CREATE TABLE IF NOT EXISTS DomainReport (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    modalityId TEXT NOT NULL,
+    adjective TEXT,
+    reportText TEXT NOT NULL,
+    weekOf DATETIME NOT NULL,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS WeeklyBrief (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    briefText TEXT NOT NULL,
+    weekOf DATETIME NOT NULL,
+    flagged INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
+]
+
+console.log('Creating base tables in Turso...')
 for (const sql of statements) {
   const tableName = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1]
   await client.execute(sql)
@@ -159,5 +182,11 @@ for (const sql of alters) {
       console.log(`  ✗ ${sql} — ${e.message}`)
     }
   }
+}
+console.log('Creating new tables (DomainReport, WeeklyBrief)...')
+for (const sql of newTables) {
+  const tableName = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1]
+  await client.execute(sql)
+  console.log(`  ✓ ${tableName}`)
 }
 console.log('Done! Turso database is ready.')

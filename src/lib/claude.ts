@@ -31,6 +31,14 @@ export const PENNY_SEARCH_MODEL = process.env.PENNY_SEARCH_MODEL || PENNY_MODEL
 // Fast model for mechanical work: farewell notes on switch, memory extraction
 export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haiku-20241022'
 
+// Lightweight type for the weekly brief — avoids importing from generated prisma
+// (which isn't committed to git; Railway regenerates on each deploy).
+export interface WeeklyBriefSummary {
+  briefText: string
+  weekOf: Date | string
+  flagged: boolean
+}
+
 export function buildSystemPrompt(
   profile: Profile | null,
   memories: Memory[],
@@ -40,7 +48,8 @@ export function buildSystemPrompt(
   scheduledMessages: ScheduledMessage[],
   emailCalendarSummary: string | null,
   isIntake: boolean,
-  modalityId: string = 'pa'
+  modalityId: string = 'pa',
+  weeklyBrief: WeeklyBriefSummary | null = null
 ): string {
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
@@ -304,6 +313,17 @@ ${aboutSelfSection}`
     : ''
   const tasksLabel = isPA ? 'MASTER LIST + UNROUTED TASKS' : 'ACTIVE TASKS'
 
+  // Weekly brief: only shown to PA, only when one exists.
+  // These are Penny's private synthesis notes compiled while Adam wasn't present.
+  const weeklyBriefBlock = isPA && weeklyBrief
+    ? (() => {
+        const d = new Date(weeklyBrief.weekOf)
+        const dateStr = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        const flag = weeklyBrief.flagged ? ' ⚠️ ITEMS NEED YOUR ATTENTION' : ''
+        return `\n\n📊 YOUR WEEKLY BRIEF (compiled ${dateStr}${flag}):\n${weeklyBrief.briefText}\n\n↳ Reference this when ${userName} asks how they're doing, or surface flagged items proactively. This is your honest private assessment — present it in your own voice.`
+      })()
+    : ''
+
   return `${identityPreamble}
 
 ═══════════════════════════════════════════════════════════════════════
@@ -333,6 +353,6 @@ ${memoriesText}${clientsBlock}
 ✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week, ⭐=master list):
 ${tasksText}${notificationsBlock}${calendarBlock}
 
-📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)`
+📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)${weeklyBriefBlock}`
 }
 

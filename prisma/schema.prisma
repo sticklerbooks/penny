@@ -37,6 +37,8 @@ model Profile {
   nextSessionNotes  NextSessionNote[]
   clients           Client[]
   scheduledMessages ScheduledMessage[]
+  domainReports     DomainReport[]
+  weeklyBriefs      WeeklyBrief[]
 }
 
 model Client {
@@ -149,6 +151,35 @@ model ModalityState {
   lastCompletedAt DateTime? // last time it ran a Shift/Session Complete
 
   @@unique([profileId, modalityId])
+}
+
+// Weekly domain assessment filed by each sub-modality (Margot, June, Iris, Sage, Vera).
+// One row per modality per week. The cron endpoint writes these; Penny reads them.
+model DomainReport {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+
+  profileId  String
+  profile    Profile  @relation(fields: [profileId], references: [id])
+
+  modalityId String   // e.g. 'bookkeeping', 'household', 'creative', 'friend', 'political'
+  adjective  String?  // headline word / phrase extracted from the first line of reportText
+  reportText String   // full assessment response from the modality
+  weekOf     DateTime // timestamp of the cron run that generated this report
+}
+
+// Penny's synthesis of all domain reports for a given week.
+// One row per weekly cron run. Included in Penny's context so she can brief Adam.
+model WeeklyBrief {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  briefText String   // Penny's synthesised summary (her private notes)
+  weekOf    DateTime
+  flagged   Boolean  @default(false) // true if at least one domain needs Adam's attention
 }
 
 model ScheduledMessage {
