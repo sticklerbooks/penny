@@ -8,18 +8,25 @@ restartPolicyMaxRetries = 3
 
 # ─── Cron job setup ───────────────────────────────────────────────────────────
 #
-# Railway doesn't configure crons in this file — you set them up in the
-# Railway dashboard under your project > New Service > Cron.
+# Railway doesn't configure crons in this file — set them up in the Railway
+# dashboard: project > New Service > Cron.
 #
-# Settings to use when creating the cron service:
+# You need TWO cron services:
 #
-#   Schedule:  0 22 * * 0          (Sunday at 10 PM UTC — adjust if needed)
-#   Command:   curl -s -X POST $APP_URL/api/cron/weekly-reports \
-#                   -H "Authorization: Bearer $CRON_SECRET"
+# 1. NIGHTLY HYGIENE (runs every night for dirty modalities)
+#    Schedule:  0 4 * * *           (4 AM UTC = midnight Eastern)
+#    Command:   curl -s -X POST $APP_URL/api/cron/nightly-hygiene \
+#                    -H "Authorization: Bearer $CRON_SECRET"
 #
-# Environment variables to add to the cron service (copy from your main service):
-#   APP_URL        = https://your-penny-app.railway.app
-#   CRON_SECRET    = (generate with: openssl rand -hex 32)
+# 2. WEEKLY REPORTS (Sunday night — domain assessments + Penny synthesis)
+#    Schedule:  0 22 * * 0          (10 PM UTC Sunday = 6 PM Eastern)
+#    Command:   curl -s -X POST $APP_URL/api/cron/weekly-reports \
+#                    -H "Authorization: Bearer $CRON_SECRET"
 #
-# Add CRON_SECRET to your main service too — the endpoint checks it.
+# Environment variables to add to BOTH cron services:
+#   APP_URL      = https://your-penny-app.railway.app
+#   CRON_SECRET  = (generate once: openssl rand -hex 32)
+#
+# Add CRON_SECRET to your main app service too — endpoints check it.
+# APP_URL is only needed by the cron services, not the main app.
 # ─────────────────────────────────────────────────────────────────────────────
