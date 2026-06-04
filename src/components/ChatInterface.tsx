@@ -43,6 +43,28 @@ function stripStreamingMarkers(text: string): string {
   return result.replace(/\n{3,}/g, '\n\n').trim()
 }
 
+// ─── Web Speech API types (for dictate mode) ─────────────────────────────────
+interface DictSpeechResultAlt { transcript: string }
+interface DictSpeechResult { isFinal: boolean; 0: DictSpeechResultAlt }
+interface DictSpeechResultEvent { resultIndex: number; results: ArrayLike<DictSpeechResult> }
+interface DictSpeechErrorEvent { error: string }
+interface DictSpeechRecognizer {
+  continuous: boolean; interimResults: boolean; lang: string
+  onresult: ((e: DictSpeechResultEvent) => void) | null
+  onend: (() => void) | null
+  onerror: ((e: DictSpeechErrorEvent) => void) | null
+  start: () => void; stop: () => void
+}
+type DictSpeechRecognizerCtor = new () => DictSpeechRecognizer
+
+function getDictSpeechRecognizer(): DictSpeechRecognizerCtor | undefined {
+  const w = window as unknown as {
+    SpeechRecognition?: DictSpeechRecognizerCtor
+    webkitSpeechRecognition?: DictSpeechRecognizerCtor
+  }
+  return w.SpeechRecognition || w.webkitSpeechRecognition
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Message {
   role: 'user' | 'assistant'
@@ -67,11 +89,34 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [thinkingImgError, setThinkingImgError] = useState(false)
   const [activeModality, setActiveModality]   = useState('pa')
   const [showSwitcher, setShowSwitcher]       = useState(false)
+  const [isDictating, setIsDictating]         = useState(false)
+  const [isMobile, setIsMobile]               = useState(false)
 
-  const messagesEndRef  = useRef<HTMLDivElement>(null)
-  const textareaRef     = useRef<HTMLTextAreaElement>(null)
-  const hasInitialized  = useRef(false)
+  const messagesEndRef     = useRef<HTMLDivElement>(null)
+  const textareaRef        = useRef<HTMLTextAreaElement>(null)
+  const hasInitialized     = useRef(false)
 
+  // Dictate mode refs
+  const dictateRecogRef    = useRef<DictSpeechRecognizer | null>(null)
+  const dictateAccumRef    = useRef('')
+  const isDictatingRef     = useRef(false)
+  const startDictatingRef  = useRef<() => void>(() => {})
+
+  // ── Mobile detection ────────────────────────────────────────────────────────
+  useEffect(() => {
+    setIsMobile(window.matchMedia('(pointer: coarse)').matches)
+  }, [])
+
+  // ── Keep isDictatingRef in sync ─────────────────────────────────────────────
+  useEffect(() => { isDictatingRef.current = isDictating }, [isDictating])
+
+  // ── Cleanup dictation on unmount ────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      const r = dictateRecogRef.current
+      if (r) { dictateRecogRef.current = null; r.stop() }
+    }
+  }, [])
 
   // Auto-scroll
   useEffect(() => {
@@ -86,8 +131,86 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
   }, [input])
 
+  // ─── Dictate mode ──────────────────────────────────────────────────────────
+  // Starts one recognition session (continuous=false). On pause, onend fires
+  // and we restart as long as isDictatingRef is still true. Each final chunk
+  // appends to dictateAccumRef so text survives across pauses.
+  const startDictating = useCallback(() => {
+    if (!isDictatingRef.current) return
+    const SR = getDictSpeechRecognizer()
+    if (!SR) { setIsDictating(false); isDictatingRef.current = false; return }
 
+    const r = new SR()
+    r.continuous     = false
+    r.interimResults = true
+    r.lang           = 'en-US'
+    dictateRecogRef.current = r
+
+    r.onresult = (event) => {
+      let allFinal = ''
+      let interim  = ''
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) allFinal += event.results[i][0].transcript + ' '
+        else interim += event.results[i][0].transcript
+      }
+      if (allFinal.trim()) dictateAccumRef.current += allFinal
+      setInput((dictateAccumRef.current + interim).trim())
+    }
+
+    r.onend = () => {
+      if (dictateRecogRef.current !== r) return
+      if (!isDictatingRef.current) return
+      // Still dictating after a pause — restart for the next utterance
+      startDictatingRef.current()
+    }
+
+    r.onerror = (e) => {
+      if (e.error === 'not-allowed') {
+        setIsDictating(false)
+        isDictatingRef.current = false
+      }
+      // 'no-speech' / 'aborted' fall through to onend → restart
+    }
+
+    try { r.start() } catch { /* already started */ }
+  }, [])
+
+  const stopDictation = useCallback(() => {
+    setIsDictating(false)
+    isDictatingRef.current = false
+    const r = dictateRecogRef.current
+    dictateRecogRef.current = null
+    r?.stop()
+  }, [])
+
+  const toggleDictation = useCallback(() => {
+    if (isDictating) {
+      stopDictation()
+    } else {
+      dictateAccumRef.current = ''
+      setIsDictating(true)
+      isDictatingRef.current = true
+      // Defer by one tick so isDictatingRef is true when startDictating checks
+      setTimeout(() => startDictatingRef.current(), 0)
+    }
+  }, [isDictating, stopDictation])
+
+  // Keep startDictatingRef current
+  useEffect(() => {
+    startDictatingRef.current = startDictating
+  }, [startDictating])
+
+  // ─── Send message ──────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string) => {
+    // Stop dictation if active (user hit send while dictating)
+    if (isDictatingRef.current) {
+      setIsDictating(false)
+      isDictatingRef.current = false
+      const r = dictateRecogRef.current
+      dictateRecogRef.current = null
+      r?.stop()
+    }
+
     const content = isAutoStart ? '' : text.trim()
     if (!isAutoStart && !switchTo && !content) return
     if (isLoading) return
@@ -157,8 +280,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               })
             }
             if (data.error) {
-              // Server signalled an error mid-flow — stop the spinner instead of
-              // leaving the bubble stuck on "thinking".
               setMessages(prev => {
                 const next = [...prev]
                 const last = next[next.length - 1]
@@ -208,8 +329,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
   }, [type, sendMessage])
 
+  // ─── Keyboard handler ──────────────────────────────────────────────────────
+  // On desktop (pointer: fine): Enter sends, Shift+Enter = new line.
+  // On mobile  (pointer: coarse): Enter always inserts newline; only Send button sends.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input) }
+    if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+      e.preventDefault()
+      sendMessage(input)
+    }
   }
 
   // ─── Penny avatar ──────────────────────────────────────────────────────────
@@ -270,7 +397,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     setMessages(prev => [...prev, { role, content }])
   }, [])
 
-  // ─── Modality switch (from the header dropdown) ─────────────────────────────
+  // ─── Modality switch (from the header dropdown) ────────────────────────────
   const switchModality = useCallback((id: string) => {
     setShowSwitcher(false)
     if (id === activeModality || isLoading) return
@@ -302,7 +429,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         />
       )}
 
-      {/* Faded background image — absolute (not fixed) so iOS Safari renders it correctly */}
+      {/* Faded background image */}
       <div className="absolute inset-0 z-0 pointer-events-none select-none" aria-hidden>
         <div style={{
           position: 'absolute', inset: 0,
@@ -442,26 +569,29 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           style={{ background: C.panel, borderTop: `1px solid ${C.borderBlue}` }}
         >
           <div className="flex items-end gap-2 max-w-2xl mx-auto">
-            {/* Call button — in the input bar so it's always thumb-reachable */}
+
+            {/* Call button */}
             <button
               onClick={() => setInCall(true)}
               className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
               style={{ background: accent + '20', border: `1px solid ${accentBorder}` }}
               title="Start a voice call with Penny"
             >📞</button>
+
+            {/* Textarea */}
             <div className="flex-1">
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isLoading ? 'Penny is thinking…' : 'Type or tap the mic…'}
+                placeholder={isDictating ? 'Listening — speak now…' : isLoading ? 'Penny is thinking…' : 'Type or tap the mic…'}
                 disabled={isLoading}
                 rows={1}
                 className="w-full resize-none rounded-xl px-4 py-2.5 text-sm transition-colors"
                 style={{
                   background: C.base,
-                  border: `1px solid ${accentBorder}`,
+                  border: `1px solid ${isDictating ? accent : accentBorder}`,
                   color: C.text,
                   minHeight: '44px',
                   maxHeight: '128px',
@@ -469,9 +599,25 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   caretColor: accent,
                 }}
                 onFocus={e => e.target.style.borderColor = accent}
-                onBlur={e => e.target.style.borderColor = accentBorder}
+                onBlur={e => e.target.style.borderColor = isDictating ? accent : accentBorder}
               />
             </div>
+
+            {/* Dictate button — speaks directly into the textarea */}
+            <button
+              onClick={toggleDictation}
+              disabled={isLoading}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md disabled:opacity-25 ${isDictating ? 'animate-pulse' : ''}`}
+              style={{
+                background: isDictating ? accent + '40' : accent + '20',
+                border: `1px solid ${isDictating ? accent : accentBorder}`,
+              }}
+              title={isDictating ? 'Stop dictating' : 'Dictate — speak to type, tap Send when done'}
+            >
+              🎤
+            </button>
+
+            {/* Send button */}
             <button
               onClick={() => sendMessage(input)}
               disabled={isLoading || !input.trim()}
@@ -483,8 +629,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               </svg>
             </button>
           </div>
+
+          {/* Hint text */}
           <p className="text-center text-xs mt-2" style={{ color: C.textMuted }}>
-            Enter to send · Shift+Enter for new line
+            {isDictating
+              ? 'Listening… tap 🎤 again or Send when done'
+              : isMobile
+              ? 'Tap Send to send'
+              : 'Enter to send · Shift+Enter for new line'}
           </p>
         </div>
 

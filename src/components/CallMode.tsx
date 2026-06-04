@@ -5,14 +5,12 @@ import { getModality } from '@/lib/modalities'
 
 // ─── Palette (matches ChatInterface) ────────────────────────────────────────
 const C = {
-  base:     '#0B0C10',
-  panel:    '#1F2833',
-  pink:     '#FF69B4',
-  pinkDark: '#d4539a',
-  blue:     '#4B9CD3',
-  text:     'rgba(232,234,240,0.92)',
-  textMuted:'rgba(232,234,240,0.45)',
-  border:   'rgba(255,105,180,0.18)',
+  base:      '#0B0C10',
+  panel:     '#1F2833',
+  pink:      '#FF69B4',
+  text:      'rgba(232,234,240,0.92)',
+  textMuted: 'rgba(232,234,240,0.45)',
+  border:    'rgba(255,105,180,0.18)',
 }
 
 type CallState = 'listening' | 'thinking' | 'speaking'
@@ -28,8 +26,6 @@ interface CallModeProps {
 }
 
 // ─── Minimal Web Speech API types ────────────────────────────────────────────
-// The DOM lib's built-in types are inconsistent across TS versions, so we
-// declare just what we use.
 interface SpeechResultAlt { transcript: string }
 interface SpeechResult { isFinal: boolean; 0: SpeechResultAlt }
 interface SpeechResultEvent {
@@ -66,23 +62,23 @@ export default function CallMode({
   activeModality,
   onModality,
 }: CallModeProps) {
-  const [callState, setCallState]     = useState<CallState>('listening')
-  const [transcript, setTranscript]   = useState('')
-  const [pennyText, setPennyText]     = useState('')
-  const [supported, setSupported]     = useState(true)
-  const [avatarErr, setAvatarErr]     = useState(avatarImgError)
+  const [callState, setCallState]   = useState<CallState>('listening')
+  const [transcript, setTranscript] = useState('')
+  const [pennyText, setPennyText]   = useState('')
+  const [supported, setSupported]   = useState(true)
+  const [avatarErr, setAvatarErr]   = useState(avatarImgError)
 
-  const recognitionRef  = useRef<SpeechRecognizer | null>(null)
-  const accumulated     = useRef('')
-  const callStateRef    = useRef<CallState>('listening')
-  const audioRef        = useRef<HTMLAudioElement | null>(null)
-  const activeRef       = useRef(true) // false when call ends
+  const recognitionRef      = useRef<SpeechRecognizer | null>(null)
+  const accumulated         = useRef('')
+  const callStateRef        = useRef<CallState>('listening')
+  const audioRef            = useRef<HTMLAudioElement | null>(null)
+  const activeRef           = useRef(true)         // false when call ends
+  const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const interruptedRef      = useRef(false)         // cancellation signal for speak()
 
-  // Refs that keep the latest values/functions available inside the long-lived
-  // speech-recognition callbacks, avoiding stale closures (e.g. a null
-  // conversationId captured on first render forking the conversation).
+  // Refs that keep the latest closures available inside long-lived callbacks.
   const conversationIdRef  = useRef(conversationId)
-  const activeModalityRef  = useRef<string>(activeModality) // tracks which modality is speaking
+  const activeModalityRef  = useRef<string>(activeModality)
   const handleSendRef      = useRef<(text: string) => void>(() => {})
   const startListeningRef  = useRef<() => void>(() => {})
   const speakRef           = useRef<(text: string) => Promise<void>>(async () => {})
@@ -92,25 +88,22 @@ export default function CallMode({
   useEffect(() => { activeModalityRef.current = activeModality }, [activeModality])
 
   // ── Speech → text ──────────────────────────────────────────────────────────
-  // continuous = false: one utterance per recognition session. Chrome's own
-  // end-of-speech detection fires onend when you pause — which is exactly our
-  // "send on pause" trigger. This avoids the continuous-mode auto-restart races
-  // on Chrome/Android that caused words to duplicate endlessly.
+  // continuous = false: one utterance per session. Chrome's VAD fires onend
+  // when you pause (~1 s). We add 500 ms on top → ~1.5 s effective silence.
   const startListening = useCallback(() => {
     if (!activeRef.current) return
     const SR = getSpeechRecognizer()
     if (!SR) { setSupported(false); return }
 
     const r = new SR()
-    r.continuous      = false
-    r.interimResults  = true
-    r.lang            = 'en-US'
+    r.continuous     = false
+    r.interimResults = true
+    r.lang           = 'en-US'
     recognitionRef.current = r
     accumulated.current = ''
 
     r.onresult = (event) => {
       if (!activeRef.current) return
-      // Rebuild this utterance's transcript from scratch each event.
       let allFinal = ''
       let interim  = ''
       for (let i = 0; i < event.results.length; i++) {
@@ -123,7 +116,6 @@ export default function CallMode({
     }
 
     r.onend = () => {
-      // Ignore if a newer recognizer has replaced this one.
       if (recognitionRef.current !== r) return
       if (!activeRef.current || callStateRef.current !== 'listening') return
 
@@ -131,16 +123,19 @@ export default function CallMode({
       if (text) {
         setTranscript('')
         accumulated.current = ''
-        handleSendRef.current(text)   // pause detected with speech → send
+        // Extra 500 ms delay so brief mid-sentence pauses don't cut you off.
+        pendingSendTimerRef.current = setTimeout(() => {
+          if (activeRef.current) handleSendRef.current(text)
+        }, 500)
       } else {
-        // No speech captured — keep the mic open for the next utterance.
+        // No speech — keep mic open
         try { r.start() } catch { startListeningRef.current() }
       }
     }
 
     r.onerror = (e) => {
       if (e.error === 'not-allowed') setSupported(false)
-      // 'no-speech'/'aborted' fall through to onend, which restarts.
+      // 'no-speech' / 'aborted' fall through to onend → restarts
     }
 
     try { r.start() } catch { /* already started */ }
@@ -150,35 +145,63 @@ export default function CallMode({
     const r = recognitionRef.current
     recognitionRef.current = null   // null first so onend won't restart
     r?.stop()
+    if (pendingSendTimerRef.current) {
+      clearTimeout(pendingSendTimerRef.current)
+      pendingSendTimerRef.current = null
+    }
+  }, [])
+
+  // ── Interrupt ──────────────────────────────────────────────────────────────
+  // Tap the avatar or the Interrupt button to stop Penny mid-sentence.
+  // speak() has an onpause handler that resolves its promise naturally.
+  const handleInterrupt = useCallback(() => {
+    if (callStateRef.current !== 'speaking') return
+    interruptedRef.current = true
+    audioRef.current?.pause()   // → onpause fires → speak()'s promise resolves
+    // If still fetching TTS (audioRef null), interruptedRef guards the flow
   }, [])
 
   // ── Response → audio ───────────────────────────────────────────────────────
   const speak = useCallback(async (text: string) => {
     if (!activeRef.current) return
+    interruptedRef.current = false
     setCallState('speaking')
 
     try {
       const res = await fetch('/api/speak', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, modality: activeModalityRef.current }),
+        body:    JSON.stringify({ text, modality: activeModalityRef.current }),
       })
       if (!res.ok) throw new Error('TTS failed')
+
+      // Guard: was interrupt() called while we were fetching?
+      if (interruptedRef.current) throw new Error('interrupted')
 
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audioRef.current = audio
 
+      // Guard again after setting audioRef (tiny race window)
+      if (interruptedRef.current) {
+        URL.revokeObjectURL(url)
+        throw new Error('interrupted')
+      }
+
       await new Promise<void>((resolve) => {
         audio.onended = () => { URL.revokeObjectURL(url); resolve() }
         audio.onerror = () => { URL.revokeObjectURL(url); resolve() }
+        audio.onpause = () => { URL.revokeObjectURL(url); resolve() } // interrupt support
         audio.play().catch(() => resolve())
       })
     } catch (err) {
-      console.error('[call] speak error:', err)
+      if ((err as Error).message !== 'interrupted') {
+        console.error('[call] speak error:', err)
+      }
     }
 
+    // Whether we finished naturally or were interrupted, restart listening
     if (activeRef.current) {
       setPennyText('')
       setCallState('listening')
@@ -195,9 +218,9 @@ export default function CallMode({
 
     try {
       const res = await fetch('/api/chat', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, conversationId: conversationIdRef.current, isVoice: true }),
+        body:    JSON.stringify({ message: text, conversationId: conversationIdRef.current, isVoice: true }),
       })
       if (!res.body) throw new Error('No response')
 
@@ -222,7 +245,6 @@ export default function CallMode({
                 activeModalityRef.current = data.activeModality
                 onModality?.(data.activeModality)
               }
-              // On a modality switch, reset so next turn uses the fresh conversation
               if (data.contextCleared) {
                 conversationIdRef.current = data.conversationId || null
               }
@@ -232,7 +254,6 @@ export default function CallMode({
               await speakRef.current(clean)
             }
             if (data.error) {
-              // Server errored mid-flow — don't hang on "thinking"; go back to listening.
               console.error('[call] server error:', data.error)
               if (activeRef.current) {
                 setCallState('listening')
@@ -268,13 +289,16 @@ export default function CallMode({
   }, [startListening, stopListening])
 
   const handleClose = () => {
+    if (pendingSendTimerRef.current) clearTimeout(pendingSendTimerRef.current)
     activeRef.current = false
     stopListening()
     audioRef.current?.pause()
     onClose()
   }
 
-  // ── State labels ───────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const modality = getModality(activeModality)
+
   const stateLabel = {
     listening: 'Listening…',
     thinking:  'Thinking…',
@@ -303,7 +327,7 @@ export default function CallMode({
       {/* Top bar */}
       <div className="relative z-10 w-full flex items-center justify-between px-6 pt-12 pb-4">
         <span className="text-sm font-medium" style={{ color: C.textMuted }}>
-          Call with Penny
+          Call with {modality.displayName}
         </span>
         <button
           onClick={handleClose}
@@ -313,17 +337,22 @@ export default function CallMode({
       </div>
 
       {/* Center — avatar + state */}
-      <div className="relative z-10 flex flex-col items-center gap-6 flex-1 justify-center">
+      <div className="relative z-10 flex flex-col items-center gap-6 flex-1 justify-center w-full px-6">
 
-        {/* Avatar with animated ring */}
-        <div className="relative">
+        {/* Avatar — tappable to interrupt when speaking */}
+        <div
+          className="relative"
+          onClick={callState === 'speaking' ? handleInterrupt : undefined}
+          style={callState === 'speaking' ? { cursor: 'pointer' } : undefined}
+          title={callState === 'speaking' ? 'Tap to interrupt' : undefined}
+        >
           {/* Outer pulse ring */}
           {callState === 'listening' && (
             <div
               className="absolute inset-0 rounded-full animate-ping"
               style={{
                 background: 'transparent',
-                border: `2px solid ${getModality(activeModality).color}`,
+                border: `2px solid ${modality.color}`,
                 opacity: 0.35,
                 transform: 'scale(1.2)',
               }}
@@ -333,8 +362,8 @@ export default function CallMode({
             <div
               className="absolute inset-0 rounded-full animate-pulse"
               style={{
-                background: `${getModality(activeModality).color}22`,
-                border: `2px solid ${getModality(activeModality).color}`,
+                background: `${modality.color}22`,
+                border: `2px solid ${modality.color}`,
                 transform: 'scale(1.15)',
               }}
             />
@@ -343,14 +372,14 @@ export default function CallMode({
           {avatarErr ? (
             <div
               className="w-32 h-32 rounded-full flex items-center justify-center text-white text-4xl font-semibold shadow-2xl"
-              style={{ background: `linear-gradient(135deg, ${getModality(activeModality).color}, ${getModality(activeModality).color}bb)` }}
-            >{getModality(activeModality).displayName[0]}</div>
+              style={{ background: `linear-gradient(135deg, ${modality.color}, ${modality.color}bb)` }}
+            >{modality.displayName[0]}</div>
           ) : (
             <img
-              src={getModality(activeModality).avatarPath}
+              src={modality.avatarPath}
               className="w-32 h-32 rounded-full object-cover shadow-2xl"
-              style={{ border: `3px solid ${callState === 'thinking' ? C.textMuted : getModality(activeModality).color}` }}
-              alt={getModality(activeModality).displayName}
+              style={{ border: `3px solid ${callState === 'thinking' ? C.textMuted : modality.color}` }}
+              alt={modality.displayName}
               onError={() => setAvatarErr(true)}
             />
           )}
@@ -360,13 +389,13 @@ export default function CallMode({
         <div className="flex items-center gap-2">
           {callState === 'thinking' && (
             <span className="flex gap-1">
-              {[0,150,300].map(d => (
+              {[0, 150, 300].map(d => (
                 <span key={d} className="w-1.5 h-1.5 rounded-full animate-bounce"
-                  style={{ background: getModality(activeModality).color, animationDelay: `${d}ms` }} />
+                  style={{ background: modality.color, animationDelay: `${d}ms` }} />
               ))}
             </span>
           )}
-          <span className="text-sm" style={{ color: callState === 'listening' ? getModality(activeModality).color : C.textMuted }}>
+          <span className="text-sm" style={{ color: callState === 'listening' ? modality.color : C.textMuted }}>
             {stateLabel}
           </span>
         </div>
@@ -381,14 +410,34 @@ export default function CallMode({
           </p>
         )}
 
-        {/* Penny's response text (while speaking) */}
+        {/* Penny's response — scrollable, full text */}
         {pennyText && callState === 'speaking' && (
-          <p
-            className="text-center text-sm max-w-xs px-6 leading-relaxed"
-            style={{ color: C.text, fontFamily: 'var(--font-lora), Georgia, serif' }}
+          <div
+            className="max-w-xs w-full max-h-48 overflow-y-auto rounded-xl px-4 py-3"
+            style={{ background: 'rgba(255,255,255,0.05)' }}
           >
-            {pennyText.length > 180 ? pennyText.slice(0, 180) + '…' : pennyText}
-          </p>
+            <p
+              className="text-sm leading-relaxed text-center"
+              style={{ color: C.text, fontFamily: 'var(--font-lora), Georgia, serif' }}
+            >
+              {pennyText}
+            </p>
+          </div>
+        )}
+
+        {/* Interrupt button (visible while speaking) */}
+        {callState === 'speaking' && (
+          <button
+            onClick={handleInterrupt}
+            className="text-xs px-5 py-2 rounded-full border transition-all hover:scale-105 active:scale-95"
+            style={{
+              color: modality.color,
+              borderColor: modality.color + '60',
+              background: modality.color + '18',
+            }}
+          >
+            ✋ Interrupt
+          </button>
         )}
 
         {!supported && (
@@ -401,7 +450,9 @@ export default function CallMode({
       {/* Bottom hint */}
       <div className="relative z-10 pb-12">
         <p className="text-xs text-center" style={{ color: C.textMuted }}>
-          Penny hears you. Pause for a moment to send.
+          {callState === 'speaking'
+            ? 'Tap avatar or button above to interrupt'
+            : 'Penny hears you. Pause for a moment to send.'}
         </p>
       </div>
     </div>
