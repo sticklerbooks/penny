@@ -152,6 +152,16 @@ const newTables = [
     weekOf DATETIME NOT NULL,
     FOREIGN KEY (profileId) REFERENCES Profile(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS ScheduledTask (
+    id TEXT PRIMARY KEY,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    profileId TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    runAt DATETIME NOT NULL,
+    ran INTEGER NOT NULL DEFAULT 0,
+    ranAt DATETIME,
+    FOREIGN KEY (profileId) REFERENCES Profile(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS WeeklyBrief (
     id TEXT PRIMARY KEY,
     createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

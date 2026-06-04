@@ -39,6 +39,7 @@ model Profile {
   scheduledMessages ScheduledMessage[]
   domainReports     DomainReport[]
   weeklyBriefs      WeeklyBrief[]
+  scheduledTasks    ScheduledTask[]
 }
 
 model Client {
@@ -170,6 +171,20 @@ model DomainReport {
 
 // Penny's synthesis of all domain reports for a given week.
 // One row per weekly cron run. Included in Penny's context so she can brief Adam.
+// A future check-in Penny schedules for herself. At the scheduled time, the
+// nightly cron builds her full context and asks her to compose a fresh Pushover
+// notification — so the message reflects what's actually happened by then.
+model ScheduledTask {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  profileId String
+  profile   Profile   @relation(fields: [profileId], references: [id])
+  topic     String    // Penny's note to her future self: what to assess and why
+  runAt     DateTime  // when to execute (stored as UTC)
+  ran       Boolean   @default(false)
+  ranAt     DateTime?
+}
+
 model WeeklyBrief {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())

@@ -25,6 +25,7 @@ export type Capability =
   | 'identity'       // PA-only: edit aboutUser / aboutSelf
   | 'subroutines'    // run hygiene etc. (reserved for cron — not in chat flow)
   | 'artifact'       // PA-only: generate a downloadable file for the user
+  | 'checkins'       // PA-only: schedule a future context-aware check-in with Adam
 
 export interface Modality {
   id: string                 // STABLE internal key (tags data) — never rename
@@ -55,7 +56,7 @@ export const MODALITIES: Modality[] = [
     emoji: '🎯',
     aliases: ['pa', 'penny', 'personal assistant', 'assistant', 'anchor'],
     domain: null,
-    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact'],
+    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins'],
     canWriteIdentity: true,
     isStub: false,
     color: '#FF69B4',
@@ -294,6 +295,8 @@ export function actionCapability(kind: string): Capability | null {
       return 'identity'
     case 'run_subroutine':
       return 'subroutines'
+    case 'schedule_task':
+      return 'checkins'
     default:
       return null
   }
@@ -426,6 +429,18 @@ Any plain text, markdown, CSV, or HTML content here.
 - Use for lists, schedules, summaries, exports, or anything worth saving outside this chat.
 - Supported: .txt  .csv  .md  .html  — name the file accordingly and format the content to match.
 - You can include an artifact alongside normal conversational text — it appears as an attachment below your message.`)
+  }
+
+  if (caps.has('checkins')) {
+    blocks.push(`SELF-SCHEDULED CHECK-INS — wake yourself up to follow up at a specific future time
+<schedule_task run_at="2026-06-12 09:00">
+  Check in about the novel. Adam said he'd work on chapter 3 this week. Look at what's actually in the task list and notes by then and give him an honest read — don't assume he did it.
+</schedule_task>
+- At the scheduled time, you'll wake up with FULL CURRENT CONTEXT and compose a Pushover notification to ${name} based on what's actually happened.
+- This is different from schedule_sms: the message is written at execution time, not now. Use it when what you say should depend on real state at that moment.
+- Be specific in the topic: what to assess, what ${name} said he'd do, what you're watching for, what honest tone to take.
+- run_at: "YYYY-MM-DD HH:MM" in ${name}'s local timezone.
+- Use sparingly — ${name}'s phone should only buzz when you have something real to say.`)
   }
 
   if (caps.has('identity')) {

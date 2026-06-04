@@ -59,6 +59,7 @@ export type PennyAction =
   | { kind: 'shift_complete' }
   | { kind: 'switch_modality'; name: string }
   | { kind: 'artifact'; filename: string; content: string }
+  | { kind: 'schedule_task'; topic: string; runAt: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -86,6 +87,7 @@ const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
 const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
 const SWITCH_MODALITY_RE = /<switch_modality\s+name=["']([^"']+)["']\s*\/?>/gi
 const ARTIFACT_RE = /<artifact\s+([^>]*)>([\s\S]*?)<\/artifact>/gi
+const SCHEDULE_TASK_RE = /<schedule_task\s+([^>]*)>([\s\S]*?)<\/schedule_task>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -322,6 +324,14 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'switch_modality', name })
   }
 
+  // schedule_task — Penny schedules a future check-in for herself
+  for (const m of text.matchAll(SCHEDULE_TASK_RE)) {
+    const attrs = parseAttrs(m[1])
+    const topic = (m[2] || '').trim()
+    if (!attrs.run_at || !topic) continue
+    actions.push({ kind: 'schedule_task', runAt: attrs.run_at, topic })
+  }
+
   // artifact — a file Penny generates for the user to download
   for (const m of text.matchAll(ARTIFACT_RE)) {
     const attrs = parseAttrs(m[1])
@@ -358,6 +368,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SHIFT_COMPLETE_RE, '')
     .replace(SWITCH_MODALITY_RE, '')
     .replace(ARTIFACT_RE, '')
+    .replace(SCHEDULE_TASK_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -553,6 +564,20 @@ export async function executeActions(
             data: { privateAboutSelf: action.content, privateAboutSelfUpdatedAt: new Date() } as any,
           })
           break
+
+        case 'schedule_task': {
+          const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+          const runAt = parseSendAt(action.runAt, tz)
+          if (!runAt || isNaN(runAt.getTime())) {
+            console.error(`Invalid schedule_task date: ${action.runAt}`)
+            break
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (prisma as any).scheduledTask.create({
+            data: { profileId, topic: action.topic, runAt },
+          })
+          break
+        }
 
         // Handled in route.ts before executeActions is called — no-op here
         case 'run_subroutine':

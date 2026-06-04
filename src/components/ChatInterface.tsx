@@ -28,6 +28,7 @@ const BLOCK_TAGS = [
   'memory','update_memory',
   'client','update_client','schedule_sms','next_session',
   'artifact',
+  'schedule_task',
 ]
 
 function stripStreamingMarkers(text: string): string {

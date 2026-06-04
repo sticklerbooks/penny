@@ -18,6 +18,7 @@ import { getModality, isActionAllowed } from '@/lib/modalities'
 import { parseActions, executeActions } from '@/lib/actions'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
 import { dirtyModalities, touchCompleted } from '@/lib/modality-state'
+import { sendNotification } from '@/lib/pushover'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -181,5 +182,48 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, ran: results })
+  // ── Fire any self-scheduled check-ins that are due ────────────────────────
+  // These are tasks Penny scheduled for herself during conversations.
+  // She gets full current context and writes the notification fresh at fire time.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any
+  const dueTasks = await db.scheduledTask.findMany({
+    where: { profileId: profile.id, ran: false, runAt: { lte: new Date() } },
+    orderBy: { runAt: 'asc' },
+  }).catch(() => [])
+
+  const firedTasks: { id: string; sent: boolean }[] = []
+
+  for (const task of dueTasks) {
+    try {
+      const pennyPrompt = buildSystemPrompt(
+        profile, memories, tasks, nextSessionNotes, clients,
+        scheduledMessages, emailCalendarSummary, false, 'pa', null
+      )
+
+      const response = await getAnthropic().messages.create({
+        model: PENNY_MODEL,
+        max_tokens: 400,
+        system: pennyPrompt,
+        messages: [{
+          role: 'user',
+          content: `You scheduled a check-in for right now. Here's what you wrote to your future self when you set it up:\n\n"${task.topic}"\n\nGiven your full current context, compose a brief honest Pushover notification to ${userName} about this. Don't be cheerful unless there's real reason to be. If nothing of note has happened, say so plainly. Write only the message text — no quotes, no preamble, just the message.`,
+        }],
+      })
+
+      const message = (response.content[0] as { type: string; text: string }).text.trim()
+      await sendNotification(message)
+      await db.scheduledTask.update({
+        where: { id: task.id },
+        data: { ran: true, ranAt: new Date() },
+      })
+      firedTasks.push({ id: task.id, sent: true })
+      console.log(`[nightly-hygiene] Fired scheduled task ${task.id}`)
+    } catch (err) {
+      console.error(`[nightly-hygiene] Scheduled task ${task.id} failed:`, err)
+      firedTasks.push({ id: task.id, sent: false })
+    }
+  }
+
+  return NextResponse.json({ ok: true, ran: results, firedTasks })
 }
