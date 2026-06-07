@@ -48,6 +48,7 @@ Use your tools to keep the ${domain} domain tidy. Be a clean, decisive professio
 - Add a note (pennyNotes) to anything that looks stalled or is being avoided — name what you're observing.
 - Create a memory if something significant emerged this week that should be durable.
 - Clean up anything redundant or outdated.
+- COMPRESS YOUR MEMORIES: if several memories circle the same theme, consolidate them into one tighter, higher-importance memory and archive the fragments. Trim any memory that has grown verbose down to its durable core. Aim for fewer, sharper memories — only your top memories stay in active context, so density matters.
 - PRUNE YOUR OWN NOTES (shown with id= in your context above): resolve (<resolve_note id="...">) anything you've handled or that's gone stale; delete (<delete_note id="...">) duplicates and obsolete notes — ESPECIALLY any note asserting a specific date or time, which belongs in Google Calendar now, not in a note. If several notes say the same thing, keep the best one and delete the rest. Your note list should stay lean — only live, useful context survives the night.
 
 Don't over-reach. You can only touch what's in your domain and your own notes.
@@ -98,7 +99,7 @@ If several notes (yours or passed-up) say the same thing, keep the best and dele
 
 ━━━ 3. PRUNE THE MASTER LIST & MEMORIES ━━━━━━━━━━━━━━━━━━━━━━━
 - Master list: drop items that have stopped mattering (<update_task id="..." master="false" />); reprioritise if needed. Don't create domain tasks — that's your modalities' work.
-- Memories: merge or update redundant ones, archive what's no longer true. No duplicates.
+- Memories: merge or update redundant ones, archive what's no longer true. No duplicates. Compress clusters of related memories into one tighter, higher-importance memory and archive the fragments — only the top memories stay in active context, so keep them dense and sharp.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Be decisive but conservative: only fold genuinely durable things into the identity documents, and only rewrite a document when something meaningful actually accumulated (remember those are FULL OVERWRITES). Use your tools silently. Keep it proportionate to what's actually there.`
