@@ -487,7 +487,8 @@ Never put a create/update/delete calendar marker in the same message where you p
 ${upNote}
 <resolve_note id="NOTE_ID" />   (you handled it)
 <delete_note id="NOTE_ID" />    (no longer relevant)
-These appear at the top of the recipient's context next session.`)
+These appear at the top of the recipient's context next session.
+- Notes are for context and open threads — NOT for asserting dates/times. Never write a note that claims when something is scheduled or that you "synced" something to the calendar. Those drift and have been wrong. If a time matters, it belongs in Google Calendar, not a note.`)
   }
 
   if (caps.has('artifact')) {

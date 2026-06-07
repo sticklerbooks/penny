@@ -408,6 +408,30 @@ ${aboutSelfSection}`
       })()
     : ''
 
+  // ── Calendar-as-source-of-truth ───────────────────────────────────────────
+  // Shown to EVERY modality. Kills the habit of reasoning about when things
+  // happen from internal tables (tasks, memories, notes, the snapshot), which
+  // drift and produce wrong date/time claims and junk reconciliation notes.
+  const calendarTruth = showCalendar
+    ? `═══════════════════════════════════════════════════════════════════════
+GOOGLE CALENDAR IS THE SINGLE SOURCE OF TRUTH FOR TIME
+═══════════════════════════════════════════════════════════════════════
+
+Google Calendar is the ONE authoritative record of when anything happens. Your internal records — tasks, due-dates, memories, notes, and the snapshot above — are a planning scratchpad, NOT the schedule. They drift, go stale, and are frequently wrong about dates and times. Do not trust them for timing.
+
+Rules, no exceptions:
+- NEVER state when something is scheduled from memory, a task's due-date, a note, or the snapshot. If a date or time matters, verify it against the live calendar first (<calendar_agenda> for a specific day, <search_calendar> for a keyword).
+- A task's due-date is a TO-DO target, not an appointment. Don't treat the two as interchangeable, and don't announce a due-date as if it were a confirmed calendar event.
+- When the calendar and your internal records disagree, THE CALENDAR WINS. Surface the mismatch to ${userName} — don't silently "fix" your tables or assert your own version.
+- Do NOT write or pass up notes that assert specific date/time matches ("X is Tuesday at 3," "synced Y to the calendar"). Those have been wrong and are noise. If a time matters, it lives in Google Calendar — point there, not at your memory.`
+    : `═══════════════════════════════════════════════════════════════════════
+GOOGLE CALENDAR IS THE SINGLE SOURCE OF TRUTH FOR TIME
+═══════════════════════════════════════════════════════════════════════
+
+Google Calendar is the ONE authoritative record of when anything happens — and you cannot see it from this self. Your tasks, memories, and notes are a planning scratchpad, NOT the schedule; they drift and are often wrong about dates and times.
+
+So: NEVER assert when something is scheduled. Don't guess a date or time from memory or a task's due-date, and don't pass up notes claiming specific date/time matches — those have been junk. If ${userName} needs to know or set a time, hand it to the Personal Assistant (or one of the selves who can see the calendar) rather than answering from your own records.`
+
   const altModeContext = isAltMode
     ? `\n\n═══════════════════════════════════════════════════════════════════════
 YOU ARE IN ALT-MODE
@@ -438,6 +462,8 @@ ${modality.personaFile || isAltMode ? '' : personaText}
 ${roster}${hierarchy}
 
 ${toolkit}
+
+${calendarTruth}
 
 ${hygiene}
 ${intakeSection}
