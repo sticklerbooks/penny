@@ -2,7 +2,7 @@
 // Also handles on-demand search execution for the two-pass chat flow.
 
 import { getAnthropic } from './claude'
-import { getGoogleSnapshot, searchGmail, searchGoogleCalendar, readGmailMessage, getGoogleCalendarAgenda } from './google'
+import { getGoogleSnapshot, searchGmail, searchGoogleCalendar, readGmailMessage, getGoogleCalendarAgenda, searchDrive, readDriveFile } from './google'
 import { getMicrosoftSnapshot, searchOutlook, searchOutlookCalendar } from './microsoft'
 import { prisma } from './db'
 
@@ -87,6 +87,8 @@ export type SearchAction =
   | { kind: 'search_calendar'; query: string; label?: string }
   | { kind: 'read_email'; id: string; label?: string }
   | { kind: 'calendar_agenda'; date: string; days?: number; label?: string }
+  | { kind: 'search_drive'; query: string; label?: string }
+  | { kind: 'read_drive_file'; id: string; label?: string }
 
 export async function executeSearches(searches: SearchAction[]): Promise<string> {
   const results = await Promise.all(
@@ -125,6 +127,16 @@ export async function executeSearches(searches: SearchAction[]): Promise<string>
       if (s.kind === 'calendar_agenda') {
         const agenda = await getGoogleCalendarAgenda(s.date, s.days ?? 1).catch(() => '(calendar agenda lookup failed)')
         return `CALENDAR AGENDA${label} for ${s.date}${s.days && s.days > 1 ? ` (+${s.days - 1}d)` : ''}:\n${agenda}`
+      }
+
+      if (s.kind === 'search_drive') {
+        const files = await searchDrive(s.query).catch(() => '(Drive search failed)')
+        return `DRIVE SEARCH${label}: "${s.query}"\n${files}`
+      }
+
+      if (s.kind === 'read_drive_file') {
+        const content = await readDriveFile(s.id).catch(() => '(failed to read Drive file)')
+        return `DRIVE FILE${label} [id=${s.id}]:\n${content}`
       }
     })
   )

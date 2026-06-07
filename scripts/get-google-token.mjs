@@ -23,6 +23,7 @@ const REDIRECT_URI = 'http://localhost:4242/callback'
 const SCOPES = [
   'https://mail.google.com/',
   'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/drive.readonly',
 ].join(' ')
 
 if (!CLIENT_ID || !CLIENT_SECRET) {

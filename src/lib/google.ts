@@ -511,3 +511,86 @@ export async function deleteGoogleCalendarEvent(input: {
   const data = await res.json().catch(() => ({}))
   return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` }
 }
+
+// ─── Google Drive (read-only) ─────────────────────────────────────────────────
+// Search the user's Drive and read file contents on demand. Google-native
+// formats (Docs/Sheets/Slides) export to text for free; plain-text/CSV/JSON
+// download directly. Binary formats (PDF/Office/images) aren't parsed yet.
+
+function driveKind(mimeType: string): string {
+  switch (mimeType) {
+    case 'application/vnd.google-apps.document': return 'Google Doc'
+    case 'application/vnd.google-apps.spreadsheet': return 'Google Sheet'
+    case 'application/vnd.google-apps.presentation': return 'Google Slides'
+    case 'application/pdf': return 'PDF'
+    case 'application/json': return 'JSON'
+    default:
+      if (mimeType.startsWith('text/')) return `${mimeType.slice(5)} text`
+      return mimeType
+  }
+}
+
+export async function searchDrive(query: string): Promise<string> {
+  const token = await refreshGoogleToken()
+  if (!token) return '(Google Drive not configured)'
+
+  const q = `fullText contains '${query.replace(/['\\]/g, '\\$&')}' and trashed = false`
+  const params = new URLSearchParams({
+    q,
+    pageSize: '15',
+    fields: 'files(id,name,mimeType,modifiedTime)',
+    orderBy: 'modifiedTime desc',
+  })
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const data = await res.json()
+  if (!res.ok) return `(Drive search failed: ${data.error?.message ?? res.status})`
+  if (!data.files?.length) return `(no Drive files matching "${query}")`
+
+  return data.files.map((f: { id: string; name: string; mimeType: string; modifiedTime?: string }) => {
+    const when = f.modifiedTime
+      ? new Date(f.modifiedTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : ''
+    return `${f.name} — ${driveKind(f.mimeType)}, modified ${when} [id=${f.id}]`
+  }).join('\n')
+}
+
+export async function readDriveFile(id: string): Promise<string> {
+  const token = await refreshGoogleToken()
+  if (!token) return '(Google Drive not configured)'
+
+  // Metadata first — we need the mime type to decide how to read it.
+  const metaRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,name,mimeType`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (!metaRes.ok) return `(could not open Drive file ${id})`
+  const meta = await metaRes.json()
+  const mt: string = meta.mimeType
+
+  let text = ''
+  if (mt === 'application/vnd.google-apps.document' || mt === 'application/vnd.google-apps.presentation') {
+    text = await driveExport(token, id, 'text/plain')
+  } else if (mt === 'application/vnd.google-apps.spreadsheet') {
+    text = await driveExport(token, id, 'text/csv')
+  } else if (mt.startsWith('text/') || mt === 'application/json') {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    text = r.ok ? await r.text() : `(could not download ${meta.name})`
+  } else {
+    return `${meta.name} [${driveKind(mt)}]: (can't read this format yet — supported: Google Docs, Sheets, Slides, and plain-text/CSV/JSON. PDF/Word/Excel parsing is not wired up.)`
+  }
+
+  return `${meta.name} [${driveKind(mt)}] [id=${meta.id}]\n\n${text.slice(0, 6000)}`
+}
+
+async function driveExport(token: string, id: string, mimeType: string): Promise<string> {
+  const r = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(mimeType)}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  return r.ok ? await r.text() : '(export failed)'
+}

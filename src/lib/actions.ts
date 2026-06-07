@@ -83,6 +83,8 @@ export type PennyAction =
   | { kind: 'search_calendar'; query: string; label?: string }
   | { kind: 'read_email'; id: string; label?: string }
   | { kind: 'calendar_agenda'; date: string; days?: number; label?: string }
+  | { kind: 'search_drive'; query: string; label?: string }
+  | { kind: 'read_drive_file'; id: string; label?: string }
   | { kind: 'send_email'; to: string; subject: string; cc?: string; bcc?: string; body: string }
   | { kind: 'reply_email'; thread: string; to?: string; body: string }
   | { kind: 'create_draft'; to: string; subject: string; cc?: string; bcc?: string; body: string }
@@ -124,6 +126,8 @@ const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
 const READ_EMAIL_RE = /<read_email\s+([^/>]*)\/?>/gi
 const CALENDAR_AGENDA_RE = /<calendar_agenda\s+([^/>]*)\/?>/gi
+const SEARCH_DRIVE_RE = /<search_drive\s+([^/>]*)\/?>/gi
+const READ_DRIVE_FILE_RE = /<read_drive_file\s+([^/>]*)\/?>/gi
 const SEND_EMAIL_RE = /<send_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/send_email>)/gi
 const REPLY_EMAIL_RE = /<reply_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/reply_email>)/gi
 const CREATE_DRAFT_RE = /<create_draft\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/create_draft>)/gi
@@ -347,6 +351,20 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     })
   }
 
+  // search_drive
+  for (const m of text.matchAll(SEARCH_DRIVE_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.query) continue
+    actions.push({ kind: 'search_drive', query: attrs.query, label: attrs.label })
+  }
+
+  // read_drive_file
+  for (const m of text.matchAll(READ_DRIVE_FILE_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.id) continue
+    actions.push({ kind: 'read_drive_file', id: attrs.id, label: attrs.label })
+  }
+
   // send_email
   for (const m of text.matchAll(SEND_EMAIL_RE)) {
     const attrs = parseAttrs(m[1])
@@ -557,6 +575,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SEARCH_CALENDAR_RE, '')
     .replace(READ_EMAIL_RE, '')
     .replace(CALENDAR_AGENDA_RE, '')
+    .replace(SEARCH_DRIVE_RE, '')
+    .replace(READ_DRIVE_FILE_RE, '')
     .replace(SEND_EMAIL_RE, '')
     .replace(REPLY_EMAIL_RE, '')
     .replace(CREATE_DRAFT_RE, '')
@@ -928,6 +948,8 @@ export async function executeActions(
         case 'search_calendar':
         case 'read_email':
         case 'calendar_agenda':
+        case 'search_drive':
+        case 'read_drive_file':
           break
       }
     } catch (e) {

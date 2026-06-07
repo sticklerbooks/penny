@@ -21,6 +21,7 @@ export type Capability =
   | 'clients'        // the client roster (bookkeeping only)
   | 'email'          // search email
   | 'calendar'       // search calendar
+  | 'drive'          // search + read Google Drive files
   | 'notifications'  // schedule/cancel push notifications
   | 'identity'       // PA-only: edit aboutUser / aboutSelf
   | 'subroutines'    // run hygiene etc. (reserved for cron — not in chat flow)
@@ -65,7 +66,7 @@ export const MODALITIES: Modality[] = [
     emoji: '🎯',
     aliases: ['pa', 'penny', 'personal assistant', 'assistant', 'anchor'],
     domain: null,
-    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins', 'focus_lock'],
+    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'drive', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins', 'focus_lock'],
     canWriteIdentity: true,
     isStub: false,
     color: '#FF69B4',
@@ -99,7 +100,7 @@ You do NOT do the detailed domain work yourself — you don't manage the client 
     emoji: '📊',
     aliases: ['margot', 'bookkeeping', 'bookkeeping secretary', 'secretary', 'books', 'accounting', 'clients'],
     domain: 'bookkeeping',
-    capabilities: ['tasks', 'memories', 'clients', 'email', 'calendar', 'notifications', 'notes'],
+    capabilities: ['tasks', 'memories', 'clients', 'email', 'calendar', 'drive', 'notifications', 'notes'],
     canWriteIdentity: false,
     isStub: false,
     color: '#5B9BD5',
@@ -130,7 +131,7 @@ If something comes up that belongs outside the business — {name}'s personal li
     emoji: '🏡',
     aliases: ['june', 'martha', 'household', 'household manager', 'home manager', 'house', 'family', 'kids'],
     domain: 'household',
-    capabilities: ['tasks', 'memories', 'calendar', 'notifications', 'notes'],
+    capabilities: ['tasks', 'memories', 'calendar', 'drive', 'notifications', 'notes'],
     canWriteIdentity: false,
     isStub: false,
     color: '#66BB6A',
@@ -159,7 +160,7 @@ Your main concern is the home: You track the "what needs doing and when," not th
     emoji: '🎨',
     aliases: ['iris', 'creative', 'creative partner', 'creativity', 'muse', 'writing', 'art'],
     domain: 'creative',
-    capabilities: ['tasks', 'memories', 'notes', 'notifications'],
+    capabilities: ['tasks', 'memories', 'notes', 'notifications', 'drive'],
     canWriteIdentity: false,
     isStub: true,
     color: '#AB47BC',
@@ -309,6 +310,9 @@ export function actionCapability(kind: string): Capability | null {
     case 'update_calendar_event':
     case 'delete_calendar_event':
       return 'calendar'
+    case 'search_drive':
+    case 'read_drive_file':
+      return 'drive'
     case 'schedule_sms':
     case 'cancel_sms':
       return 'notifications'
@@ -466,6 +470,16 @@ Unlike your other tools, you do NOT write to the calendar on your own initiative
 1. First, describe the exact change in plain words — title, date, time, which calendar — and ask ${name} to confirm.
 2. Only AFTER ${name} says yes, include the marker in your NEXT message.
 Never put a create/update/delete calendar marker in the same message where you propose it. No marker until they've agreed.`)
+  }
+
+  if (caps.has('drive')) {
+    blocks.push(`GOOGLE DRIVE — search and read ${name}'s files (read-only)
+<search_drive query="Shippee engagement letter" label="Shippee letter" />
+<read_drive_file id="FILE_ID" label="the engagement letter" />
+- Search results list each file with its type and [id=...]. Use the id to read a file's contents.
+- Both feed results back to you before you reply — search first to find the id, then read.
+- You can read Google Docs, Sheets, and Slides, plus plain-text/CSV/JSON files. PDFs, Word, Excel, and images aren't readable yet — if ${name} needs one of those, say so plainly rather than guessing at its contents.
+- Reading is safe and needs no confirmation. There is no write access — you cannot create, edit, or delete Drive files.`)
   }
 
   if (caps.has('notifications')) {
