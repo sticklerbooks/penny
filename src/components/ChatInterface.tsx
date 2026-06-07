@@ -460,7 +460,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             <PennyAvatar size="lg" />
             <div>
               <h1 className="font-semibold leading-tight" style={{ color: C.text }}>
-                {type === 'intake' ? 'Penny' : current.displayName}
+                {type === 'intake' ? 'Penny' : (isAltMode && current.altMode?.displayName) ? current.altMode.displayName : current.displayName}
               </h1>
               <p className="text-xs" style={{ color: C.textMuted }}>
                 {type === 'intake' ? 'Getting to know you' : current.role}
