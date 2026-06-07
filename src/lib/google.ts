@@ -359,6 +359,49 @@ export async function searchGoogleCalendar(query: string): Promise<string> {
   }).join('\n---\n')
 }
 
+// Fetch the FULL agenda for a specific day (or span of days) across every
+// calendar — the rigorous "what's actually on this date" lookup. Unlike
+// searchGoogleCalendar (keyword) or the 7-day snapshot (Haiku summary), this
+// returns every event in the window, with ids, so Penny can reconcile against
+// what she expected to be there.
+export async function getGoogleCalendarAgenda(date: string, days: number = 1): Promise<string> {
+  const token = await refreshGoogleToken()
+  if (!token) return '(Google Calendar not configured)'
+
+  const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+  const start = startOfDayInTz(date, tz)
+  if (isNaN(start.getTime())) return `(invalid date "${date}")`
+  const end = new Date(start.getTime() + Math.max(1, days) * 864e5)
+
+  const items = await fetchEventsAllCalendars(token, {
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    maxResults: '50',
+  })
+  if (!items.length) return `(no events on ${date}${days > 1 ? ` +${days - 1}d` : ''})`
+  return items.map((e) => {
+    const s = e.start?.dateTime ?? e.start?.date ?? 'unknown'
+    const loc = e.location ? ` @ ${e.location}` : ''
+    const d = new Date(s).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    const ref = e.id ? ` [id=${e.id} calendar="${e._calendarName ?? 'Household'}"]` : ''
+    return `${d}${loc}: ${e.summary ?? '(no title)'}${ref}`
+  }).join('\n')
+}
+
+// The instant of 00:00 local time on `date` (YYYY-MM-DD) in the given tz.
+function startOfDayInTz(date: string, tz: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(NaN)
+  const naive = new Date(date.trim() + 'T00:00:00Z')
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+  const p = Object.fromEntries(fmt.formatToParts(naive).map((x) => [x.type, x.value]))
+  const asTz = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`)
+  const offset = asTz.getTime() - naive.getTime()
+  return new Date(naive.getTime() - offset)
+}
+
 // ─── Calendar writes ─────────────────────────────────────────────────────────
 // Confirm-first is enforced upstream (in the prompt): Penny describes the
 // change and waits for the user's "yes" before emitting a write marker.

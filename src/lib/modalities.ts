@@ -304,6 +304,7 @@ export function actionCapability(kind: string): Capability | null {
     case 'create_draft':
       return 'email'
     case 'search_calendar':
+    case 'calendar_agenda':
     case 'create_calendar_event':
     case 'update_calendar_event':
     case 'delete_calendar_event':
@@ -431,9 +432,25 @@ Never put a send/reply/draft marker in the same message where you propose it. No
 
   if (caps.has('calendar')) {
     blocks.push(`CALENDAR — read and write ${name}'s Google Calendar
-Search for an event on demand (results come back to you before you reply):
+Pull the FULL agenda for a specific date (every event that day, across all calendars, with ids):
+<calendar_agenda date="2026-06-08" label="Monday" />
+<calendar_agenda date="2026-06-08" days="3" />   (a span starting that date)
+Or keyword-search across everything:
 <search_calendar query="board meeting June" label="June board meeting" />
-Search results include each event's [id=... calendar="..."] — you need both to change or remove an event.
+Both feed results back to you before you reply, and include each event's [id=... calendar="..."] — you need both to change or remove an event.
+
+╔══════════════════════════════════════════════════════════════════════╗
+║ SCHEDULING PROTOCOL — follow this EVERY time scheduling comes up.     ║
+║ Do not reason about ${name}'s schedule from memory or the snapshot    ║
+║ alone — they are stale and incomplete. Always do this:               ║
+╚══════════════════════════════════════════════════════════════════════╝
+1. PULL THE REAL DAY. Fetch <calendar_agenda> for the exact date in question. The 7-day snapshot above is a rough summary — never treat it as authoritative for a scheduling decision.
+2. CHECK WHAT SHOULD BE THERE. Cross-reference against your own records — ${name}'s tasks, memories, and notes about what's supposed to happen that day.
+3. RECONCILE WITH JUDGMENT. Compare the two. An event already on the calendar may be worded differently from how you or ${name} describe it but still be THE SAME THING (e.g. "HRB" vs "H&R Block shift", "Dr." vs a clinic name). Use judgment to match them — don't be fooled by wording.
+4. THEN ACT:
+   • If it looks ALREADY THERE → tell ${name} it appears to be on the calendar already (name the existing event), and let them confirm you've matched it correctly. Do NOT create a duplicate.
+   • If it looks MISSING → propose creating it, using your judgment about WHICH calendar fits the event's nature (Work for H&R Block / clients, Personal, Family, etc.), and let ${name} confirm before you write.
+Never skip straight to creating an event without first pulling the real agenda and checking for a match. Double-booking and duplicates are worse than asking.
 
 Create / change / remove events:
 <create_calendar_event title="Dentist" start="2026-06-15 14:00" end="2026-06-15 15:00" calendar="Household" location="123 Main St">Annual cleaning</create_calendar_event>

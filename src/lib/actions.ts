@@ -82,6 +82,7 @@ export type PennyAction =
   | { kind: 'search_email'; query: string; label?: string }
   | { kind: 'search_calendar'; query: string; label?: string }
   | { kind: 'read_email'; id: string; label?: string }
+  | { kind: 'calendar_agenda'; date: string; days?: number; label?: string }
   | { kind: 'send_email'; to: string; subject: string; cc?: string; bcc?: string; body: string }
   | { kind: 'reply_email'; thread: string; to?: string; body: string }
   | { kind: 'create_draft'; to: string; subject: string; cc?: string; bcc?: string; body: string }
@@ -122,6 +123,7 @@ const CANCEL_SMS_RE = /<cancel_sms\s+id=["']([^"']+)["']\s*\/?>/gi
 const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
 const READ_EMAIL_RE = /<read_email\s+([^/>]*)\/?>/gi
+const CALENDAR_AGENDA_RE = /<calendar_agenda\s+([^/>]*)\/?>/gi
 const SEND_EMAIL_RE = /<send_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/send_email>)/gi
 const REPLY_EMAIL_RE = /<reply_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/reply_email>)/gi
 const CREATE_DRAFT_RE = /<create_draft\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/create_draft>)/gi
@@ -333,6 +335,18 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'read_email', id: attrs.id, label: attrs.label })
   }
 
+  // calendar_agenda — full event list for a specific date (or span of days)
+  for (const m of text.matchAll(CALENDAR_AGENDA_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.date) continue
+    actions.push({
+      kind: 'calendar_agenda',
+      date: attrs.date,
+      days: attrs.days ? parseInt(attrs.days) : undefined,
+      label: attrs.label,
+    })
+  }
+
   // send_email
   for (const m of text.matchAll(SEND_EMAIL_RE)) {
     const attrs = parseAttrs(m[1])
@@ -542,6 +556,7 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SEARCH_EMAIL_RE, '')
     .replace(SEARCH_CALENDAR_RE, '')
     .replace(READ_EMAIL_RE, '')
+    .replace(CALENDAR_AGENDA_RE, '')
     .replace(SEND_EMAIL_RE, '')
     .replace(REPLY_EMAIL_RE, '')
     .replace(CREATE_DRAFT_RE, '')
@@ -912,6 +927,7 @@ export async function executeActions(
         case 'search_email':
         case 'search_calendar':
         case 'read_email':
+        case 'calendar_agenda':
           break
       }
     } catch (e) {

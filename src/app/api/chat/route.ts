@@ -281,7 +281,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // ── Two-pass search flow (always Anthropic — mechanical pass) ─────────
         const searchActions = actions.filter(
           (a): a is SearchAction =>
-            (a.kind === 'search_email' || a.kind === 'search_calendar' || a.kind === 'read_email') &&
+            (a.kind === 'search_email' || a.kind === 'search_calendar' || a.kind === 'read_email' || a.kind === 'calendar_agenda') &&
             isActionAllowed(currentModality, a.kind)
         )
 
@@ -307,7 +307,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           workingText = secondClean
           scopedActions.push(
             ...secondActions
-              .filter((a) => a.kind !== 'search_email' && a.kind !== 'search_calendar' && a.kind !== 'read_email')
+              .filter((a) => a.kind !== 'search_email' && a.kind !== 'search_calendar' && a.kind !== 'read_email' && a.kind !== 'calendar_agenda')
               .filter((a) => isActionAllowed(currentModality, a.kind))
           )
         }
@@ -332,6 +332,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             a.kind !== 'search_email' &&
             a.kind !== 'search_calendar' &&
             a.kind !== 'read_email' &&
+            a.kind !== 'calendar_agenda' &&
             a.kind !== 'run_subroutine' &&
             a.kind !== 'complete_session' &&
             a.kind !== 'shift_complete' &&
