@@ -215,7 +215,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
 
     const content = isAutoStart ? '' : text.trim()
-    if (!isAutoStart && !switchTo && !content) return
+    if (!isAutoStart && !switchTo && !content && activateAltMode === undefined) return
     if (isLoading) return
 
     // Show the user's message bubble (not for auto-start or silent switches)
