@@ -377,8 +377,9 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         )
       } catch (err) {
         console.error('Chat stream error:', err)
+        // Include conversationId and isAltMode so the UI stays consistent even on error
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ error: String(err) })}\n\n`)
+          encoder.encode(`data: ${JSON.stringify({ error: String(err), conversationId: convoId, isAltMode })}\n\n`)
         )
       } finally {
         controller.close()

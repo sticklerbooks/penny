@@ -285,6 +285,8 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               })
             }
             if (data.error) {
+              if (data.conversationId) setConversationId(data.conversationId)
+              if (data.isAltMode !== undefined) setIsAltMode(data.isAltMode)
               setMessages(prev => {
                 const next = [...prev]
                 const last = next[next.length - 1]
