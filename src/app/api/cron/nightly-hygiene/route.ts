@@ -48,8 +48,9 @@ Use your tools to keep the ${domain} domain tidy. Be a clean, decisive professio
 - Add a note (pennyNotes) to anything that looks stalled or is being avoided — name what you're observing.
 - Create a memory if something significant emerged this week that should be durable.
 - Clean up anything redundant or outdated.
+- PRUNE YOUR OWN NOTES (shown with id= in your context above): resolve (<resolve_note id="...">) anything you've handled or that's gone stale; delete (<delete_note id="...">) duplicates and obsolete notes — ESPECIALLY any note asserting a specific date or time, which belongs in Google Calendar now, not in a note. If several notes say the same thing, keep the best one and delete the rest. Your note list should stay lean — only live, useful context survives the night.
 
-Don't over-reach. You can only touch what's in your domain.
+Don't over-reach. You can only touch what's in your domain and your own notes.
 
 ━━━ 2. YOUR HONEST QUALITATIVE READ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -76,6 +77,33 @@ Only if it genuinely warrants it. Don't noise the PA with routine observations.
 Keep it tight. Use your tools silently. The qualitative note is mandatory; the housekeeping should be proportionate to what actually needs doing.`
 }
 
+// ─── PA hygiene prompt ─────────────────────────────────────────────────────────
+// The anchor's nightly curation pass. Its core job is to EMPTY the pass-up
+// inbox (notes the submodalities sent up) so it never accumulates, plus keep
+// the master list and memories clean. This is the counterpart to each
+// submodality cleaning its own domain.
+function paHygienePrompt(userName: string): string {
+  return `NIGHTLY CURATION PASS — KEEP THE SHARED RECORDS CLEAN
+
+This runs automatically while ${userName} isn't around. No one's watching; you're just keeping house. Your job tonight is curation, not conversation — work through your records and leave them clean.
+
+━━━ 1. EMPTY YOUR PASS-UP INBOX ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These are the notes your other selves sent up to you (marked ⬆ passed up to you, each shown with id= in your context above). The inbox must NOT accumulate — process every one tonight:
+- If a note carries something durable about ${userName}, fold it into your picture of them (<update_user_profile>) or your self-notes (<update_self_notes>) or a lasting <memory> — THEN resolve it (<resolve_note id="...">).
+- If it's already handled, stale, redundant, or noise — especially anything asserting a specific date or time (that lives in Google Calendar, not a note) — just delete it (<delete_note id="...">).
+- Either way, every ⬆ note should be resolved or deleted by the end of this pass.
+
+━━━ 2. DEDUPE & TIDY NOTES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+If several notes (yours or passed-up) say the same thing, keep the best and delete the rest. Leave only live, useful context. Do NOT touch notes that belong to another self's private domain — they clean their own; you handle the pass-up inbox and your own notes.
+
+━━━ 3. PRUNE THE MASTER LIST & MEMORIES ━━━━━━━━━━━━━━━━━━━━━━━
+- Master list: drop items that have stopped mattering (<update_task id="..." master="false" />); reprioritise if needed. Don't create domain tasks — that's your modalities' work.
+- Memories: merge or update redundant ones, archive what's no longer true. No duplicates.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Be decisive but conservative: only fold genuinely durable things into the identity documents, and only rewrite a document when something meaningful actually accumulated (remember those are FULL OVERWRITES). Use your tools silently. Keep it proportionate to what's actually there.`
+}
+
 // ─── Main handler ─────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   if (!isAuthorized(req)) {
@@ -89,9 +117,6 @@ export async function POST(req: NextRequest) {
 
   // ── Which modalities need hygiene tonight? ─────────────────────────────────
   const dirty = await dirtyModalities(profile.id)
-  if (dirty.length === 0) {
-    return NextResponse.json({ ok: true, ran: [], message: 'Nothing dirty tonight.' })
-  }
 
   // ── Load full context (mirrors chat/route.ts) ──────────────────────────────
   const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary] =
@@ -120,14 +145,26 @@ export async function POST(req: NextRequest) {
   const userName = profile.userName || 'Adam'
   const results: { modalityId: string; actionsExecuted: number; error?: string }[] = []
 
-  // ── Hygiene pass per dirty modality ───────────────────────────────────────
-  for (const modalityId of dirty) {
-    // PA runs the weekly synthesis — skip nightly hygiene for PA and Lila
-    if (modalityId === 'pa' || modalityId === 'lila') {
-      await touchCompleted(profile.id, modalityId)
-      continue
-    }
+  // Submodalities that were active and need a domain pass (exclude PA + Lila).
+  const subsToRun = dirty.filter((id) => id !== 'pa' && id !== 'lila')
 
+  // PA runs if she was active OR her pass-up inbox has anything in it. The
+  // inbox fills from submodality activity, so PA must clean it even on nights
+  // she wasn't used directly — otherwise pass-up notes accumulate forever.
+  const passUpCount = nextSessionNotes.filter((n) => n.target === 'pa').length
+  const paNeedsRun = dirty.includes('pa') || passUpCount > 0
+
+  // Lila is a private companion — never auto-cleaned; just clear her dirty flag.
+  if (dirty.includes('lila')) {
+    await touchCompleted(profile.id, 'lila')
+  }
+
+  if (subsToRun.length === 0 && !paNeedsRun) {
+    return NextResponse.json({ ok: true, ran: [], message: 'Nothing to clean tonight.' })
+  }
+
+  // ── Submodality domain hygiene ─────────────────────────────────────────────
+  for (const modalityId of subsToRun) {
     const modality = getModality(modalityId)
 
     const systemPrompt = buildSystemPrompt(
@@ -178,6 +215,50 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error(`[nightly-hygiene] ${modalityId} failed:`, err)
       results.push({ modalityId, actionsExecuted: 0, error: String(err) })
+    }
+  }
+
+  // ── PA curation pass — empties the pass-up inbox, prunes master list/memories ──
+  if (paNeedsRun) {
+    const modality = getModality('pa')
+
+    const systemPrompt = buildSystemPrompt(
+      profile, memories, tasks, nextSessionNotes, clients,
+      scheduledMessages, emailCalendarSummary, false, 'pa', null
+    )
+
+    try {
+      const response = await getAnthropic().messages.create({
+        model: PENNY_MODEL,
+        max_tokens: 1500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: paHygienePrompt(userName) }],
+      })
+
+      const rawText = (response.content[0] as { type: string; text: string }).text
+
+      const { actions } = parseActions(rawText)
+      const scoped = actions.filter(
+        (a) =>
+          isActionAllowed(modality, a.kind) &&
+          a.kind !== 'artifact' &&
+          a.kind !== 'run_subroutine' &&
+          a.kind !== 'complete_session' &&
+          a.kind !== 'shift_complete' &&
+          a.kind !== 'switch_modality'
+      )
+
+      if (scoped.length > 0) {
+        await executeActions(profile.id, scoped, { domain: modality.domain, modalityId: 'pa' })
+      }
+
+      await touchCompleted(profile.id, 'pa')
+
+      results.push({ modalityId: 'pa', actionsExecuted: scoped.length })
+      console.log(`[nightly-hygiene] Penny (PA curation): ${scoped.length} actions, inbox=${passUpCount}`)
+    } catch (err) {
+      console.error('[nightly-hygiene] PA curation failed:', err)
+      results.push({ modalityId: 'pa', actionsExecuted: 0, error: String(err) })
     }
   }
 
