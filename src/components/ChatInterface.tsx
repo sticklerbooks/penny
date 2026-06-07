@@ -25,6 +25,7 @@ function modalityBorder(color: string) {
 const BLOCK_TAGS = [
   'update_user_profile','update_self_notes',
   'update_private_user_profile','update_private_self_notes',
+  'update_alt_about_user','update_alt_about_self',
   'memory','update_memory',
   'client','update_client','schedule_sms','next_session',
   'artifact',

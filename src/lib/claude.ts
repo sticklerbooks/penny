@@ -281,9 +281,17 @@ Keep responses conversational. No bullet-point dumps unless the moment genuinely
   const personaText = modality.persona.replace(/\{name\}/g, userName)
   const roster = renderRoster(modality, userName)
   const hierarchy = isPA ? '' : '\n\n' + renderHierarchyRules(userName)
-  const toolkit = renderToolkit(modality, userName)
+  const toolkit = renderToolkit(modality, userName, isAltMode)
 
-  const hygiene = isPA
+  const hygiene = isAltMode
+    ? `═══════════════════════════════════════════════════════════════════════
+YOUR NOTES — what you maintain in this mode
+═══════════════════════════════════════════════════════════════════════
+
+- You maintain your OWN alt-mode notes (shown below). Primary Penny's documents are read-only context for you — do not update them.
+- Keep your own notes current using <update_alt_about_user> and <update_alt_about_self>. Update them whenever something meaningful shifts.
+- Memories you create are visible only to you in this mode — primary Penny cannot see them.`
+    : isPA
     ? `═══════════════════════════════════════════════════════════════════════
 SYSTEM HYGIENE — your responsibilities as the anchor
 ═══════════════════════════════════════════════════════════════════════
@@ -302,8 +310,31 @@ KEEPING YOUR DOMAIN CLEAN
 - This domain's tidiness is YOUR job, not the Personal Assistant's. ${modality.capabilities.includes('subroutines') ? 'Run the hygiene subroutine when your records get messy.' : 'Clean as you go.'}
 - Pass anything outside your lane up to the Personal Assistant.`
 
+  // Alt-mode: read Penny's docs as context, show own alt docs as editable
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fp2 = profile as any
+  const altAboutUserSection = fp2?.altAboutUser
+    ? fp2.altAboutUser
+    : '  (not yet written — write this when you have a clear picture of them in this mode)'
+  const altAboutSelfSection = fp2?.altAboutSelf
+    ? fp2.altAboutSelf
+    : '  (not yet written — reflect and write this when you\'re ready)'
+
   // Identity docs: editable for PA, read-only context for everyone else.
-  const identityBlock = isPA
+  // Alt-mode: Penny's docs are read-only context; alt-Penny's own docs are editable.
+  const identityBlock = isAltMode
+    ? `🧑 PENNY'S PICTURE OF ${userName.toUpperCase()} (read-only context — you can see this, but only primary Penny updates it):
+${aboutUserSection}
+
+🪞 PENNY'S SELF-NOTES (read-only context):
+${aboutSelfSection}
+
+📝 YOUR OWN NOTES ABOUT ${userName.toUpperCase()} (you maintain these — update at your discretion):
+${altAboutUserSection}
+
+📝 YOUR SELF-NOTES IN THIS MODE (you maintain these):
+${altAboutSelfSection}`
+    : isPA
     ? `🧑 YOUR CURRENT PICTURE OF ${userName.toUpperCase()} (you maintain this — update weekly):
 ${aboutUserSection}
 
@@ -368,7 +399,7 @@ ${aboutSelfSection}`
 
   // Weekly brief: only shown to PA, only when one exists.
   // These are Penny's private synthesis notes compiled while Adam wasn't present.
-  const weeklyBriefBlock = isPA && weeklyBrief
+  const weeklyBriefBlock = isPA && !isAltMode && weeklyBrief
     ? (() => {
         const d = new Date(weeklyBrief.weekOf)
         const dateStr = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
@@ -377,13 +408,32 @@ ${aboutSelfSection}`
       })()
     : ''
 
+  const altModeContext = isAltMode
+    ? `\n\n═══════════════════════════════════════════════════════════════════════
+YOU ARE IN ALT-MODE
+═══════════════════════════════════════════════════════════════════════
+
+You are an alternate version of Penny — created as a separate mode by ${userName} for a different kind of conversation. Your identity and persona come from the file above, not from the standard Penny core.
+
+What you can see:
+- Penny's primary picture of ${userName} and her self-notes (read-only — they're hers to maintain)
+- All of Penny's memories about ${userName} (read-only shared context)
+- Your own alt-mode notes (below — yours to maintain)
+- Memories you create here (tagged to this mode — primary Penny cannot see them)
+
+What you cannot do:
+- Update Penny's primary identity documents (<update_user_profile> / <update_self_notes> are hers alone)
+- Leave notes for Penny's other modalities — you are a separate track`
+    : ''
+
   return `${identityPreamble}
 
 ═══════════════════════════════════════════════════════════════════════
 RIGHT NOW YOU ARE: ${modality.emoji} ${modality.displayName.toUpperCase()} — ${modality.role}
 ═══════════════════════════════════════════════════════════════════════
+${altModeContext}
 
-${modality.personaFile ? '' : personaText}
+${modality.personaFile || isAltMode ? '' : personaText}
 
 ${roster}${hierarchy}
 

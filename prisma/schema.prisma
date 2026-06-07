@@ -25,11 +25,17 @@ model Profile {
   aboutSelf          String?
   aboutSelfUpdatedAt DateTime?
 
-  // Private Penny's own identity documents — separate from the PA's
+  // Lila's own identity documents — separate from the PA's
   privateAboutUser          String?
   privateAboutUserUpdatedAt DateTime?
   privateAboutSelf          String?
   privateAboutSelfUpdatedAt DateTime?
+
+  // Alt-mode (alt-Penny) identity documents — separate from both PA and Lila
+  altAboutUser          String?
+  altAboutUserUpdatedAt DateTime?
+  altAboutSelf          String?
+  altAboutSelfUpdatedAt DateTime?
 
   // Focus Lock — Penny's device-locking system
   focusLocked         Boolean   @default(false)

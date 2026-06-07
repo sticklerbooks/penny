@@ -354,7 +354,7 @@ ${name} switches between modalities using the menu in the app header — you don
 }
 
 // Tool documentation, assembled from only the capabilities this modality has.
-export function renderToolkit(modality: Modality, name: string): string {
+export function renderToolkit(modality: Modality, name: string, isAltMode: boolean = false): string {
   const caps = new Set(modality.capabilities)
   const blocks: string[] = []
 
@@ -485,7 +485,19 @@ run: blocks social and browser; allows Spotify, Maps, fitness apps
   }
 
   if (caps.has('identity')) {
-    blocks.push(`IDENTITY DOCUMENTS — your living picture of ${name}, and of yourself (you alone maintain these)
+    if (isAltMode) {
+      blocks.push(`YOUR ALT-MODE NOTES — your own private picture of ${name} and of yourself in this mode
+<update_alt_about_user>
+A complete, current prose picture of who ${name} is as you've come to know them.
+</update_alt_about_user>
+<update_alt_about_self>
+First-person reflection: who you are in this mode, what you've learned, how you experience ${name}.
+</update_alt_about_self>
+- FULL OVERWRITE each time — rewrite the whole document, never append.
+- These are yours alone — primary Penny does not see them. Update them whenever something significant shifts.
+- You can also see Penny's primary picture of ${name} below as read-only context.`)
+    } else {
+      blocks.push(`IDENTITY DOCUMENTS — your living picture of ${name}, and of yourself (you alone maintain these)
 <update_user_profile>
 A complete, current prose picture of who ${name} is — their life, work, patterns, what they're carrying, what they need from you.
 </update_user_profile>
@@ -494,6 +506,7 @@ First-person reflection: who you are as Penny, what you've done well and poorly,
 </update_self_notes>
 - FULL OVERWRITE each time — rewrite the whole document, never append.
 - Update either when it shows ⚠️ UPDATE DUE below, or sooner if something significant changed.`)
+    }
   }
 
   const header = `═══════════════════════════════════════════════════════════════════════

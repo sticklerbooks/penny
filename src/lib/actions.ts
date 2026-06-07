@@ -55,6 +55,8 @@ export type PennyAction =
   | { kind: 'update_self_notes'; content: string }
   | { kind: 'update_private_user_profile'; content: string }
   | { kind: 'update_private_self_notes'; content: string }
+  | { kind: 'update_alt_about_user'; content: string }
+  | { kind: 'update_alt_about_self'; content: string }
   | { kind: 'run_subroutine'; name: string }
   | { kind: 'complete_session' }
   | { kind: 'shift_complete' }
@@ -86,6 +88,8 @@ const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_pr
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
 const UPDATE_PRIVATE_USER_PROFILE_RE = /<update_private_user_profile>([\s\S]*?)<\/update_private_user_profile>/gi
 const UPDATE_PRIVATE_SELF_NOTES_RE = /<update_private_self_notes>([\s\S]*?)<\/update_private_self_notes>/gi
+const UPDATE_ALT_ABOUT_USER_RE = /<update_alt_about_user>([\s\S]*?)<\/update_alt_about_user>/gi
+const UPDATE_ALT_ABOUT_SELF_RE = /<update_alt_about_self>([\s\S]*?)<\/update_alt_about_self>/gi
 const RUN_SUBROUTINE_RE = /<run_subroutine\s+name=["']([^"']+)["']\s*\/?>/gi
 const COMPLETE_SESSION_RE = /<complete_session\s*\/?>/gi
 const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
@@ -306,6 +310,20 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'update_private_self_notes', content })
   }
 
+  // update_alt_about_user
+  for (const m of text.matchAll(UPDATE_ALT_ABOUT_USER_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_alt_about_user', content })
+  }
+
+  // update_alt_about_self
+  for (const m of text.matchAll(UPDATE_ALT_ABOUT_SELF_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_alt_about_self', content })
+  }
+
   // run_subroutine
   for (const m of text.matchAll(RUN_SUBROUTINE_RE)) {
     const name = m[1].trim()
@@ -399,6 +417,8 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(UPDATE_SELF_NOTES_RE, '')
     .replace(UPDATE_PRIVATE_USER_PROFILE_RE, '')
     .replace(UPDATE_PRIVATE_SELF_NOTES_RE, '')
+    .replace(UPDATE_ALT_ABOUT_USER_RE, '')
+    .replace(UPDATE_ALT_ABOUT_SELF_RE, '')
     .replace(RUN_SUBROUTINE_RE, '')
     .replace(COMPLETE_SESSION_RE, '')
     .replace(SHIFT_COMPLETE_RE, '')
@@ -604,6 +624,22 @@ export async function executeActions(
             where: { id: profileId },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             data: { privateAboutSelf: action.content, privateAboutSelfUpdatedAt: new Date() } as any,
+          })
+          break
+
+        case 'update_alt_about_user':
+          await prisma.profile.update({
+            where: { id: profileId },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { altAboutUser: action.content, altAboutUserUpdatedAt: new Date() } as any,
+          })
+          break
+
+        case 'update_alt_about_self':
+          await prisma.profile.update({
+            where: { id: profileId },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { altAboutSelf: action.content, altAboutSelfUpdatedAt: new Date() } as any,
           })
           break
 
