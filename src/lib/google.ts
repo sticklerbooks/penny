@@ -21,6 +21,49 @@ async function refreshGoogleToken(): Promise<string | null> {
   return data.access_token ?? null
 }
 
+// ─── Calendar enumeration ────────────────────────────────────────────────────
+// Penny has ~10 calendars (Work, Personal, Family, etc.). Querying only
+// `primary` misses almost everything, so we fan out across all of them.
+
+type CalEvent = {
+  start?: { dateTime?: string; date?: string }
+  summary?: string
+  location?: string
+  description?: string
+}
+
+async function listCalendarIds(token: string): Promise<string[]> {
+  const res = await fetch(
+    'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  const data = await res.json()
+  return (data.items ?? []).map((c: { id: string }) => c.id)
+}
+
+// Fetch events across every calendar in parallel, then merge + sort by start.
+async function fetchEventsAllCalendars(
+  token: string,
+  params: Record<string, string>
+): Promise<CalEvent[]> {
+  const ids = await listCalendarIds(token)
+  const query = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', ...params })
+
+  const perCalendar = await Promise.all(
+    ids.map(async (id) => {
+      const res = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(id)}/events?${query}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      const data = await res.json()
+      return (data.items ?? []) as CalEvent[]
+    })
+  )
+
+  const startOf = (e: CalEvent) => e.start?.dateTime ?? e.start?.date ?? ''
+  return perCalendar.flat().sort((a, b) => startOf(a).localeCompare(startOf(b)))
+}
+
 // ─── Session-start snapshot ──────────────────────────────────────────────────
 
 export async function getGoogleSnapshot(): Promise<{ emails: string; calendar: string } | null> {
@@ -66,13 +109,13 @@ async function fetchRecentGmail(token: string): Promise<string> {
 async function fetchUpcomingGoogleCalendar(token: string): Promise<string> {
   const now = new Date().toISOString()
   const weekOut = new Date(Date.now() + 7 * 864e5).toISOString()
-  const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now}&timeMax=${weekOut}&singleEvents=true&orderBy=startTime&maxResults=20`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  const data = await res.json()
-  if (!data.items?.length) return '(no upcoming events)'
-  return data.items.map((e: { start?: { dateTime?: string; date?: string }; summary?: string; location?: string }) => {
+  const items = await fetchEventsAllCalendars(token, {
+    timeMin: now,
+    timeMax: weekOut,
+    maxResults: '20',
+  })
+  if (!items.length) return '(no upcoming events)'
+  return items.map((e) => {
     const start = e.start?.dateTime ?? e.start?.date ?? 'unknown'
     const loc = e.location ? ` @ ${e.location}` : ''
     const d = new Date(start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -113,13 +156,12 @@ export async function searchGoogleCalendar(query: string): Promise<string> {
   const token = await refreshGoogleToken()
   if (!token) return '(Google Calendar not configured)'
 
-  const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(query)}&maxResults=10&singleEvents=true&orderBy=startTime`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  const data = await res.json()
-  if (!data.items?.length) return `(no Google Calendar results for "${query}")`
-  return data.items.map((e: { start?: { dateTime?: string; date?: string }; summary?: string; location?: string; description?: string }) => {
+  const items = await fetchEventsAllCalendars(token, {
+    q: query,
+    maxResults: '10',
+  })
+  if (!items.length) return `(no Google Calendar results for "${query}")`
+  return items.map((e) => {
     const start = e.start?.dateTime ?? e.start?.date ?? 'unknown'
     const loc = e.location ? ` @ ${e.location}` : ''
     const desc = e.description ? `\n  ${e.description.slice(0, 200)}` : ''
