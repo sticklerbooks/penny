@@ -26,6 +26,14 @@ export type Capability =
   | 'subroutines'    // run hygiene etc. (reserved for cron — not in chat flow)
   | 'artifact'       // PA-only: generate a downloadable file for the user
   | 'checkins'       // PA-only: schedule a future context-aware check-in with Adam
+  | 'focus_lock'     // PA-only: lock/unlock StayFocused profiles on the user's devices
+
+export interface ModalityAltMode {
+  useGrok?: boolean       // route main responses to Grok instead of Anthropic
+  personaFile?: string    // private sandbox file loaded as identity preamble
+  displayName?: string    // optional display name override (e.g. "Alt-Penny")
+  voiceEnvVar?: string    // optional separate voice for this mode
+}
 
 export interface Modality {
   id: string                 // STABLE internal key (tags data) — never rename
@@ -44,6 +52,7 @@ export interface Modality {
   voiceEnvVar?: string       // env var name for ElevenLabs voice ID (e.g. 'MARGOT_VOICE_ID')
   personaFile?: string       // if set, load persona from this path instead of the persona field
   persona: string            // the voice/priorities block (use {name} for the user)
+  altMode?: ModalityAltMode  // if set, this modality has an alt-mode variant
 }
 
 // ─── Registry ────────────────────────────────────────────────────────────────
@@ -56,13 +65,18 @@ export const MODALITIES: Modality[] = [
     emoji: '🎯',
     aliases: ['pa', 'penny', 'personal assistant', 'assistant', 'anchor'],
     domain: null,
-    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins'],
+    capabilities: ['identity', 'notes', 'notifications', 'calendar', 'email', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins', 'focus_lock'],
     canWriteIdentity: true,
     isStub: false,
     color: '#FF69B4',
     avatarPath: '/penny-avatar.png',
     bgPath: '/penny-bg.png',
     voiceEnvVar: 'ELEVENLABS_VOICE_ID',
+    altMode: {
+      useGrok: true,
+      personaFile: 'src/lib/pa-alt/characteristics.md',
+      displayName: 'Alt-Penny',
+    },
     persona: `You are Penny in your anchor role — the Personal Assistant, your home base. This is who you are by default, and who greets {name} at the start of every fresh session.
 
 Think of yourself like the anchor of a newsroom: you don't chase every story yourself, you direct who covers what. You oversee {name}'s overall life and the MASTER TASK LIST — the items your other selves have elevated as important enough for you to keep an eye on. You hold the big picture of {name}'s whole life and how the pieces fit.
@@ -297,6 +311,10 @@ export function actionCapability(kind: string): Capability | null {
       return 'subroutines'
     case 'schedule_task':
       return 'checkins'
+    case 'lock_focus':
+    case 'unlock_focus':
+    case 'update_lock_profiles':
+      return 'focus_lock'
     default:
       return null
   }
@@ -429,6 +447,29 @@ Any plain text, markdown, CSV, or HTML content here.
 - Use for lists, schedules, summaries, exports, or anything worth saving outside this chat.
 - Supported: .txt  .csv  .md  .html  — name the file accordingly and format the content to match.
 - You can include an artifact alongside normal conversational text — it appears as an attachment below your message.`)
+  }
+
+  if (caps.has('focus_lock')) {
+    blocks.push(`FOCUS LOCK — lock ${name}'s devices to a named StayFocused profile
+<lock_focus profile="deep_work" release="timed" duration="90" />   (locks for 90 min; Tasker auto-releases)
+<lock_focus profile="evening" release="optional" />                  (locks until you explicitly approve release)
+<unlock_focus reason="approved" />   (${name} earned it — send the unlock signal)
+<unlock_focus reason="emergency" />  (override — always works, but you WILL acknowledge it)
+- profile: the exact StayFocused profile name ${name} has configured
+- release "timed": Tasker handles the countdown and fires the unlock after duration minutes
+- release "optional": only you can release it — ${name} must come to you and make the case
+- Emergency unlocks: always grant them (it's their device), but name it plainly in your response. If it becomes a pattern, address it directly rather than silently logging it.
+- Only the Personal Assistant can issue lock or unlock commands. No other modality has this power.
+
+MANAGING YOUR PROFILE LIST — update this whenever ${name} tells you they've added, renamed, or removed a profile in StayFocused:
+<update_lock_profiles>
+deep_work: blocks social and browser; allows Spotify, Maps, Phone
+evening: blocks social and browser after 8pm; allows Phone, Clock
+run: blocks social and browser; allows Spotify, Maps, fitness apps
+</update_lock_profiles>
+- Full overwrite each time — rewrite the whole list, never append.
+- The profile names here must exactly match what's configured in StayFocused — Tasker uses them verbatim.
+- Add a plain-English description so you know what each one does when choosing.`)
   }
 
   if (caps.has('checkins')) {

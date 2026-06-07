@@ -2,6 +2,7 @@
 // Markers are XML-like tags Penny embeds in her replies; the user never sees them.
 
 import { prisma } from './db'
+import { sendNotification } from './pushover'
 
 // Parse "YYYY-MM-DD HH:MM" as local time in a given IANA timezone.
 // Falls back to direct Date parsing for ISO strings.
@@ -60,6 +61,9 @@ export type PennyAction =
   | { kind: 'switch_modality'; name: string }
   | { kind: 'artifact'; filename: string; content: string }
   | { kind: 'schedule_task'; topic: string; runAt: string }
+  | { kind: 'lock_focus'; profile: string; release: 'timed' | 'optional'; duration?: number }
+  | { kind: 'unlock_focus'; reason: 'approved' | 'emergency' }
+  | { kind: 'update_lock_profiles'; content: string }
 
 // Regex patterns for each marker type
 const TASK_RE = /<task\s+([^/>]*)\/?>(?:([\s\S]*?)<\/task>)?/gi
@@ -88,6 +92,9 @@ const SHIFT_COMPLETE_RE = /<shift_complete\s*\/?>/gi
 const SWITCH_MODALITY_RE = /<switch_modality\s+name=["']([^"']+)["']\s*\/?>/gi
 const ARTIFACT_RE = /<artifact\s+([^>]*)>([\s\S]*?)<\/artifact>/gi
 const SCHEDULE_TASK_RE = /<schedule_task\s+([^>]*)>([\s\S]*?)<\/schedule_task>/gi
+const LOCK_FOCUS_RE = /<lock_focus\s+([^/>]*)\/?>/gi
+const UNLOCK_FOCUS_RE = /<unlock_focus\s+([^/>]*)\/?>/gi
+const UPDATE_LOCK_PROFILES_RE = /<update_lock_profiles>([\s\S]*?)<\/update_lock_profiles>/gi
 
 // Parse XML attributes from a string like: title="foo" due="2026-06-01" priority="9"
 function parseAttrs(s: string): Record<string, string> {
@@ -332,6 +339,35 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'schedule_task', runAt: attrs.run_at, topic })
   }
 
+  // lock_focus
+  for (const m of text.matchAll(LOCK_FOCUS_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.profile || !attrs.release) continue
+    const release = attrs.release as 'timed' | 'optional'
+    if (release !== 'timed' && release !== 'optional') continue
+    actions.push({
+      kind: 'lock_focus',
+      profile: attrs.profile,
+      release,
+      duration: attrs.duration ? parseInt(attrs.duration) : undefined,
+    })
+  }
+
+  // update_lock_profiles
+  for (const m of text.matchAll(UPDATE_LOCK_PROFILES_RE)) {
+    const content = m[1].trim()
+    if (!content) continue
+    actions.push({ kind: 'update_lock_profiles', content })
+  }
+
+  // unlock_focus
+  for (const m of text.matchAll(UNLOCK_FOCUS_RE)) {
+    const attrs = parseAttrs(m[1])
+    const reason = attrs.reason as 'approved' | 'emergency'
+    if (reason !== 'approved' && reason !== 'emergency') continue
+    actions.push({ kind: 'unlock_focus', reason })
+  }
+
   // artifact — a file Penny generates for the user to download
   for (const m of text.matchAll(ARTIFACT_RE)) {
     const attrs = parseAttrs(m[1])
@@ -369,6 +405,9 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(SWITCH_MODALITY_RE, '')
     .replace(ARTIFACT_RE, '')
     .replace(SCHEDULE_TASK_RE, '')
+    .replace(LOCK_FOCUS_RE, '')
+    .replace(UNLOCK_FOCUS_RE, '')
+    .replace(UPDATE_LOCK_PROFILES_RE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -378,10 +417,11 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
 export async function executeActions(
   profileId: string,
   actions: PennyAction[],
-  ctx: { domain?: string | null; modalityId?: string } = {}
+  ctx: { domain?: string | null; modalityId?: string; altModeScope?: string } = {}
 ): Promise<void> {
   const domain = ctx.domain ?? null
   const modalityId = ctx.modalityId ?? 'pa'
+  const altModeScope = ctx.altModeScope ?? null
   for (const action of actions) {
     try {
       switch (action.kind) {
@@ -423,13 +463,15 @@ export async function executeActions(
 
         case 'create_memory':
           await prisma.memory.create({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             data: {
               profileId,
               category: action.category,
               content: action.content,
               importance: action.importance ?? 6,
               domain,
-            },
+              altModeScope,
+            } as any,
           })
           break
 
@@ -576,6 +618,51 @@ export async function executeActions(
           await (prisma as any).scheduledTask.create({
             data: { profileId, topic: action.topic, runAt },
           })
+          break
+        }
+
+        case 'update_lock_profiles':
+          await prisma.profile.update({
+            where: { id: profileId },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { focusProfiles: action.content } as any,
+          })
+          break
+
+        case 'lock_focus': {
+          const msg = `profile=${action.profile} release=${action.release}${action.duration ? ` duration=${action.duration}` : ''}`
+          await sendNotification(msg, 'PENNY_LOCK')
+          const unlocksAt =
+            action.release === 'timed' && action.duration
+              ? new Date(Date.now() + action.duration * 60 * 1000)
+              : null
+          await prisma.profile.update({
+            where: { id: profileId },
+            data: {
+              focusLocked: true,
+              focusProfile: action.profile,
+              focusLockedAt: new Date(),
+              focusReleaseType: action.release,
+              focusUnlocksAt: unlocksAt,
+            },
+          })
+          break
+        }
+
+        case 'unlock_focus': {
+          await sendNotification(`reason=${action.reason}`, 'PENNY_UNLOCK')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const unlockData: any = {
+            focusLocked: false,
+            focusProfile: null,
+            focusLockedAt: null,
+            focusReleaseType: null,
+            focusUnlocksAt: null,
+          }
+          if (action.reason === 'emergency') {
+            unlockData.focusEmergencyCount = { increment: 1 }
+          }
+          await prisma.profile.update({ where: { id: profileId }, data: unlockData })
           break
         }
 

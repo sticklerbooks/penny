@@ -49,7 +49,8 @@ export function buildSystemPrompt(
   emailCalendarSummary: string | null,
   isIntake: boolean,
   modalityId: string = 'pa',
-  weeklyBrief: WeeklyBriefSummary | null = null
+  weeklyBrief: WeeklyBriefSummary | null = null,
+  isAltMode: boolean = false
 ): string {
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
@@ -61,9 +62,17 @@ export function buildSystemPrompt(
   const lensTasks = isPA
     ? tasks.filter((t) => t.onMasterList || !t.domain)
     : tasks.filter((t) => t.domain === modality.domain)
+
+  // Alt-mode memory filter: alt-mode sees everything (primary + its own alt memories).
+  // Primary mode only sees memories with no altModeScope tag.
+  const altScopedMemories = isAltMode
+    ? memories
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    : memories.filter((m) => !(m as any).altModeScope)
+
   const lensMemories = isPA
-    ? memories.filter((m) => !m.domain)
-    : memories.filter((m) => m.domain === modality.domain)
+    ? altScopedMemories.filter((m) => !m.domain)
+    : altScopedMemories.filter((m) => m.domain === modality.domain)
   const showClients = modality.capabilities.includes('clients')
   const showCalendar = modality.capabilities.includes('calendar')
   const showNotifications = modality.capabilities.includes('notifications')
@@ -259,12 +268,16 @@ FORMAT:
 Keep responses conversational. No bullet-point dumps unless the moment genuinely calls for structure. Talk like a person who knows and cares about ${userName}. Appropriate length — sometimes one sentence is right, sometimes a paragraph. Match the energy of the conversation.`
 
   // ── Modality-specific assembly ─────────────────────────────────────────────
-  // If the modality has a personaFile, load it and use it as the identity
-  // preamble (replacing the standard "You are Penny..." core identity).
-  // The persona field in modalities.ts becomes a brief fallback descriptor only.
-  const identityPreamble = modality.personaFile
-    ? loadPersonaFile(modality.personaFile)
-    : coreIdentity
+  // Priority order for identity preamble:
+  //   1. Alt-mode persona file (if in alt-mode and altMode.personaFile is set)
+  //   2. Modality persona file (e.g. Lila's characteristics.md)
+  //   3. Standard core identity
+  const identityPreamble =
+    isAltMode && modality.altMode?.personaFile
+      ? loadPersonaFile(modality.altMode.personaFile)
+      : modality.personaFile
+      ? loadPersonaFile(modality.personaFile)
+      : coreIdentity
   const personaText = modality.persona.replace(/\{name\}/g, userName)
   const roster = renderRoster(modality, userName)
   const hierarchy = isPA ? '' : '\n\n' + renderHierarchyRules(userName)
@@ -311,6 +324,46 @@ ${aboutSelfSection}`
   const calendarBlock = showCalendar
     ? `\n\n📧 EMAIL & CALENDAR SNAPSHOT (Haiku-summarized, refreshed every 30 min):\n${emailCalendarSummary ?? '  (not configured — Google/Microsoft credentials not set)'}`
     : ''
+
+  // Focus lock status — only shown to PA (she's the only one who can act on it)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fp = profile as any
+  const focusLockBlock = modality.capabilities.includes('focus_lock')
+    ? (() => {
+        if (fp?.focusLocked) {
+          const unlocksAt = fp.focusUnlocksAt
+            ? new Date(fp.focusUnlocksAt).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', timeZone: tz,
+              })
+            : null
+          const since = fp.focusLockedAt
+            ? new Date(fp.focusLockedAt).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', timeZone: tz,
+              })
+            : 'unknown'
+          const releaseDesc =
+            fp.focusReleaseType === 'timed' && unlocksAt
+              ? `timed — Tasker auto-releases at ${unlocksAt}`
+              : 'optional — only you can release'
+          const emergencyLine =
+            fp.focusEmergencyCount > 0
+              ? `\n  Emergency overrides used all-time: ${fp.focusEmergencyCount}`
+              : ''
+          return `\n\n🔒 FOCUS LOCK ACTIVE: profile="${fp.focusProfile}", ${releaseDesc} (locked since ${since})${emergencyLine}`
+        }
+        if (fp?.focusEmergencyCount > 0) {
+          return `\n\n🔓 Focus lock is off. Emergency overrides used all-time: ${fp.focusEmergencyCount}`
+        }
+        return ''
+      })()
+    : ''
+
+  const focusProfilesBlock = modality.capabilities.includes('focus_lock') && fp?.focusProfiles
+    ? `\n\n📋 YOUR FOCUS LOCK PROFILES (you maintain this — update when ${userName} changes StayFocused):\n${fp.focusProfiles}`
+    : modality.capabilities.includes('focus_lock')
+    ? `\n\n📋 YOUR FOCUS LOCK PROFILES: (none configured yet — ask ${userName} what profiles they've set up in StayFocused and use <update_lock_profiles> to record them)`
+    : ''
+
   const tasksLabel = isPA ? 'MASTER LIST + UNROUTED TASKS' : 'ACTIVE TASKS'
 
   // Weekly brief: only shown to PA, only when one exists.
@@ -351,7 +404,7 @@ ${identityBlock}
 ${memoriesText}${clientsBlock}
 
 ✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week, ⭐=master list):
-${tasksText}${notificationsBlock}${calendarBlock}
+${tasksText}${notificationsBlock}${calendarBlock}${focusLockBlock}${focusProfilesBlock}
 
 📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)${weeklyBriefBlock}`
 }

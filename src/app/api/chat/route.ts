@@ -11,7 +11,7 @@ import { touchActive } from '@/lib/modality-state'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart, isVoice, switchTo } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice, switchTo, activateAltMode } = await req.json()
 
   // ── Profile ────────────────────────────────────────────────────────────────
   let profile = await prisma.profile.findFirst()
@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
   let convoId = conversationId as string | null
   let existingMessages: { role: string; content: string }[] = []
   let activeModality = 'pa'
+  let isAltMode = false
 
   if (convoId) {
     const existing = await prisma.conversation.findUnique({
@@ -32,6 +33,8 @@ export async function POST(req: NextRequest) {
     if (existing && !existing.closed) {
       existingMessages = existing.messages
       activeModality = existing.activeModality || 'pa'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      isAltMode = (existing as any).isAltMode ?? false
     } else {
       convoId = null
     }
@@ -41,6 +44,16 @@ export async function POST(req: NextRequest) {
   const manualSwitch = switchTo ? resolveModality(String(switchTo)) : null
   const outgoingModalityId = activeModality // save before any change
   const isSwitch = !!manualSwitch && manualSwitch.id !== outgoingModalityId
+
+  // ── Detect alt-mode toggle ─────────────────────────────────────────────────
+  // activateAltMode: true = enter alt-mode, false = exit alt-mode
+  // Only applies if the current modality has an altMode config.
+  const currentModalityForAlt = getModality(activeModality)
+  const isAltToggle =
+    !isSwitch &&
+    activateAltMode !== undefined &&
+    activateAltMode !== isAltMode &&
+    !!currentModalityForAlt.altMode
 
   // ── Load all context in parallel ───────────────────────────────────────────
   // Load before the farewell pass (which uses outgoing modality context) and
@@ -81,10 +94,11 @@ export async function POST(req: NextRequest) {
   // ── Farewell note pass (on switch, if there's something to wrap up) ────────
   // Outgoing modality writes a next_session note summarizing open threads.
   // Runs before the old convo is closed, so it has message context.
+  // Alt-mode toggles don't get a farewell pass — same modality, just mode change.
   if (isSwitch && existingMessages.length > 0) {
     const farewellSystem = buildSystemPrompt(
       profile, memories, tasks, nextSessionNotes, clients,
-      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null
+      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false
     )
     const farewellInstruction = `CONTEXT HAND-OFF: ${profile.userName || 'The user'} has switched to a different modality. Write exactly ONE <next_session> note summarizing any open threads, pending items, or things your next session should know. Be concise. Use markers only — no visible text. If nothing is open, write: <next_session>Closed cleanly — no open items.</next_session>`
 
@@ -118,32 +132,40 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Close old convo and open fresh one on switch ───────────────────────────
+  // ── Close old convo and open fresh one (on switch or alt-mode toggle) ───────
   if (isSwitch) {
     if (convoId) {
-      await prisma.conversation.update({
-        where: { id: convoId },
-        data: { closed: true },
-      })
+      await prisma.conversation.update({ where: { id: convoId }, data: { closed: true } })
     }
     activeModality = manualSwitch!.id
+    isAltMode = false
     const newConvo = await prisma.conversation.create({
-      data: {
-        profileId: profile.id,
-        type: 'daily',
-        activeModality,
-      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { profileId: profile.id, type: 'daily', activeModality } as any,
+    })
+    convoId = newConvo.id
+    existingMessages = []
+  } else if (isAltToggle) {
+    // Alt-mode toggle: close current convo, open fresh one in the new mode
+    if (convoId) {
+      await prisma.conversation.update({ where: { id: convoId }, data: { closed: true } })
+    }
+    isAltMode = activateAltMode as boolean
+    const newConvo = await prisma.conversation.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { profileId: profile.id, type: 'daily', activeModality, isAltMode } as any,
     })
     convoId = newConvo.id
     existingMessages = []
   } else if (!convoId) {
     // No existing convo — create one
     const newConvo = await prisma.conversation.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: {
         profileId: profile.id,
         type: profile.intakeComplete ? 'daily' : 'intake',
         activeModality,
-      },
+      } as any,
     })
     convoId = newConvo.id
   }
@@ -152,17 +174,24 @@ export async function POST(req: NextRequest) {
   const systemPrompt = buildSystemPrompt(
     profile, memories, tasks, nextSessionNotes, clients,
     scheduledMessages, emailCalendarSummary,
-    !profile.intakeComplete, activeModality, weeklyBrief
+    !profile.intakeComplete, activeModality, weeklyBrief, isAltMode
   )
 
   const currentModality = getModality(activeModality)
 
   // ── Determine trigger message ──────────────────────────────────────────────
-  const isSilentTrigger = isAutoStart || (isSwitch && !message?.trim())
+  const contextCleared = isSwitch || isAltToggle
+  const isSilentTrigger = isAutoStart || (contextCleared && !message?.trim())
+  const altDisplayName = currentModality.altMode?.displayName || 'your alt mode'
+
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
     : isSwitch && !message?.trim()
     ? `You're starting a fresh session as ${currentModality.displayName} (${currentModality.role}). Greet ${profile.userName || 'them'} briefly and warmly in your own voice.`
+    : isAltToggle && !message?.trim() && isAltMode
+    ? `You're entering ${altDisplayName}. Greet ${profile.userName || 'them'} briefly and warmly in this mode's voice.`
+    : isAltToggle && !message?.trim() && !isAltMode
+    ? `You're returning to your primary mode. Greet ${profile.userName || 'them'} briefly and warmly.`
     : message
 
   // Voice mode: keep responses short and spoken-word natural
@@ -188,14 +217,20 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
     })
   }
 
+  // ── Alt-mode scope: tag memories saved during alt-mode ─────────────────────
+  const altModeScope = isAltMode ? activeModality : undefined
+
+  // ── Grok routing: Lila always, or any modality in alt-mode with useGrok ────
+  const useGrok = activeModality === 'lila' || (isAltMode && !!currentModality.altMode?.useGrok)
+
   const encoder = new TextEncoder()
   let fullResponse = ''
 
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        // ── Main response — Grok for Lila, Anthropic for everyone else ────────
-        if (activeModality === 'lila') {
+        // ── Main response ──────────────────────────────────────────────────────
+        if (useGrok) {
           const grokStream = await getGrok().chat.completions.create({
             model: PRIVATE_PENNY_MODEL,
             max_tokens: 2048,
@@ -243,7 +278,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // Scope to what this modality is allowed to do
         const scopedActions = actions.filter((a) => isActionAllowed(currentModality, a.kind))
 
-        // ── Two-pass search flow ──────────────────────────────────────────
+        // ── Two-pass search flow (always Anthropic — mechanical pass) ─────────
         const searchActions = actions.filter(
           (a): a is SearchAction =>
             (a.kind === 'search_email' || a.kind === 'search_calendar') &&
@@ -276,7 +311,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               .filter((a) => isActionAllowed(currentModality, a.kind))
           )
         }
-        // ─────────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
 
         if (intakeJustCompleted) {
           await prisma.profile.update({
@@ -291,6 +326,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         ) ?? null
 
         // Execute actions (filtering non-executable kinds)
+        // Alt-mode memories are tagged with altModeScope so primary mode can't see them
         const executableActions = scopedActions.filter(
           (a) =>
             a.kind !== 'search_email' &&
@@ -305,6 +341,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           await executeActions(profile!.id, executableActions, {
             domain: currentModality.domain,
             modalityId: currentModality.id,
+            altModeScope,
           })
         }
 
@@ -316,9 +353,9 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           data: { conversationId: convoId!, role: 'assistant', content: workingText },
         })
 
-        // Background memory extraction
+        // Background memory extraction (tagged with altModeScope if in alt-mode)
         if (!isSilentTrigger) {
-          extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
+          extractAndSaveMemories(profile!.id, message, workingText, altModeScope).catch(() => {})
         }
 
         controller.enqueue(
@@ -330,7 +367,8 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               cleanText: workingText,
               actionsExecuted: executableActions.length,
               activeModality,
-              contextCleared: isSwitch,
+              isAltMode,
+              contextCleared,
               artifact: artifactAction
                 ? { filename: artifactAction.filename, content: artifactAction.content }
                 : null,

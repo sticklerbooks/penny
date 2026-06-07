@@ -31,6 +31,15 @@ model Profile {
   privateAboutSelf          String?
   privateAboutSelfUpdatedAt DateTime?
 
+  // Focus Lock — Penny's device-locking system
+  focusLocked         Boolean   @default(false)
+  focusProfile        String?   // the StayFocused profile name
+  focusLockedAt       DateTime?
+  focusReleaseType    String?   // "timed" | "optional"
+  focusUnlocksAt      DateTime? // null for optional-release locks
+  focusEmergencyCount Int       @default(0)
+  focusProfiles       String?   // Penny-maintained list: one "name: description" per line
+
   memories          Memory[]
   conversations     Conversation[]
   tasks             Task[]
@@ -79,6 +88,7 @@ model Memory {
   archived       Boolean  @default(false)
   lastReferenced DateTime?
   domain         String?  // which modality domain owns this memory (null = global/identity)
+  altModeScope   String?  // if set, only visible when in alt-mode for this modality id
 }
 
 model Conversation {
@@ -91,6 +101,7 @@ model Conversation {
   type           String
   closed         Boolean  @default(false)
   activeModality String   @default("pa")
+  isAltMode      Boolean  @default(false)
   messages       Message[]
 }
 
