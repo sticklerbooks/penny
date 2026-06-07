@@ -90,6 +90,28 @@ async function resolveCalendarId(token: string, name?: string): Promise<string> 
   return match?.id ?? 'primary'
 }
 
+// The user's timezone. CRITICAL: the server (Railway) runs in UTC, so any
+// time formatting MUST pin timeZone explicitly — otherwise event times drift
+// by the UTC offset (e.g. 6:45 AM EDT renders as 10:45 AM).
+const PENNY_TZ = process.env.PENNY_TIMEZONE || 'America/New_York'
+
+// Format an event's start for display, in the user's timezone.
+// Timed events show date + time in PENNY_TZ; all-day events show just the date
+// (rendered at UTC noon so the calendar date never shifts across midnight).
+function formatEventWhen(start: { dateTime?: string; date?: string } | undefined): string {
+  if (start?.dateTime) {
+    return new Date(start.dateTime).toLocaleString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: PENNY_TZ,
+    })
+  }
+  if (start?.date) {
+    return new Date(start.date + 'T12:00:00Z').toLocaleString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+    }) + ' (all day)'
+  }
+  return 'unknown'
+}
+
 // ─── Session-start snapshot ──────────────────────────────────────────────────
 
 export async function getGoogleSnapshot(): Promise<{ emails: string; calendar: string } | null> {
@@ -142,9 +164,8 @@ async function fetchUpcomingGoogleCalendar(token: string): Promise<string> {
   })
   if (!items.length) return '(no upcoming events)'
   return items.map((e) => {
-    const start = e.start?.dateTime ?? e.start?.date ?? 'unknown'
     const loc = e.location ? ` @ ${e.location}` : ''
-    const d = new Date(start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    const d = formatEventWhen(e.start)
     return `${d}${loc}: ${e.summary ?? '(no title)'}`
   }).join('\n')
 }
@@ -349,10 +370,9 @@ export async function searchGoogleCalendar(query: string): Promise<string> {
   })
   if (!items.length) return `(no Google Calendar results for "${query}")`
   return items.map((e) => {
-    const start = e.start?.dateTime ?? e.start?.date ?? 'unknown'
     const loc = e.location ? ` @ ${e.location}` : ''
     const desc = e.description ? `\n  ${e.description.slice(0, 200)}` : ''
-    const d = new Date(start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    const d = formatEventWhen(e.start)
     // Include id + calendar so the event can be updated/deleted later.
     const ref = e.id ? ` [id=${e.id} calendar="${e._calendarName ?? 'Household'}"]` : ''
     return `${d}${loc}: ${e.summary ?? '(no title)'}${ref}${desc}`
@@ -380,9 +400,8 @@ export async function getGoogleCalendarAgenda(date: string, days: number = 1): P
   })
   if (!items.length) return `(no events on ${date}${days > 1 ? ` +${days - 1}d` : ''})`
   return items.map((e) => {
-    const s = e.start?.dateTime ?? e.start?.date ?? 'unknown'
     const loc = e.location ? ` @ ${e.location}` : ''
-    const d = new Date(s).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    const d = formatEventWhen(e.start)
     const ref = e.id ? ` [id=${e.id} calendar="${e._calendarName ?? 'Household'}"]` : ''
     return `${d}${loc}: ${e.summary ?? '(no title)'}${ref}`
   }).join('\n')
