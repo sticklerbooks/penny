@@ -3,6 +3,15 @@
 
 import { prisma } from './db'
 import { sendNotification } from './pushover'
+import {
+  createGoogleCalendarEvent,
+  updateGoogleCalendarEvent,
+  deleteGoogleCalendarEvent,
+  sendGmail,
+  replyGmail,
+  createGmailDraft,
+  type EventTime,
+} from './google'
 
 // Parse "YYYY-MM-DD HH:MM" as local time in a given IANA timezone.
 // Falls back to direct Date parsing for ISO strings.
@@ -34,6 +43,27 @@ function parseSendAt(at: string, tz: string): Date {
   return new Date(at)
 }
 
+// Build a Google Calendar start/end object from a marker value.
+// "YYYY-MM-DD"        → all-day event ({ date })
+// "YYYY-MM-DD HH:MM"  → timed event ({ dateTime, timeZone }) in the given tz
+function buildEventTime(value: string, tz: string): EventTime {
+  const v = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return { date: v }
+  return { dateTime: parseSendAt(v, tz).toISOString(), timeZone: tz }
+}
+
+// Default end when the model omits one: +1 hour for timed events, +1 day
+// (exclusive) for all-day events — matching Google's all-day convention.
+function defaultEnd(start: EventTime): EventTime {
+  if (start.date) {
+    const d = new Date(start.date + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() + 1)
+    return { date: d.toISOString().slice(0, 10) }
+  }
+  const d = new Date(start.dateTime!)
+  return { dateTime: new Date(d.getTime() + 60 * 60 * 1000).toISOString(), timeZone: start.timeZone }
+}
+
 export type PennyAction =
   | { kind: 'create_task'; title: string; due?: string; priority?: number; category?: string; clientId?: string; description?: string; timing?: string; lastReviewed?: string }
   | { kind: 'update_task'; id: string; status?: string; priority?: number; due?: string; clientId?: string; pennyNotes?: string; onMasterList?: boolean; timing?: string; lastReviewed?: string }
@@ -51,6 +81,13 @@ export type PennyAction =
   | { kind: 'cancel_sms'; id: string }
   | { kind: 'search_email'; query: string; label?: string }
   | { kind: 'search_calendar'; query: string; label?: string }
+  | { kind: 'read_email'; id: string; label?: string }
+  | { kind: 'send_email'; to: string; subject: string; cc?: string; bcc?: string; body: string }
+  | { kind: 'reply_email'; thread: string; to?: string; body: string }
+  | { kind: 'create_draft'; to: string; subject: string; cc?: string; bcc?: string; body: string }
+  | { kind: 'create_calendar_event'; title: string; start: string; end?: string; calendar?: string; location?: string; description?: string }
+  | { kind: 'update_calendar_event'; id: string; calendar?: string; title?: string; start?: string; end?: string; location?: string; description?: string }
+  | { kind: 'delete_calendar_event'; id: string; calendar?: string }
   | { kind: 'update_user_profile'; content: string }
   | { kind: 'update_self_notes'; content: string }
   | { kind: 'update_private_user_profile'; content: string }
@@ -84,6 +121,13 @@ const SCHEDULE_SMS_RE = /<schedule_sms\s+([^>]*)>([\s\S]*?)<\/schedule_sms>/gi
 const CANCEL_SMS_RE = /<cancel_sms\s+id=["']([^"']+)["']\s*\/?>/gi
 const SEARCH_EMAIL_RE = /<search_email\s+([^/>]*)\/?>/gi
 const SEARCH_CALENDAR_RE = /<search_calendar\s+([^/>]*)\/?>/gi
+const READ_EMAIL_RE = /<read_email\s+([^/>]*)\/?>/gi
+const SEND_EMAIL_RE = /<send_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/send_email>)/gi
+const REPLY_EMAIL_RE = /<reply_email\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/reply_email>)/gi
+const CREATE_DRAFT_RE = /<create_draft\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/create_draft>)/gi
+const CREATE_CAL_EVENT_RE = /<create_calendar_event\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/create_calendar_event>)/gi
+const UPDATE_CAL_EVENT_RE = /<update_calendar_event\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/update_calendar_event>)/gi
+const DELETE_CAL_EVENT_RE = /<delete_calendar_event\s+([^/>]*)\/?>/gi
 const UPDATE_USER_PROFILE_RE = /<update_user_profile>([\s\S]*?)<\/update_user_profile>/gi
 const UPDATE_SELF_NOTES_RE = /<update_self_notes>([\s\S]*?)<\/update_self_notes>/gi
 const UPDATE_PRIVATE_USER_PROFILE_RE = /<update_private_user_profile>([\s\S]*?)<\/update_private_user_profile>/gi
@@ -282,6 +326,90 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     actions.push({ kind: 'search_calendar', query: attrs.query, label: attrs.label })
   }
 
+  // read_email
+  for (const m of text.matchAll(READ_EMAIL_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.id) continue
+    actions.push({ kind: 'read_email', id: attrs.id, label: attrs.label })
+  }
+
+  // send_email
+  for (const m of text.matchAll(SEND_EMAIL_RE)) {
+    const attrs = parseAttrs(m[1])
+    const body = (m[2] || '').trim()
+    if (!attrs.to || !attrs.subject || !body) continue
+    actions.push({
+      kind: 'send_email',
+      to: attrs.to,
+      subject: attrs.subject,
+      cc: attrs.cc,
+      bcc: attrs.bcc,
+      body,
+    })
+  }
+
+  // reply_email
+  for (const m of text.matchAll(REPLY_EMAIL_RE)) {
+    const attrs = parseAttrs(m[1])
+    const body = (m[2] || '').trim()
+    if (!attrs.thread || !body) continue
+    actions.push({ kind: 'reply_email', thread: attrs.thread, to: attrs.to, body })
+  }
+
+  // create_draft
+  for (const m of text.matchAll(CREATE_DRAFT_RE)) {
+    const attrs = parseAttrs(m[1])
+    const body = (m[2] || '').trim()
+    if (!attrs.to || !attrs.subject || !body) continue
+    actions.push({
+      kind: 'create_draft',
+      to: attrs.to,
+      subject: attrs.subject,
+      cc: attrs.cc,
+      bcc: attrs.bcc,
+      body,
+    })
+  }
+
+  // create_calendar_event
+  for (const m of text.matchAll(CREATE_CAL_EVENT_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.title || !attrs.start) continue
+    actions.push({
+      kind: 'create_calendar_event',
+      title: attrs.title,
+      start: attrs.start,
+      end: attrs.end,
+      calendar: attrs.calendar,
+      location: attrs.location,
+      description: (m[2] || attrs.description || '').trim() || undefined,
+    })
+  }
+
+  // update_calendar_event
+  for (const m of text.matchAll(UPDATE_CAL_EVENT_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.id) continue
+    const bodyDesc = (m[2] || '').trim()
+    actions.push({
+      kind: 'update_calendar_event',
+      id: attrs.id,
+      calendar: attrs.calendar,
+      title: attrs.title,
+      start: attrs.start,
+      end: attrs.end,
+      location: attrs.location,
+      description: bodyDesc || attrs.description,
+    })
+  }
+
+  // delete_calendar_event
+  for (const m of text.matchAll(DELETE_CAL_EVENT_RE)) {
+    const attrs = parseAttrs(m[1])
+    if (!attrs.id) continue
+    actions.push({ kind: 'delete_calendar_event', id: attrs.id, calendar: attrs.calendar })
+  }
+
   // update_user_profile
   for (const m of text.matchAll(UPDATE_USER_PROFILE_RE)) {
     const content = m[1].trim()
@@ -413,6 +541,13 @@ export function parseActions(text: string): { actions: PennyAction[]; cleanText:
     .replace(CANCEL_SMS_RE, '')
     .replace(SEARCH_EMAIL_RE, '')
     .replace(SEARCH_CALENDAR_RE, '')
+    .replace(READ_EMAIL_RE, '')
+    .replace(SEND_EMAIL_RE, '')
+    .replace(REPLY_EMAIL_RE, '')
+    .replace(CREATE_DRAFT_RE, '')
+    .replace(CREATE_CAL_EVENT_RE, '')
+    .replace(UPDATE_CAL_EVENT_RE, '')
+    .replace(DELETE_CAL_EVENT_RE, '')
     .replace(UPDATE_USER_PROFILE_RE, '')
     .replace(UPDATE_SELF_NOTES_RE, '')
     .replace(UPDATE_PRIVATE_USER_PROFILE_RE, '')
@@ -702,6 +837,73 @@ export async function executeActions(
           break
         }
 
+        case 'send_email': {
+          const result = await sendGmail({
+            to: action.to,
+            cc: action.cc,
+            bcc: action.bcc,
+            subject: action.subject,
+            body: action.body,
+          })
+          if (!result.ok) console.error(`send_email failed: ${result.error}`)
+          break
+        }
+
+        case 'reply_email': {
+          const result = await replyGmail({ threadId: action.thread, to: action.to, body: action.body })
+          if (!result.ok) console.error(`reply_email failed: ${result.error}`)
+          break
+        }
+
+        case 'create_draft': {
+          const result = await createGmailDraft({
+            to: action.to,
+            cc: action.cc,
+            bcc: action.bcc,
+            subject: action.subject,
+            body: action.body,
+          })
+          if (!result.ok) console.error(`create_draft failed: ${result.error}`)
+          break
+        }
+
+        case 'create_calendar_event': {
+          const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+          const start = buildEventTime(action.start, tz)
+          const end = action.end ? buildEventTime(action.end, tz) : defaultEnd(start)
+          const result = await createGoogleCalendarEvent({
+            calendar: action.calendar,
+            summary: action.title,
+            start,
+            end,
+            location: action.location,
+            description: action.description,
+          })
+          if (!result.ok) console.error(`create_calendar_event failed: ${result.error}`)
+          break
+        }
+
+        case 'update_calendar_event': {
+          const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
+          const result = await updateGoogleCalendarEvent({
+            id: action.id,
+            calendar: action.calendar,
+            summary: action.title,
+            start: action.start ? buildEventTime(action.start, tz) : undefined,
+            end: action.end ? buildEventTime(action.end, tz) : undefined,
+            location: action.location,
+            description: action.description,
+          })
+          if (!result.ok) console.error(`update_calendar_event failed: ${result.error}`)
+          break
+        }
+
+        case 'delete_calendar_event': {
+          const result = await deleteGoogleCalendarEvent({ id: action.id, calendar: action.calendar })
+          if (!result.ok) console.error(`delete_calendar_event failed: ${result.error}`)
+          break
+        }
+
         // Handled in route.ts before executeActions is called — no-op here
         case 'run_subroutine':
         case 'complete_session':
@@ -709,6 +911,7 @@ export async function executeActions(
         case 'switch_modality':
         case 'search_email':
         case 'search_calendar':
+        case 'read_email':
           break
       }
     } catch (e) {

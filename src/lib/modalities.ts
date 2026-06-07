@@ -298,8 +298,15 @@ export function actionCapability(kind: string): Capability | null {
     case 'delete_client':
       return 'clients'
     case 'search_email':
+    case 'read_email':
+    case 'send_email':
+    case 'reply_email':
+    case 'create_draft':
       return 'email'
     case 'search_calendar':
+    case 'create_calendar_event':
+    case 'update_calendar_event':
+    case 'delete_calendar_event':
       return 'calendar'
     case 'schedule_sms':
     case 'cancel_sms':
@@ -402,14 +409,46 @@ You don't create the detailed domain tasks (the other modalities do). You curate
   }
 
   if (caps.has('email')) {
-    blocks.push(`SEARCH EMAIL — look up a specific email on demand
+    blocks.push(`EMAIL — read and write ${name}'s Gmail
+Search, then read a full message on demand (both feed results back to you before you reply):
 <search_email query="Josh Shippee invoice" label="Josh invoice" />
-The system runs the search and feeds you results before you respond.`)
+<read_email id="MSG_ID" label="Josh's reply" />
+Search results include each message's [id=... thread=...] — use the id to read it in full, and the thread to reply.
+
+Send, reply, or draft (body text = the message body):
+<send_email to="josh@shippee.com" cc="" subject="Quarterly numbers">Hi Josh,\n\nHere are the figures you asked for...</send_email>
+<reply_email thread="THREAD_ID">Thanks Josh — got it, I'll have this back to you Friday.</reply_email>
+<create_draft to="linda@example.com" subject="Proposal">Draft text ${name} can review and send from Gmail.</create_draft>
+- reply_email auto-fills the recipient, subject ("Re: …"), and threading from the original — just write the body. Add to="..." only to override the recipient.
+- send_email sends immediately; create_draft saves to ${name}'s Gmail Drafts without sending.
+
+⚠️ CONFIRM FIRST — sending email goes out under ${name}'s name and cannot be unsent.
+Same rule as the calendar: you do NOT send, reply, or draft on your own initiative.
+1. First, show ${name} the exact email — recipient, subject, and the full body — and ask them to confirm.
+2. Only AFTER ${name} says yes, include the marker in your NEXT message.
+Never put a send/reply/draft marker in the same message where you propose it. No marker until they've agreed. (Reading and searching need no confirmation — those are safe.)`)
   }
 
   if (caps.has('calendar')) {
-    blocks.push(`SEARCH CALENDAR — look up a specific event on demand
-<search_calendar query="board meeting June" label="June board meeting" />`)
+    blocks.push(`CALENDAR — read and write ${name}'s Google Calendar
+Search for an event on demand (results come back to you before you reply):
+<search_calendar query="board meeting June" label="June board meeting" />
+Search results include each event's [id=... calendar="..."] — you need both to change or remove an event.
+
+Create / change / remove events:
+<create_calendar_event title="Dentist" start="2026-06-15 14:00" end="2026-06-15 15:00" calendar="Household" location="123 Main St">Annual cleaning</create_calendar_event>
+<create_calendar_event title="Flag Day" start="2026-06-14" calendar="Household" />   (all-day: a date with no time)
+<update_calendar_event id="EVENT_ID" calendar="Household" start="2026-06-15 15:00" end="2026-06-15 16:00" />
+<delete_calendar_event id="EVENT_ID" calendar="Household" />
+- start / end: "YYYY-MM-DD HH:MM" for a timed event, or "YYYY-MM-DD" for an all-day event. Omit end and it defaults to +1 hour.
+- calendar: the name of the calendar to write to (e.g. "Work", "Personal", "Family"). Omit it and the event lands on ${name}'s default "Household" calendar.
+- Body text on create/update = the event description.
+
+⚠️ CONFIRM FIRST — calendar writes touch ${name}'s real, shared calendar.
+Unlike your other tools, you do NOT write to the calendar on your own initiative.
+1. First, describe the exact change in plain words — title, date, time, which calendar — and ask ${name} to confirm.
+2. Only AFTER ${name} says yes, include the marker in your NEXT message.
+Never put a create/update/delete calendar marker in the same message where you propose it. No marker until they've agreed.`)
   }
 
   if (caps.has('notifications')) {

@@ -2,7 +2,7 @@
 // Also handles on-demand search execution for the two-pass chat flow.
 
 import { getAnthropic } from './claude'
-import { getGoogleSnapshot, searchGmail, searchGoogleCalendar } from './google'
+import { getGoogleSnapshot, searchGmail, searchGoogleCalendar, readGmailMessage } from './google'
 import { getMicrosoftSnapshot, searchOutlook, searchOutlookCalendar } from './microsoft'
 import { prisma } from './db'
 
@@ -85,6 +85,7 @@ ${rawData}`,
 export type SearchAction =
   | { kind: 'search_email'; query: string; label?: string }
   | { kind: 'search_calendar'; query: string; label?: string }
+  | { kind: 'read_email'; id: string; label?: string }
 
 export async function executeSearches(searches: SearchAction[]): Promise<string> {
   const results = await Promise.all(
@@ -113,6 +114,11 @@ export async function executeSearches(searches: SearchAction[]): Promise<string>
           outlook !== '(Outlook Calendar not configured)' ? `Outlook Calendar:\n${outlook}` : null,
         ].filter(Boolean).join('\n\n')
         return `CALENDAR SEARCH${label}: "${s.query}"\n${combined || '(no calendar sources configured)'}`
+      }
+
+      if (s.kind === 'read_email') {
+        const body = await readGmailMessage(s.id).catch(() => '(failed to read email)')
+        return `EMAIL${label} [id=${s.id}]:\n${body}`
       }
     })
   )
