@@ -2,7 +2,8 @@
 // Also handles on-demand search execution for the two-pass chat flow.
 
 import { getAnthropic } from './claude'
-import { getGoogleSnapshot, searchGmail, searchGoogleCalendar, readGmailMessage, getGoogleCalendarAgenda, searchDrive, readDriveFile } from './google'
+import type Anthropic from '@anthropic-ai/sdk'
+import { getGoogleSnapshot, searchGmail, searchGoogleCalendar, readGmailMessage, getGoogleCalendarAgenda, searchDrive, readDriveFileContent } from './google'
 import { getMicrosoftSnapshot, searchOutlook, searchOutlookCalendar } from './microsoft'
 import { prisma } from './db'
 
@@ -90,9 +91,13 @@ export type SearchAction =
   | { kind: 'search_drive'; query: string; label?: string }
   | { kind: 'read_drive_file'; id: string; label?: string }
 
-export async function executeSearches(searches: SearchAction[]): Promise<string> {
-  const results = await Promise.all(
-    searches.map(async (s) => {
+type SearchResult = { text: string; media?: Anthropic.ContentBlockParam }
+
+export async function executeSearches(
+  searches: SearchAction[]
+): Promise<{ text: string; media: Anthropic.ContentBlockParam[] }> {
+  const results: SearchResult[] = await Promise.all(
+    searches.map(async (s): Promise<SearchResult> => {
       const label = s.label ? ` (${s.label})` : ''
 
       if (s.kind === 'search_email') {
@@ -104,7 +109,7 @@ export async function executeSearches(searches: SearchAction[]): Promise<string>
           gmail !== '(Gmail not configured)' ? `Gmail results:\n${gmail}` : null,
           outlook !== '(Outlook not configured)' ? `Outlook results:\n${outlook}` : null,
         ].filter(Boolean).join('\n\n')
-        return `EMAIL SEARCH${label}: "${s.query}"\n${combined || '(no email sources configured)'}`
+        return { text: `EMAIL SEARCH${label}: "${s.query}"\n${combined || '(no email sources configured)'}` }
       }
 
       if (s.kind === 'search_calendar') {
@@ -116,30 +121,49 @@ export async function executeSearches(searches: SearchAction[]): Promise<string>
           gcal !== '(Google Calendar not configured)' ? `Google Calendar:\n${gcal}` : null,
           outlook !== '(Outlook Calendar not configured)' ? `Outlook Calendar:\n${outlook}` : null,
         ].filter(Boolean).join('\n\n')
-        return `CALENDAR SEARCH${label}: "${s.query}"\n${combined || '(no calendar sources configured)'}`
+        return { text: `CALENDAR SEARCH${label}: "${s.query}"\n${combined || '(no calendar sources configured)'}` }
       }
 
       if (s.kind === 'read_email') {
         const body = await readGmailMessage(s.id).catch(() => '(failed to read email)')
-        return `EMAIL${label} [id=${s.id}]:\n${body}`
+        return { text: `EMAIL${label} [id=${s.id}]:\n${body}` }
       }
 
       if (s.kind === 'calendar_agenda') {
         const agenda = await getGoogleCalendarAgenda(s.date, s.days ?? 1).catch(() => '(calendar agenda lookup failed)')
-        return `CALENDAR AGENDA${label} for ${s.date}${s.days && s.days > 1 ? ` (+${s.days - 1}d)` : ''}:\n${agenda}`
+        return { text: `CALENDAR AGENDA${label} for ${s.date}${s.days && s.days > 1 ? ` (+${s.days - 1}d)` : ''}:\n${agenda}` }
       }
 
       if (s.kind === 'search_drive') {
         const files = await searchDrive(s.query).catch(() => '(Drive search failed)')
-        return `DRIVE SEARCH${label}: "${s.query}"\n${files}`
+        return { text: `DRIVE SEARCH${label}: "${s.query}"\n${files}` }
       }
 
-      if (s.kind === 'read_drive_file') {
-        const content = await readDriveFile(s.id).catch(() => '(failed to read Drive file)')
-        return `DRIVE FILE${label} [id=${s.id}]:\n${content}`
+      // read_drive_file: text reads come back inline; images and PDFs come back
+      // as content blocks the model can actually see.
+      const content = await readDriveFileContent(s.id).catch(() => null)
+      if (!content) return { text: `DRIVE FILE${label} [id=${s.id}]: (failed to read)` }
+      if (content.kind === 'text') {
+        return { text: `DRIVE FILE${label} "${content.name}" [id=${s.id}]:\n${content.text}` }
       }
+      if (content.kind === 'image') {
+        return {
+          text: `DRIVE FILE${label} "${content.name}" [id=${s.id}]: image attached below.`,
+          media: { type: 'image', source: { type: 'base64', media_type: content.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: content.data } },
+        }
+      }
+      if (content.kind === 'pdf') {
+        return {
+          text: `DRIVE FILE${label} "${content.name}" [id=${s.id}]: PDF attached below.`,
+          media: { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: content.data } },
+        }
+      }
+      return { text: `DRIVE FILE${label} "${content.name}" [id=${s.id}]: ${content.note}` }
     })
   )
 
-  return results.filter(Boolean).join('\n\n---\n\n')
+  return {
+    text: results.map((r) => r.text).filter(Boolean).join('\n\n---\n\n'),
+    media: results.flatMap((r) => (r.media ? [r.media] : [])),
+  }
 }

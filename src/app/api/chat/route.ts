@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
+import type Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL, WeeklyBriefSummary } from '@/lib/claude'
+import { getAnthropic, buildSystemPrompt, cachedSystem, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL, WeeklyBriefSummary } from '@/lib/claude'
 import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions, executeActions } from '@/lib/actions'
@@ -254,7 +255,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           const anthropicStream = await getAnthropic().messages.create({
             model: PENNY_MODEL,
             max_tokens: 2048,
-            system: finalSystemPrompt,
+            system: cachedSystem(finalSystemPrompt),
             messages: claudeMessages,
             stream: true,
           })
@@ -286,20 +287,25 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         )
 
         if (searchActions.length > 0) {
-          const searchResults = await executeSearches(searchActions).catch(() => '(search failed)')
+          const searchResults = await executeSearches(searchActions).catch(() => ({ text: '(search failed)', media: [] as Anthropic.ContentBlockParam[] }))
+
+          // Feed any images/PDFs back as real content blocks alongside the text.
+          const resultContent: Anthropic.ContentBlockParam[] = [
+            { type: 'text', text: `Here are the search results you requested:\n\n${searchResults.text}\n\nPlease continue your response with this information.` },
+            ...searchResults.media,
+          ]
+
+          const secondMessages: Anthropic.MessageParam[] = [
+            ...claudeMessages,
+            { role: 'assistant', content: workingText },
+            { role: 'user', content: resultContent },
+          ]
 
           const secondPass = await getAnthropic().messages.create({
             model: PENNY_SEARCH_MODEL,
             max_tokens: 2048,
-            system: finalSystemPrompt,
-            messages: [
-              ...claudeMessages,
-              { role: 'assistant', content: workingText },
-              {
-                role: 'user',
-                content: `Here are the search results you requested:\n\n${searchResults}\n\nPlease continue your response with this information.`,
-              },
-            ],
+            system: cachedSystem(finalSystemPrompt),
+            messages: secondMessages,
           })
 
           const secondText = (secondPass.content[0] as { type: string; text: string }).text

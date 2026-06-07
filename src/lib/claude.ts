@@ -31,6 +31,23 @@ export const PENNY_SEARCH_MODEL = process.env.PENNY_SEARCH_MODEL || PENNY_MODEL
 // Fast model for mechanical work: farewell notes on switch, memory extraction
 export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haiku-20241022'
 
+// Split the system prompt into a cacheable stable block + an uncacheable
+// trailing block, with the breakpoint placed right before the per-minute
+// timestamp line ("📅 Today is …"). Everything above — persona, toolkit,
+// notes, memories, tasks — is cached; only the tiny timestamp tail is
+// reprocessed each turn. The server (Railway) resends this whole prompt every
+// message, so caching the large stable prefix is the biggest cost/latency win.
+// Within one turn the second (search) pass reads the cache the main call wrote.
+const TIMESTAMP_MARKER = '📅 Today is '
+export function cachedSystem(prompt: string): Anthropic.TextBlockParam[] {
+  const i = prompt.lastIndexOf(TIMESTAMP_MARKER)
+  if (i <= 0) return [{ type: 'text', text: prompt }]
+  return [
+    { type: 'text', text: prompt.slice(0, i), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: prompt.slice(i) },
+  ]
+}
+
 // Lightweight type for the weekly brief — avoids importing from generated prisma
 // (which isn't committed to git; Railway regenerates on each deploy).
 export interface WeeklyBriefSummary {

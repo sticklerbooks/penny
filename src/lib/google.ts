@@ -556,41 +556,72 @@ export async function searchDrive(query: string): Promise<string> {
   }).join('\n')
 }
 
-export async function readDriveFile(id: string): Promise<string> {
-  const token = await refreshGoogleToken()
-  if (!token) return '(Google Drive not configured)'
-
-  // Metadata first — we need the mime type to decide how to read it.
-  const metaRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,name,mimeType`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  if (!metaRes.ok) return `(could not open Drive file ${id})`
-  const meta = await metaRes.json()
-  const mt: string = meta.mimeType
-
-  let text = ''
-  if (mt === 'application/vnd.google-apps.document' || mt === 'application/vnd.google-apps.presentation') {
-    text = await driveExport(token, id, 'text/plain')
-  } else if (mt === 'application/vnd.google-apps.spreadsheet') {
-    text = await driveExport(token, id, 'text/csv')
-  } else if (mt.startsWith('text/') || mt === 'application/json') {
-    const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    )
-    text = r.ok ? await r.text() : `(could not download ${meta.name})`
-  } else {
-    return `${meta.name} [${driveKind(mt)}]: (can't read this format yet — supported: Google Docs, Sheets, Slides, and plain-text/CSV/JSON. PDF/Word/Excel parsing is not wired up.)`
-  }
-
-  return `${meta.name} [${driveKind(mt)}] [id=${meta.id}]\n\n${text.slice(0, 6000)}`
-}
-
 async function driveExport(token: string, id: string, mimeType: string): Promise<string> {
   const r = await fetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(mimeType)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   )
   return r.ok ? await r.text() : '(export failed)'
+}
+
+// Structured read for the vision path: returns extractable text, or the raw
+// bytes (base64) of an image / PDF so the caller can hand them to the model as
+// content blocks. Claude vision supports JPEG/PNG/GIF/WebP and PDF documents.
+export type DriveContent =
+  | { kind: 'text'; name: string; text: string }
+  | { kind: 'image'; name: string; mediaType: string; data: string }
+  | { kind: 'pdf'; name: string; data: string }
+  | { kind: 'unsupported'; name: string; note: string }
+
+const CLAUDE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // Claude per-image cap
+const MAX_PDF_BYTES = 25 * 1024 * 1024
+
+export async function readDriveFileContent(id: string): Promise<DriveContent> {
+  const token = await refreshGoogleToken()
+  if (!token) return { kind: 'unsupported', name: id, note: 'Google Drive not configured' }
+
+  const metaRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,name,mimeType,size`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (!metaRes.ok) return { kind: 'unsupported', name: id, note: `could not open Drive file ${id}` }
+  const meta = await metaRes.json()
+  const mt: string = meta.mimeType
+  const name: string = meta.name
+
+  // Google-native + plain text → extract text (existing behavior)
+  if (mt === 'application/vnd.google-apps.document' || mt === 'application/vnd.google-apps.presentation') {
+    return { kind: 'text', name, text: (await driveExport(token, id, 'text/plain')).slice(0, 6000) }
+  }
+  if (mt === 'application/vnd.google-apps.spreadsheet') {
+    return { kind: 'text', name, text: (await driveExport(token, id, 'text/csv')).slice(0, 6000) }
+  }
+  if (mt.startsWith('text/') || mt === 'application/json') {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    return { kind: 'text', name, text: r.ok ? (await r.text()).slice(0, 6000) : '(could not download)' }
+  }
+
+  // Images and PDFs → download raw bytes for a content block
+  if (CLAUDE_IMAGE_TYPES.has(mt) || mt === 'application/pdf') {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    if (!r.ok) return { kind: 'unsupported', name, note: 'could not download file bytes' }
+    const bytes = Buffer.from(await r.arrayBuffer())
+    const cap = mt === 'application/pdf' ? MAX_PDF_BYTES : MAX_IMAGE_BYTES
+    if (bytes.length > cap) {
+      return { kind: 'unsupported', name, note: `${driveKind(mt)} too large to read (${Math.round(bytes.length / 1024 / 1024)}MB)` }
+    }
+    const data = bytes.toString('base64')
+    return mt === 'application/pdf'
+      ? { kind: 'pdf', name, data }
+      : { kind: 'image', name, mediaType: mt, data }
+  }
+
+  return { kind: 'unsupported', name, note: `can't read ${driveKind(mt)} yet` }
 }
