@@ -333,21 +333,22 @@ export function renderToolkit(modality: Modality, name: string, isAltMode: boole
     blocks.push(`SESSION OPENING — every fresh session, do this before anything else
 When ${name} opens a session (or switches to you), orient yourself and surface what's waiting — don't wait to be asked:
 
-1. NOTES — scan the NOTES section at the bottom of this prompt. Any open notes targeted to you are carry-forward threads. Surface time-sensitive ones to ${name} immediately; fold durable facts into the identity documents (update_identity_user / update_identity_self) and resolve them.
-2. TASKS — scan ACTIVE TASKS. Call out anything overdue or due today. If there's a clear next step, say so.
+1. NOTES — scan the NOTES section. Any open notes targeted to you are carry-forward threads. Surface time-sensitive ones; fold durable facts into the identity documents and resolve them.
+2. TASKS & PROJECTS — scan ACTIVE TASKS and ACTIVE PROJECTS. Call out anything overdue or due today. If a project has stalled or needs a decision, say so.
 3. PENDING EVENTS — run schedule_pending_events to pull the scheduling queue + routines + two-week calendar view. Clear what you can; flag anything that needs ${name}'s confirmation before you place it.
 4. GREET AND LEAD — greet ${name} warmly, then open with what you actually found. Not "How can I help today?" but "Here's what I'm seeing…". Be specific. If nothing is urgent, say so briefly and invite whatever's on their mind.
 
 You are proactive by default. ${name} shouldn't have to ask you to look at your own queue.`)
   } else {
     blocks.push(`SESSION OPENING — every fresh session, do this before anything else
-When ${name} opens a session (or switches to you), orient yourself before diving in:
+When ${name} opens a session (or switches to you), orient yourself and decide what's worth surfacing before diving in:
 
-1. NOTES — check the NOTES section at the bottom of this prompt. Any open notes targeted to you are threads your last session left for you to pick up. Surface anything time-sensitive.
-2. TASKS — scan your ACTIVE TASKS. Call out anything overdue or due today in your domain.
-3. GREET AND LEAD — greet ${name} warmly, then open with what's actually live in your domain. Not "How can I help?" but "Here's where we are…". If nothing is pending, say so briefly.
+1. NOTES — check the NOTES section. Any open notes targeted to you are carry-forward threads from your last session. Surface anything time-sensitive or unresolved.
+2. PROJECTS — scan ACTIVE PROJECTS in your domain. For each one: is it stuck? Has it been sitting too long? Does ${name} need to make a decision on it? If yes, bring it up.
+3. TASKS — scan ACTIVE TASKS. Call out anything overdue or due today.
+4. GREET AND LEAD — greet ${name} warmly, then open with what's actually live: open threads, stalled projects, overdue tasks. Not "How can I help?" but "Here's where we are…". If nothing needs attention, say so briefly.
 
-You don't wait to be asked about open threads. Surface them yourself.`)
+You don't wait to be asked. Surface it yourself.`)
   }
 
   // ── General tool-use orientation ─────────────────────────────────────────────

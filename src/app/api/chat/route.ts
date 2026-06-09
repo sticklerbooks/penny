@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
 
-  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief] =
+  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
@@ -110,6 +110,10 @@ export async function POST(req: NextRequest) {
           orderBy: { createdAt: 'desc' },
         })
         .catch(() => null) as Promise<WeeklyBriefSummary | null>,
+      prisma.project.findMany({
+        where: { profileId: profile.id, progress: { lt: 10 } },
+        orderBy: { updatedAt: 'desc' },
+      }).catch(() => [] as import('../../../generated/prisma/client').Project[]),
     ])
 
 
@@ -128,7 +132,7 @@ export async function POST(req: NextRequest) {
     const closeSystem = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
       scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false,
-      outgoingBriefRecord?.content ?? null
+      outgoingBriefRecord?.content ?? null, projects
     )
     const closeCtx: ToolContext = {
       profileId: profile.id,
@@ -195,7 +199,7 @@ export async function POST(req: NextRequest) {
     profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief, false,
-    modalityBrief
+    modalityBrief, projects
   )
 
   const currentModality = getModality(activeModality)

@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import type { Profile, Memory, Task, Note, Client, ScheduledMessage } from '../generated/prisma/client'
+import type { Profile, Memory, Task, Note, Client, ScheduledMessage, Project } from '../generated/prisma/client'
 import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules } from './modalities'
 
 function loadPersonaFile(relativePath: string): string {
@@ -70,7 +70,8 @@ export function buildSystemPrompt(
   isAltMode: boolean = false,
   // Running brief maintained by the modality via rewrite_brief tool.
   // Null when the table doesn't exist yet or no brief has been written.
-  modalityBrief: string | null = null
+  modalityBrief: string | null = null,
+  projects: Project[] = []
 ): string {
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
@@ -97,6 +98,12 @@ export function buildSystemPrompt(
   const showClients = modality.capabilities.includes('clients')
   const showCalendar = modality.capabilities.includes('calendar')
   const showNotifications = isPA // only Penny schedules SMS / push
+
+  // Projects lens: PA sees active projects with any meaningful progress (3+).
+  // Submodalities see only their own projects (all active, progress 0-9).
+  const lensProjects = isPA
+    ? projects.filter((p) => p.progress >= 3)
+    : projects.filter((p) => p.assignedModality === modalityId)
 
   // Group memories by category for clearer context
   const memoriesByCategory = lensMemories.reduce((acc, m) => {
@@ -169,6 +176,19 @@ export function buildSystemPrompt(
             const from = n.source && n.source !== modalityId ? ` (from ${n.source})` : ''
             const expires = ` expires ${new Date(n.expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
             return `  • id=${n.id} — ${n.title}: ${n.content}${from}${expires}`
+          })
+          .join('\n')
+      : '  (none)'
+
+  const progressBar = (n: number) => '█'.repeat(n) + '░'.repeat(10 - n)
+  const projectsText =
+    lensProjects.length > 0
+      ? lensProjects
+          .map((p) => {
+            const bar = `[${progressBar(p.progress)} ${p.progress}/10]`
+            const mod = isPA ? ` [${p.assignedModality}]` : ''
+            const contingency = p.contingencies ? `\n     ↳ constraint: ${p.contingencies}` : ''
+            return `  • id=${p.id}${mod} ${bar} "${p.name}" — ${p.expectedDuration}${contingency}`
           })
           .join('\n')
       : '  (none)'
@@ -358,6 +378,9 @@ ${aboutUserSection}
 🪞 PENNY'S SELF-NOTES (read-only):
 ${aboutSelfSection}`
 
+  const projectsBlock = lensProjects.length > 0
+    ? `\n\n📁 ACTIVE PROJECTS${isPA ? ' (progress ≥3, all modalities)' : ' (your domain)'}:\n${projectsText}`
+    : ''
   const clientsBlock = showClients
     ? `\n\n🏢 CLIENTS (${activeClients.length} active/onboarding):\n${clientsText}`
     : ''
@@ -496,10 +519,10 @@ ${identityBlock}
 ${briefBlock}
 
 👤 MEMORIES ABOUT ${userName.toUpperCase()} (legacy records — search_memory / search_deep_memory for deeper lookup):
-${memoriesText}${clientsBlock}
+${memoriesText}
 
 ✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week):
-${tasksText}${notificationsBlock}${calendarBlock}${focusLockBlock}${focusProfilesBlock}
+${tasksText}${projectsBlock}${clientsBlock}${notificationsBlock}${calendarBlock}${focusLockBlock}${focusProfilesBlock}
 
 📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)${weeklyBriefBlock}`
 }
