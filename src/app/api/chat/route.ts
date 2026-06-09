@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
 
-  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects] =
+  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
@@ -114,6 +114,10 @@ export async function POST(req: NextRequest) {
         where: { profileId: profile.id, progress: { lt: 10 } },
         orderBy: { updatedAt: 'desc' },
       }).catch(() => [] as import('../../../generated/prisma/client').Project[]),
+      prisma.pendingCalendarEvent.findMany({
+        where: { profileId: profile.id, scheduled: false },
+        orderBy: { createdAt: 'desc' },
+      }).catch(() => [] as import('../../../generated/prisma/client').PendingCalendarEvent[]),
     ])
 
 
@@ -128,11 +132,14 @@ export async function POST(req: NextRequest) {
     const outgoingBriefRecord = await db.modalityBrief
       .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: outgoingModalityId } } })
       .catch(() => null) as { content: string } | null
+    const outgoingIdentity = await prisma.modalityIdentity
+      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: outgoingModalityId } } })
+      .catch(() => null)
 
     const closeSystem = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
       scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false,
-      outgoingBriefRecord?.content ?? null, projects
+      outgoingBriefRecord?.content ?? null, projects, pendingEvents, outgoingIdentity
     )
     const closeCtx: ToolContext = {
       profileId: profile.id,
@@ -194,12 +201,18 @@ export async function POST(req: NextRequest) {
     .catch(() => null) as { content: string } | null
   const modalityBrief = modalityBriefRecord?.content ?? null
 
+  // Per-modality identity (own self-portrait + slice of the user). May not exist
+  // yet — buildSystemPrompt falls back to the persona seed when null.
+  const modalityIdentity = await prisma.modalityIdentity
+    .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
+    .catch(() => null)
+
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
     profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief, false,
-    modalityBrief, projects
+    modalityBrief, projects, pendingEvents, modalityIdentity
   )
 
   const currentModality = getModality(activeModality)
@@ -402,7 +415,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           const midCloseSystem = buildSystemPrompt(
             profile!, memories, tasks, notes, clients,
             scheduledMessages, emailCalendarSummary, false,
-            activeModality, null, false, midBriefRecord?.content ?? null, projects
+            activeModality, null, false, midBriefRecord?.content ?? null, projects, pendingEvents, modalityIdentity
           )
           const midCtx: ToolContext = {
             profileId: profile!.id,

@@ -319,6 +319,12 @@ export async function executeTool(
         return { content: `Pending event ${id} updated.` }
       }
 
+      case 'delete_pending_event': {
+        const id = str(args.id)
+        await prisma.pendingCalendarEvent.delete({ where: { id } })
+        return { content: `Pending event ${id} deleted.` }
+      }
+
       // ── Calendar (read) ───────────────────────────────────────────────────
 
       case 'read_calendar_day': {
@@ -658,19 +664,32 @@ export async function executeTool(
       // ── Identity ──────────────────────────────────────────────────────────
 
       case 'update_identity_user': {
-        await prisma.profile.update({
-          where: { id: profileId },
-          data: { aboutUser: str(args.content), aboutUserUpdatedAt: new Date() },
+        // PA owns the global, shared picture of the user (Profile.aboutUser).
+        // A submodality maintains only her own slice (ModalityIdentity.aboutUserFacet).
+        const m = getModality(modalityId)
+        if (m.domain === null) {
+          await prisma.profile.update({
+            where: { id: profileId },
+            data: { aboutUser: str(args.content), aboutUserUpdatedAt: new Date() },
+          })
+          return { content: 'Identity (shared aboutUser) updated.' }
+        }
+        await prisma.modalityIdentity.upsert({
+          where: { profileId_modalityId: { profileId, modalityId } },
+          create: { profileId, modalityId, aboutUserFacet: str(args.content), aboutUserFacetUpdatedAt: new Date() },
+          update: { aboutUserFacet: str(args.content), aboutUserFacetUpdatedAt: new Date() },
         })
-        return { content: 'Identity (aboutUser) updated.' }
+        return { content: 'Identity (your slice of the user) updated.' }
       }
 
       case 'update_identity_self': {
-        await prisma.profile.update({
-          where: { id: profileId },
-          data: { aboutSelf: str(args.content), aboutSelfUpdatedAt: new Date() },
+        // Each modality owns its own self-portrait in ModalityIdentity.
+        await prisma.modalityIdentity.upsert({
+          where: { profileId_modalityId: { profileId, modalityId } },
+          create: { profileId, modalityId, aboutSelf: str(args.content), aboutSelfUpdatedAt: new Date() },
+          update: { aboutSelf: str(args.content), aboutSelfUpdatedAt: new Date() },
         })
-        return { content: 'Identity (aboutSelf) updated.' }
+        return { content: 'Identity (your self-portrait) updated.' }
       }
 
       // ── Memory ────────────────────────────────────────────────────────────

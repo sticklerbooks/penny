@@ -342,6 +342,20 @@ const updatePendingEvent: Tool = {
   },
 }
 
+const deletePendingEvent: Tool = {
+  name: 'delete_pending_event',
+  description:
+    'Delete a pending calendar event from the queue. Use for events that are redundant, ' +
+    'duplicated, or no longer needed (not for ones that got scheduled — those resolve themselves).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Pending event ID.' },
+    },
+    required: ['id'],
+  },
+}
+
 // ─── Calendar tools (read) ────────────────────────────────────────────────────
 
 const readCalendarDay: Tool = {
@@ -1020,6 +1034,7 @@ const CORE_TOOLS: Tool[] = [
   // Pending calendar events (any modality creates; PA schedules)
   createPendingEvent,
   updatePendingEvent,
+  deletePendingEvent,
   // Calendar read (everyone reads; only PA writes via CALENDAR_WRITE_TOOLS)
   readCalendarDay,
   searchCalendar,
@@ -1161,6 +1176,7 @@ export {
   createRoutine,
   createPendingEvent,
   updatePendingEvent,
+  deletePendingEvent,
   readCalendarDay,
   searchCalendar,
   schedulePendingEvents,

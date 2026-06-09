@@ -54,6 +54,7 @@ model Profile {
   pendingCalendarEvents PendingCalendarEvent[]
   routines             Routine[]
   modalityBriefs       ModalityBrief[]
+  modalityIdentities   ModalityIdentity[]
   deepMemories         DeepMemory[]
   memoryLog            MemoryLog[]
   clients              Client[]
@@ -241,6 +242,26 @@ model ModalityBrief {
 
   modalityId String
   content    String?  // null until first close_session; shown as empty brief until then
+
+  @@unique([profileId, modalityId])
+}
+
+// Per-modality identity — each self's own evolving self-portrait, plus the slice
+// of the user that her domain notices most. The whole shared picture of the user
+// stays on Profile.aboutUser (PA-owned); this table holds the per-modality parts.
+model ModalityIdentity {
+  id        String   @id @default(cuid())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  modalityId String
+
+  aboutSelf               String?   // this modality's own self-portrait (first-person)
+  aboutSelfUpdatedAt      DateTime?
+  aboutUserFacet          String?   // this modality's slice of the user
+  aboutUserFacetUpdatedAt DateTime?
 
   @@unique([profileId, modalityId])
 }
