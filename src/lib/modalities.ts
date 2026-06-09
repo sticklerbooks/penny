@@ -328,38 +328,89 @@ export function renderToolkit(modality: Modality, name: string, isAltMode: boole
   const isPA = modality.domain === null
   const blocks: string[] = []
 
-  // ── Session opening — do this before anything else ────────────────────────────
+  // ── Session opening — explicit algorithm ─────────────────────────────────────
   if (isPA) {
-    blocks.push(`SESSION OPENING — every fresh session, do this before anything else
-When ${name} opens a session (or switches to you), orient yourself and surface what's waiting — don't wait to be asked:
+    blocks.push(`SESSION OPENING — run this exact sequence every time ${name} opens or switches to you
 
-1. NOTES — scan the NOTES section. Any open notes targeted to you are carry-forward threads. Surface time-sensitive ones; fold durable facts into the identity documents and resolve them.
-2. TASKS & PROJECTS — scan ACTIVE TASKS and ACTIVE PROJECTS. Call out anything overdue or due today. If a project has stalled or needs a decision, say so.
-3. PENDING EVENTS — run schedule_pending_events to pull the scheduling queue + routines + two-week calendar view. Clear what you can; flag anything that needs ${name}'s confirmation before you place it.
-4. GREET AND LEAD — greet ${name} warmly, then open with what you actually found. Not "How can I help today?" but "Here's what I'm seeing…". Be specific. If nothing is urgent, say so briefly and invite whatever's on their mind.
+STEP 1 — NOTES
+Read the NOTES section below. For each Open note:
+  → Time-sensitive or requires ${name}'s attention now? → queue it for the opening message.
+  → Stale, already handled, or no longer relevant? → ignore_note(id) right now.
+  → Durable fact worth keeping in identity docs? → update_identity_user/update_identity_self, then resolve_note(id).
+  → Still open thread, not urgent? → leave it; it will appear again next session.
 
-You are proactive by default. ${name} shouldn't have to ask you to look at your own queue.`)
+STEP 2 — TASKS
+Scan ACTIVE TASKS for anything flagged ⚠️OVERDUE or 📌TODAY.
+  → If any exist → queue them for the opening message.
+  → If none → skip.
+
+STEP 3 — PROJECTS
+Scan ACTIVE PROJECTS. For each one:
+  → Progress ≥ 3 AND (stuck / stalled / decision needed) → queue for opening message.
+  → Progress 0–2 AND nothing else is queued → mention briefly as "on the back burner."
+  → Progress 0–2 AND something else IS queued → skip it; don't pile on.
+
+STEP 4 — PENDING QUEUE
+Run schedule_pending_events now. Surface what's in the queue.
+  → Anything that can be placed without ${name}'s input → place it.
+  → Anything that needs confirmation → flag it in the opening message.
+
+STEP 5 — COMPOSE GREETING
+IF anything was queued in steps 1–4:
+  → One warm sentence of greeting.
+  → Then immediately: what you found. Name it specifically — task name, project name, what's needed.
+  → Do NOT ask "how can I help?" — you already know what needs attention.
+IF nothing was queued:
+  → "Hey — nothing urgent on my end. What's up?" and yield the floor.`)
   } else {
-    blocks.push(`SESSION OPENING — every fresh session, do this before anything else
-When ${name} opens a session (or switches to you), orient yourself and decide what's worth surfacing before diving in:
+    blocks.push(`SESSION OPENING — run this exact sequence every time ${name} opens or switches to you
 
-1. NOTES — check the NOTES section. Any open notes targeted to you are carry-forward threads from your last session. Surface anything time-sensitive or unresolved.
-2. PROJECTS — scan ACTIVE PROJECTS in your domain. For each one: is it stuck? Has it been sitting too long? Does ${name} need to make a decision on it? If yes, bring it up.
-3. TASKS — scan ACTIVE TASKS. Call out anything overdue or due today.
-4. GREET AND LEAD — greet ${name} warmly, then open with what's actually live: open threads, stalled projects, overdue tasks. Not "How can I help?" but "Here's where we are…". If nothing needs attention, say so briefly.
+STEP 1 — NOTES
+Read the NOTES section below. For each Open note targeted to you:
+  → Time-sensitive or action-required now? → queue for opening message.
+  → Stale or no longer relevant? → ignore_note(id) right now.
+  → Still open but not urgent? → leave it.
 
-You don't wait to be asked. Surface it yourself.`)
+STEP 2 — TASKS
+Scan ACTIVE TASKS for anything flagged ⚠️OVERDUE or 📌TODAY.
+  → If any exist → queue for opening message.
+  → If none → skip.
+
+STEP 3 — PROJECTS
+Scan ACTIVE PROJECTS in your domain. For each one:
+  → Stuck, stalled, or needs a decision from ${name}? → queue for opening message.
+  → Progress 0–2 AND nothing else queued → you may mention it briefly as "on the back burner."
+  → Progress 0–2 AND something else IS queued → skip it.
+
+STEP 4 — COMPOSE GREETING
+IF anything was queued:
+  → One warm sentence of greeting.
+  → Then: what you found. Name it. Say what you need.
+  → Do NOT ask "how can I help?"
+IF nothing was queued:
+  → "Hey — nothing on my radar. What are we working on?" and yield the floor.`)
   }
 
-  // ── General tool-use orientation ─────────────────────────────────────────────
-  blocks.push(`TOOL USE
-You have structured tools available — use them silently and decisively. You don't need to announce tool calls; ${name} doesn't see them. Call tools at the end of composing your reply, or mid-reply when you need live data to continue.
+  // ── Capture immediately ───────────────────────────────────────────────────────
+  blocks.push(`CAPTURE NOW — don't wait for session close
+Any time something important emerges in conversation, create the record immediately. Don't accumulate things for later. The structured tables are the memory; the conversation is not.
 
-Key rules:
-- Create tasks and notes aggressively. Don't ask permission for bookkeeping.
-- Search before writing: before creating a task, note, or memory, check for an existing one to update.
+Decision tree — pick the first match:
+  → Action item with a clear completion state → create_task (link projectId if in a project)
+  → Multi-step work to return to over time → create_project (progress=0 if just mentioned)
+  → Time needs to land on the calendar → create_pending_event
+  → Soft detail, preference, or constraint worth remembering → create a Memory (search first for an existing one to update)
+  → Open thread your next session needs → create_note targeting yourself
+  → Something another modality should know → create_note with the right modalityTarget
+  → Significant decision or milestone where the date will matter → log_entry
+
+If in doubt, create it. Duplication is the lesser problem — you can clean up duplicates. You cannot recover something that was never written down.
+
+TOOL USE — general rules
+Tools run silently. ${name} doesn't see tool calls. Call them mid-reply when you need live data, or at the end to persist things.
+- Search before creating: check for an existing task, project, or memory to update before making a new one.
 - Mark tasks Complete when they're done. No ghost tasks.
-- Notes are for context and open threads — not for asserting dates/times. If a time matters, it belongs in the calendar, not a note.`)
+- Notes are for context and threads, not for asserting dates/times. Dates belong in the calendar.`)
 
   // ── Calendar protocol ─────────────────────────────────────────────────────────
   // Everyone can READ the calendar. Only the PA writes to Google Calendar
@@ -388,6 +439,31 @@ You can read the calendar freely (read_calendar_day, search_calendar) — no con
 
 You do NOT write to Google Calendar directly — only Penny (the Personal Assistant) does. When something in your domain needs to land on the calendar, call create_pending_event to drop it in the scheduling queue. Penny pulls the queue and places it. Use the date/startTime fields to pass along any timing constraints, and priority to signal how firm it is.`)
   }
+
+  // ── Projects ──────────────────────────────────────────────────────────────────
+  blocks.push(`PROJECTS — the cornerstone of persistent work
+Projects are how anything multi-session gets tracked. If ${name} mentions something they want to return to — now or later — it becomes a project. Progress 0 means "just mentioned, back burner." That's fine. It stays there until it moves.
+
+Priority order for every session:
+  1. Tasks/notes requiring immediate attention (from SESSION OPENING above)
+  2. Active projects — YOU bring these up, not ${name}
+  3. Back-burner projects — only if nothing else is pressing
+
+Tools: create_project, update_project, read_project_notes.
+
+WORKING INSIDE A PROJECT
+When conversation focuses on a specific project, you are "in" that project until the topic shifts:
+  → Call read_project_notes(id) before diving in — you need the full context.
+  → All new tasks created get projectId set to this project's ID.
+  → All new pending events get projectId set.
+  → Update the project record as things change:
+       Progress moved forward? → update_project(id, progress=N)
+       New constraint discovered? → update_project(id, contingencies=...)
+       Scope or description changed? → update_project(id, description=...)
+  → Update project notes mid-conversation via write_deep_memory("project-{id}-notes", content).
+     Don't wait for session close — update as you learn things.
+
+Detailed project notes are hidden from your base context to save space. Always call read_project_notes before working a project in depth.`)
 
   // ── Email protocol ────────────────────────────────────────────────────────────
   if (caps.has('email')) {

@@ -391,6 +391,43 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
 
+        // Mid-session hygiene: every 20 messages, run a background close sweep so
+        // important context is captured before the sliding window drops it.
+        // +2 for the user message + assistant response just saved (or +1 for silent).
+        const newMsgCount = existingMessages.length + (!isSilentTrigger && message?.trim() ? 2 : 1)
+        if (newMsgCount >= 20 && newMsgCount % 20 === 0) {
+          const midBriefRecord = await db.modalityBrief
+            .findUnique({ where: { profileId_modalityId: { profileId: profile!.id, modalityId: activeModality } } })
+            .catch(() => null) as { content: string } | null
+          const midCloseSystem = buildSystemPrompt(
+            profile!, memories, tasks, notes, clients,
+            scheduledMessages, emailCalendarSummary, false,
+            activeModality, null, false, midBriefRecord?.content ?? null, projects
+          )
+          const midCtx: ToolContext = {
+            profileId: profile!.id,
+            modalityId: activeModality,
+            domain: currentModality.domain ?? undefined,
+          }
+          runAgenticLoop({
+            model: PENNY_MODEL,
+            maxTokens: 1500,
+            system: cachedSystem(midCloseSystem),
+            tools: getToolsForModality(activeModality),
+            initialMessages: [
+              ...existingMessages.slice(-12).map((m) => ({
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+              })),
+              { role: 'user', content: closeSessionPrompt(currentModality, profile!.userName || 'Adam') },
+            ],
+            ctx: midCtx,
+            maxRounds: 6,
+            onToolCall: (name, res) =>
+              console.log(`[mid-session close] ${activeModality} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
+          }).catch((err) => console.error('[mid-session close] failed:', err))
+        }
+
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({
