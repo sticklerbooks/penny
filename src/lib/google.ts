@@ -28,6 +28,7 @@ async function refreshGoogleToken(): Promise<string | null> {
 type CalEvent = {
   id?: string
   start?: { dateTime?: string; date?: string }
+  end?: { dateTime?: string; date?: string }
   summary?: string
   location?: string
   description?: string
@@ -95,14 +96,24 @@ async function resolveCalendarId(token: string, name?: string): Promise<string> 
 // by the UTC offset (e.g. 6:45 AM EDT renders as 10:45 AM).
 const PENNY_TZ = process.env.PENNY_TIMEZONE || 'America/New_York'
 
-// Format an event's start for display, in the user's timezone.
-// Timed events show date + time in PENNY_TZ; all-day events show just the date
-// (rendered at UTC noon so the calendar date never shifts across midnight).
-function formatEventWhen(start: { dateTime?: string; date?: string } | undefined): string {
+// Format an event's time span for display, in the user's timezone.
+// Timed events show "Mon, Jun 8, 10:00 AM–3:00 PM"; all-day events show the date.
+// End time is omitted only when unavailable.
+function formatEventWhen(
+  start: { dateTime?: string; date?: string } | undefined,
+  end?: { dateTime?: string; date?: string }
+): string {
   if (start?.dateTime) {
-    return new Date(start.dateTime).toLocaleString('en-US', {
+    const startStr = new Date(start.dateTime).toLocaleString('en-US', {
       weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: PENNY_TZ,
     })
+    if (end?.dateTime) {
+      const endStr = new Date(end.dateTime).toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit', timeZone: PENNY_TZ,
+      })
+      return `${startStr}–${endStr}`
+    }
+    return startStr
   }
   if (start?.date) {
     return new Date(start.date + 'T12:00:00Z').toLocaleString('en-US', {
@@ -165,7 +176,7 @@ async function fetchUpcomingGoogleCalendar(token: string): Promise<string> {
   if (!items.length) return '(no upcoming events)'
   return items.map((e) => {
     const loc = e.location ? ` @ ${e.location}` : ''
-    const d = formatEventWhen(e.start)
+    const d = formatEventWhen(e.start, e.end)
     return `${d}${loc}: ${e.summary ?? '(no title)'}`
   }).join('\n')
 }
@@ -372,7 +383,7 @@ export async function searchGoogleCalendar(query: string): Promise<string> {
   return items.map((e) => {
     const loc = e.location ? ` @ ${e.location}` : ''
     const desc = e.description ? `\n  ${e.description.slice(0, 200)}` : ''
-    const d = formatEventWhen(e.start)
+    const d = formatEventWhen(e.start, e.end)
     // Include id + calendar so the event can be updated/deleted later.
     const ref = e.id ? ` [id=${e.id} calendar="${e._calendarName ?? 'Household'}"]` : ''
     return `${d}${loc}: ${e.summary ?? '(no title)'}${ref}${desc}`
@@ -401,7 +412,7 @@ export async function getGoogleCalendarAgenda(date: string, days: number = 1): P
   if (!items.length) return `(no events on ${date}${days > 1 ? ` +${days - 1}d` : ''})`
   return items.map((e) => {
     const loc = e.location ? ` @ ${e.location}` : ''
-    const d = formatEventWhen(e.start)
+    const d = formatEventWhen(e.start, e.end)
     const ref = e.id ? ` [id=${e.id} calendar="${e._calendarName ?? 'Household'}"]` : ''
     return `${d}${loc}: ${e.summary ?? '(no title)'}${ref}`
   }).join('\n')
@@ -624,4 +635,130 @@ export async function readDriveFileContent(id: string): Promise<DriveContent> {
   }
 
   return { kind: 'unsupported', name, note: `can't read ${driveKind(mt)} yet` }
+}
+
+// ─── Drive write ─────────────────────────────────────────────────────────────
+
+export type DriveWriteResult = { ok: true; id: string; name: string; link?: string } | { ok: false; error: string }
+
+const DRIVE_DOC_MIME = 'application/vnd.google-apps.document'
+
+// Build a multipart/related body: a JSON metadata part + a media (content) part.
+function driveMultipart(metadata: Record<string, unknown>, content: string, contentType = 'text/plain'): { body: string; boundary: string } {
+  const boundary = '-------penny' + Math.random().toString(36).slice(2)
+  const body =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${contentType}\r\n\r\n` +
+    `${content}\r\n` +
+    `--${boundary}--`
+  return { body, boundary }
+}
+
+// Create a Drive file. type "doc" → a Google Doc (text is converted);
+// type "text" → a plain .txt file. Optionally place it in a folder.
+export async function createDriveFile(input: {
+  name: string
+  content: string
+  type?: 'doc' | 'text'
+  folderId?: string
+}): Promise<DriveWriteResult> {
+  const token = await refreshGoogleToken()
+  if (!token) return { ok: false, error: 'Google Drive not configured' }
+
+  const metadata: Record<string, unknown> = {
+    name: input.name,
+    mimeType: input.type === 'text' ? 'text/plain' : DRIVE_DOC_MIME,
+  }
+  if (input.folderId) metadata.parents = [input.folderId]
+
+  const { body, boundary } = driveMultipart(metadata, input.content)
+  const res = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  )
+  const data = await res.json()
+  if (!res.ok) return { ok: false, error: data.error?.message ?? `status ${res.status}` }
+  return { ok: true, id: data.id, name: data.name, link: data.webViewLink }
+}
+
+// Update an existing Drive file: rename and/or replace its content.
+// Content replacement re-imports for Google-native docs; works directly for plain files.
+export async function updateDriveFile(input: {
+  id: string
+  name?: string
+  content?: string
+}): Promise<DriveWriteResult> {
+  const token = await refreshGoogleToken()
+  if (!token) return { ok: false, error: 'Google Drive not configured' }
+  const id = encodeURIComponent(input.id)
+
+  // Content change → multipart upload (optionally renames too via metadata).
+  if (input.content !== undefined) {
+    const metadata: Record<string, unknown> = {}
+    if (input.name) metadata.name = input.name
+    const { body, boundary } = driveMultipart(metadata, input.content)
+    const res = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=multipart&fields=id,name,webViewLink`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body,
+      }
+    )
+    const data = await res.json()
+    if (!res.ok) return { ok: false, error: data.error?.message ?? `status ${res.status}` }
+    return { ok: true, id: data.id, name: data.name, link: data.webViewLink }
+  }
+
+  // Rename only → metadata PATCH.
+  if (input.name) {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${id}?fields=id,name,webViewLink`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: input.name }),
+      }
+    )
+    const data = await res.json()
+    if (!res.ok) return { ok: false, error: data.error?.message ?? `status ${res.status}` }
+    return { ok: true, id: data.id, name: data.name, link: data.webViewLink }
+  }
+
+  return { ok: false, error: 'nothing to update (provide name and/or content)' }
+}
+
+// Delete a Drive file. Default: move to trash (recoverable). permanent=true hard-deletes.
+export async function deleteDriveFile(input: { id: string; permanent?: boolean }): Promise<DriveWriteResult> {
+  const token = await refreshGoogleToken()
+  if (!token) return { ok: false, error: 'Google Drive not configured' }
+  const id = encodeURIComponent(input.id)
+
+  if (input.permanent) {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => ({}))
+      return { ok: false, error: data.error?.message ?? `status ${res.status}` }
+    }
+    return { ok: true, id: input.id, name: input.id }
+  }
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,name`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  })
+  const data = await res.json()
+  if (!res.ok) return { ok: false, error: data.error?.message ?? `status ${res.status}` }
+  return { ok: true, id: data.id, name: data.name }
 }

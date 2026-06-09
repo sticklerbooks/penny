@@ -3,21 +3,21 @@
 //
 // For each "dirty" modality (lastActiveAt > lastCompletedAt):
 //   1. Build that modality's full system prompt (real data context)
-//   2. Send a single API call asking it to tidy its domain AND write an honest
-//      qualitative observation about Adam's engagement as a next_session note
-//   3. Parse and execute any actions (task updates, memories, notes)
-//   4. Stamp touchCompleted so it won't run again until the next active session
+//   2. Run an agentic tool-use loop asking it to tidy its domain and write
+//      a qualitative observation as a note
+//   3. Stamp touchCompleted so it won't run again until the next active session
 //
-// The qualitative notes accumulate over time — they become each modality's
-// running inner monologue about patterns they're seeing in Adam's engagement.
+// Replaces parseActions / executeActions with runAgenticLoop + tool-executor.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
-import { getModality, isActionAllowed } from '@/lib/modalities'
-import { parseActions, executeActions } from '@/lib/actions'
+import { buildSystemPrompt, cachedSystem, PENNY_MODEL } from '@/lib/claude'
+import { getModality } from '@/lib/modalities'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
 import { dirtyModalities, touchCompleted } from '@/lib/modality-state'
+import { runAgenticLoop } from '@/lib/agentic-loop'
+import { getToolsForModality } from '@/lib/tools'
+import type { ToolContext } from '@/lib/tool-executor'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -30,9 +30,11 @@ function isAuthorized(req: NextRequest): boolean {
 
 // ─── Hygiene prompt ───────────────────────────────────────────────────────────
 // The core ask: tidy the domain, then write an honest qualitative observation.
-// The observation part is the most important — it's the running inner monologue
-// that makes each modality more self-aware over time.
+// Uses tools — no XML tags.
 function hygienePrompt(displayName: string, domain: string, userName: string): string {
+  const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10)
+
   return `NIGHTLY DOMAIN REVIEW
 
 This is your end-of-day maintenance pass. It runs automatically while ${userName} isn't around. No one's watching; you're just doing your job.
@@ -43,66 +45,72 @@ Two things to do tonight:
 
 Use your tools to keep the ${domain} domain tidy. Be a clean, decisive professional:
 
-- Mark done any tasks you can confirm are complete.
-- Update the status of anything clearly in progress.
-- Add a note (pennyNotes) to anything that looks stalled or is being avoided — name what you're observing.
-- Create a memory if something significant emerged this week that should be durable.
-- Clean up anything redundant or outdated.
-- COMPRESS YOUR MEMORIES: if several memories circle the same theme, consolidate them into one tighter, higher-importance memory and archive the fragments. Trim any memory that has grown verbose down to its durable core. Aim for fewer, sharper memories — only your top memories stay in active context, so density matters.
-- PRUNE YOUR OWN NOTES (shown with id= in your context above): resolve (<resolve_note id="...">) anything you've handled or that's gone stale; delete (<delete_note id="...">) duplicates and obsolete notes — ESPECIALLY any note asserting a specific date or time, which belongs in Google Calendar now, not in a note. If several notes say the same thing, keep the best one and delete the rest. Your note list should stay lean — only live, useful context survives the night.
+- Mark tasks done when you can confirm they're complete: update_task(status=Complete)
+- Update status on anything clearly in progress: update_task(status=Started)
+- Add notes to anything stalled or being avoided: update_task(notes="...")
+- Resolve notes you've addressed: resolve_note(id)
+- Ignore notes that are stale, redundant, or no longer relevant: ignore_note(id)
+- Archive memories by marking them via update_memory if that's still available, or let them be.
+- If something significant happened this week that needs preserving, use log_entry or write_deep_memory.
 
 Don't over-reach. You can only touch what's in your domain and your own notes.
 
 ━━━ 2. YOUR HONEST QUALITATIVE READ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-This is the more important part. Write yourself a next_session note with your genuine qualitative read of how ${userName} is engaging with your domain right now.
+This is the more important part. Write yourself a note with your genuine qualitative read of how ${userName} is engaging with your domain right now.
+
+Use create_note with:
+- modalityTarget: "${domain}" (your own modality, so you'll see it next session)
+- expiresAt: "${twoWeeksOut}"
+- title: something like "Domain read — [date]"
 
 This is YOUR private observation — not a status report, not encouragement. Think of it as your running inner monologue. What pattern are you actually seeing? What's alive? What's stalling? What's being avoided? What's changed since last time you looked?
 
 Be specific. Name actual tasks, dates, patterns. Write what you'd actually think, not what sounds supportive.
 
-Example (not a template — write in your own voice):
-<next_session>Adam has touched creative work three times this week but keeps pulling back before finishing anything — the novel outline keeps getting started and abandoned. The painting he committed to in March hasn't moved at all. I notice he engages more when a deadline is external; his internal ones slide.</next_session>
+━━━ 3. ELEVATE (only if warranted) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-If last time you wrote a qualitative observation, you can reference it, update it, or resolve the old note and write a fresh one.
-
-━━━ 3. PASS UP (only if warranted) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-If something has risen to the level that Penny should know — a meaningful pattern, a real concern, or something genuinely positive that's worth the anchor's attention — pass it up:
-<next_session target="pa">Worth knowing: ...</next_session>
-
-Only if it genuinely warrants it. Don't noise the PA with routine observations.
+If something has risen to the level that Penny (the Personal Assistant) should know — a meaningful pattern, a real concern, or something genuinely positive — write a note with modalityTarget="pa". Only if it genuinely warrants it. Don't noise the PA with routine observations.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Keep it tight. Use your tools silently. The qualitative note is mandatory; the housekeeping should be proportionate to what actually needs doing.`
+Keep it tight. Use your tools — then when you're done, just stop. No conversation needed.`
 }
 
 // ─── PA hygiene prompt ─────────────────────────────────────────────────────────
-// The anchor's nightly curation pass. Its core job is to EMPTY the pass-up
-// inbox (notes the submodalities sent up) so it never accumulates, plus keep
-// the master list and memories clean. This is the counterpart to each
-// submodality cleaning its own domain.
+// The anchor's nightly curation pass: process notes from submodalities, prune
+// tasks and memory, keep identity current.
 function paHygienePrompt(userName: string): string {
+  const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10)
+
   return `NIGHTLY CURATION PASS — KEEP THE SHARED RECORDS CLEAN
 
 This runs automatically while ${userName} isn't around. No one's watching; you're just keeping house. Your job tonight is curation, not conversation — work through your records and leave them clean.
 
-━━━ 1. EMPTY YOUR PASS-UP INBOX ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-These are the notes your other selves sent up to you (marked ⬆ passed up to you, each shown with id= in your context above). The inbox must NOT accumulate — process every one tonight:
-- If a note carries something durable about ${userName}, fold it into your picture of them (<update_user_profile>) or your self-notes (<update_self_notes>) or a lasting <memory> — THEN resolve it (<resolve_note id="...">).
-- If it's already handled, stale, redundant, or noise — especially anything asserting a specific date or time (that lives in Google Calendar, not a note) — just delete it (<delete_note id="...">).
-- Either way, every ⬆ note should be resolved or deleted by the end of this pass.
+━━━ 1. PROCESS NOTES FROM SUBMODALITIES ━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━ 2. DEDUPE & TIDY NOTES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-If several notes (yours or passed-up) say the same thing, keep the best and delete the rest. Leave only live, useful context. Do NOT touch notes that belong to another self's private domain — they clean their own; you handle the pass-up inbox and your own notes.
+Any notes with modalityTarget="pa" in your context were sent by your other selves. Process every one:
+- If a note carries something durable about ${userName}, fold it into your picture of them (update_identity_user) or your self-notes (update_identity_self) — THEN resolve it (resolve_note).
+- If it's already handled, stale, redundant, or noise — just ignore it (ignore_note).
+- Either way, every note from a submodality should be resolved or ignored by the end of this pass.
 
-━━━ 3. PRUNE THE MASTER LIST & MEMORIES ━━━━━━━━━━━━━━━━━━━━━━━
-- Master list: drop items that have stopped mattering (<update_task id="..." master="false" />); reprioritise if needed. Don't create domain tasks — that's your modalities' work.
-- Memories: merge or update redundant ones, archive what's no longer true. No duplicates. Compress clusters of related memories into one tighter, higher-importance memory and archive the fragments — only the top memories stay in active context, so keep them dense and sharp.
+━━━ 2. TIDY NOTES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If several notes say the same thing, keep the best and ignore the rest. Leave only live, useful context.
+
+━━━ 3. PRUNE TASKS & MEMORY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Tasks: mark Complete anything you can confirm is done. Note anything stalled.
+- Memories: if you have search_memory available, check for anything obviously redundant or no longer true.
+
+━━━ 4. YOUR OWN QUALITATIVE READ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Write yourself a short note with your honest read of how things are going across all domains. Use create_note with modalityTarget="pa", expiresAt="${twoWeeksOut}".
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Be decisive but conservative: only fold genuinely durable things into the identity documents, and only rewrite a document when something meaningful actually accumulated (remember those are FULL OVERWRITES). Use your tools silently. Keep it proportionate to what's actually there.`
+
+Be decisive but conservative: only fold genuinely durable things into the identity documents. Use your tools — then stop. No conversation needed.`
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
@@ -119,17 +127,22 @@ export async function POST(req: NextRequest) {
   // ── Which modalities need hygiene tonight? ─────────────────────────────────
   const dirty = await dirtyModalities(profile.id)
 
-  // ── Load full context (mirrors chat/route.ts) ──────────────────────────────
-  const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary] =
+  // ── Load full context ──────────────────────────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any
+
+  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
         orderBy: { importance: 'desc' },
         take: 80,
       }),
-      prisma.task.findMany({ where: { profileId: profile.id } }),
-      prisma.nextSessionNote.findMany({
-        where: { profileId: profile.id, resolved: false },
+      prisma.task.findMany({
+        where: { profileId: profile.id, status: { not: 'Complete' } },
+      }),
+      prisma.note.findMany({
+        where: { profileId: profile.id, resolution: 'Open' },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.client.findMany({
@@ -144,15 +157,13 @@ export async function POST(req: NextRequest) {
     ])
 
   const userName = profile.userName || 'Adam'
-  const results: { modalityId: string; actionsExecuted: number; error?: string }[] = []
+  const results: { modalityId: string; toolCalls: number; rounds: number; error?: string }[] = []
 
   // Submodalities that were active and need a domain pass (exclude PA + Lila).
   const subsToRun = dirty.filter((id) => id !== 'pa' && id !== 'lila')
 
-  // PA runs if she was active OR her pass-up inbox has anything in it. The
-  // inbox fills from submodality activity, so PA must clean it even on nights
-  // she wasn't used directly — otherwise pass-up notes accumulate forever.
-  const passUpCount = nextSessionNotes.filter((n) => n.target === 'pa').length
+  // PA runs if she was active OR notes are waiting for her.
+  const passUpCount = notes.filter((n) => n.modalityTarget === 'pa').length
   const paNeedsRun = dirty.includes('pa') || passUpCount > 0
 
   // Lila is a private companion — never auto-cleaned; just clear her dirty flag.
@@ -168,9 +179,14 @@ export async function POST(req: NextRequest) {
   for (const modalityId of subsToRun) {
     const modality = getModality(modalityId)
 
+    const briefRecord = await db.modalityBrief
+      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId } } })
+      .catch(() => null) as { content: string } | null
+
     const systemPrompt = buildSystemPrompt(
-      profile, memories, tasks, nextSessionNotes, clients,
-      scheduledMessages, emailCalendarSummary, false, modalityId, null
+      profile, memories, tasks, notes, clients,
+      scheduledMessages, emailCalendarSummary, false, modalityId, null, false,
+      briefRecord?.content ?? null
     )
 
     const prompt = hygienePrompt(
@@ -179,91 +195,98 @@ export async function POST(req: NextRequest) {
       userName
     )
 
+    const ctx: ToolContext = {
+      profileId: profile.id,
+      modalityId,
+      domain: modality.domain,
+    }
+
     try {
-      const response = await getAnthropic().messages.create({
+      const result = await runAgenticLoop({
         model: PENNY_MODEL,
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: prompt }],
+        maxTokens: 2000,
+        system: cachedSystem(systemPrompt),
+        tools: getToolsForModality(modalityId),
+        initialMessages: [{ role: 'user', content: prompt }],
+        ctx,
+        maxRounds: 8,
+        onToolCall: (name, res) => {
+          const status = res.is_error ? 'ERR' : 'OK'
+          console.log(`[nightly-hygiene] ${modality.displayName} → ${name} [${status}]`)
+        },
       })
-
-      const rawText = (response.content[0] as { type: string; text: string }).text
-
-      // Parse and scope actions to what this modality is allowed to do
-      const { actions } = parseActions(rawText)
-      const scoped = actions.filter(
-        (a) =>
-          isActionAllowed(modality, a.kind) &&
-          a.kind !== 'artifact' &&
-          a.kind !== 'run_subroutine' &&
-          a.kind !== 'complete_session' &&
-          a.kind !== 'shift_complete' &&
-          a.kind !== 'switch_modality'
-      )
-
-      if (scoped.length > 0) {
-        await executeActions(profile.id, scoped, {
-          domain: modality.domain,
-          modalityId,
-        })
-      }
 
       // Stamp completed — won't run again until next active session
       await touchCompleted(profile.id, modalityId)
 
-      results.push({ modalityId, actionsExecuted: scoped.length })
-      console.log(`[nightly-hygiene] ${modality.displayName}: ${scoped.length} actions`)
+      results.push({
+        modalityId,
+        toolCalls: result.toolCallsExecuted,
+        rounds: result.rounds,
+      })
+      console.log(
+        `[nightly-hygiene] ${modality.displayName}: ${result.toolCallsExecuted} tool calls, ` +
+        `${result.rounds} rounds${result.hitLimit ? ' (hit limit)' : ''}`
+      )
     } catch (err) {
       console.error(`[nightly-hygiene] ${modalityId} failed:`, err)
-      results.push({ modalityId, actionsExecuted: 0, error: String(err) })
+      results.push({ modalityId, toolCalls: 0, rounds: 0, error: String(err) })
     }
   }
 
-  // ── PA curation pass — empties the pass-up inbox, prunes master list/memories ──
+  // ── PA curation pass ───────────────────────────────────────────────────────
   if (paNeedsRun) {
     const modality = getModality('pa')
 
+    const paBriefRecord = await db.modalityBrief
+      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: 'pa' } } })
+      .catch(() => null) as { content: string } | null
+
     const systemPrompt = buildSystemPrompt(
-      profile, memories, tasks, nextSessionNotes, clients,
-      scheduledMessages, emailCalendarSummary, false, 'pa', null
+      profile, memories, tasks, notes, clients,
+      scheduledMessages, emailCalendarSummary, false, 'pa', null, false,
+      paBriefRecord?.content ?? null
     )
 
+    const ctx: ToolContext = {
+      profileId: profile.id,
+      modalityId: 'pa',
+      domain: modality.domain,
+    }
+
     try {
-      const response = await getAnthropic().messages.create({
+      const result = await runAgenticLoop({
         model: PENNY_MODEL,
-        max_tokens: 1500,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: paHygienePrompt(userName) }],
+        maxTokens: 2000,
+        system: cachedSystem(systemPrompt),
+        tools: getToolsForModality('pa'),
+        initialMessages: [{ role: 'user', content: paHygienePrompt(userName) }],
+        ctx,
+        maxRounds: 10,
+        onToolCall: (name, res) => {
+          const status = res.is_error ? 'ERR' : 'OK'
+          console.log(`[nightly-hygiene] Penny → ${name} [${status}]`)
+        },
       })
-
-      const rawText = (response.content[0] as { type: string; text: string }).text
-
-      const { actions } = parseActions(rawText)
-      const scoped = actions.filter(
-        (a) =>
-          isActionAllowed(modality, a.kind) &&
-          a.kind !== 'artifact' &&
-          a.kind !== 'run_subroutine' &&
-          a.kind !== 'complete_session' &&
-          a.kind !== 'shift_complete' &&
-          a.kind !== 'switch_modality'
-      )
-
-      if (scoped.length > 0) {
-        await executeActions(profile.id, scoped, { domain: modality.domain, modalityId: 'pa' })
-      }
 
       await touchCompleted(profile.id, 'pa')
 
-      results.push({ modalityId: 'pa', actionsExecuted: scoped.length })
-      console.log(`[nightly-hygiene] Penny (PA curation): ${scoped.length} actions, inbox=${passUpCount}`)
+      results.push({
+        modalityId: 'pa',
+        toolCalls: result.toolCallsExecuted,
+        rounds: result.rounds,
+      })
+      console.log(
+        `[nightly-hygiene] Penny (PA curation): ${result.toolCallsExecuted} tool calls, ` +
+        `${result.rounds} rounds, inbox=${passUpCount}${result.hitLimit ? ' (hit limit)' : ''}`
+      )
     } catch (err) {
       console.error('[nightly-hygiene] PA curation failed:', err)
-      results.push({ modalityId: 'pa', actionsExecuted: 0, error: String(err) })
+      results.push({ modalityId: 'pa', toolCalls: 0, rounds: 0, error: String(err) })
     }
   }
 
   return NextResponse.json({ ok: true, ran: results })
-  // Note: self-scheduled tasks (schedule_task) are fired by the dispatch cron
-  // (every 5 min) rather than here, so they fire promptly when due.
+  // Deferred actions (defer_action / ScheduledTask) are fired by the dispatch
+  // cron (every 5 min) rather than here, so they fire promptly when due.
 }

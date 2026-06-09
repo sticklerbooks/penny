@@ -88,13 +88,16 @@ Respond with valid JSON only:
     // Save tasks
     if (extracted.tasks?.length) {
       for (const task of extracted.tasks) {
-        await prisma.task.create({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (prisma.task.create as any)({
           data: {
             profileId,
-            title: task.title,
-            description: task.description || null,
+            name: task.title,
+            description: task.description ?? '',
             dueDate: task.dueDate ? new Date(task.dueDate) : null,
-            priority: Math.min(10, Math.max(1, task.priority || 5)),
+            priority: Math.min(4, Math.max(1, task.priority || 2)),
+            assignedModality: 'pa',
+            status: 'Unstarted',
           },
         })
       }

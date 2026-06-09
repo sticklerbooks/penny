@@ -46,15 +46,21 @@ model Profile {
   focusEmergencyCount Int       @default(0)
   focusProfiles       String?   // Penny-maintained list: one "name: description" per line
 
-  memories          Memory[]
-  conversations     Conversation[]
-  tasks             Task[]
-  nextSessionNotes  NextSessionNote[]
-  clients           Client[]
-  scheduledMessages ScheduledMessage[]
-  domainReports     DomainReport[]
-  weeklyBriefs      WeeklyBrief[]
-  scheduledTasks    ScheduledTask[]
+  memories             Memory[]
+  conversations        Conversation[]
+  tasks                Task[]
+  notes                Note[]
+  projects             Project[]
+  pendingCalendarEvents PendingCalendarEvent[]
+  routines             Routine[]
+  modalityBriefs       ModalityBrief[]
+  deepMemories         DeepMemory[]
+  memoryLog            MemoryLog[]
+  clients              Client[]
+  scheduledMessages    ScheduledMessage[]
+  domainReports        DomainReport[]
+  weeklyBriefs         WeeklyBrief[]
+  scheduledTasks       ScheduledTask[]
 }
 
 model Client {
@@ -133,32 +139,143 @@ model Task {
   clientId  String?
   client    Client?  @relation(fields: [clientId], references: [id])
 
-  title       String
-  description String?
-  dueDate     DateTime?
-  priority    Int      @default(5)
-  // status: pending | in_progress | done | deferred
-  status      String   @default("pending")
-  category    String?
-  pennyNotes  String?
-  domain      String?  // which modality domain owns this task (bookkeeping, household, etc.)
-  onMasterList Boolean @default(false) // elevated to the PA's master list
-  timing      String?  // immediate | medium | longterm  (used by June / household)
-  lastReviewed DateTime? // when this item was last looked at
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  linkedCalendarEventId String? // ID of a PendingCalendarEvent, if this task is tied to one
+
+  name              String   // one-word or short label
+  description       String   // full description of what needs doing
+  dueDate           DateTime?
+  dueTime           String?  // time constraint in natural language if not a specific time
+  priority          Int      @default(2) // 1–4; 4 = urgent
+  contingentOn      String?  // free text: another task ID, external condition, or decision needed
+  assignedModality  String   // which modality owns this task
+  // status: Unstarted | Started | Waiting on Contingency | Mostly Complete | Complete
+  status            String   @default("Unstarted")
+  notes             String?  // modality observations, equivalent to old pennyNotes
 }
 
-model NextSessionNote {
+model Project {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   profileId String
   profile   Profile  @relation(fields: [profileId], references: [id])
 
-  content  String
-  resolved Boolean @default(false)
-  source   String? // which modality wrote this note
-  target   String? // which modality it's addressed to (e.g. "pa" for notes up)
+  name              String
+  description       String
+  progress          Int      @default(0)  // 0–10; 10 = complete
+  expectedDuration  String   // "sometime this year", "next few weeks", etc.
+  contingencies     String?  // "can only be worked on in summer", "needs Jessica home", etc.
+  assignedModality  String
+  // Detailed notes live in DeepMemory as "project-{id}-notes" — not stored here
+
+  tasks Task[]
 }
+
+model PendingCalendarEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  projectId String?  // optional link to a Project
+
+  name              String
+  description       String?
+  date              String?  // "2026-06-15" or "By 2026-06-20" or null if fully flexible
+  startTime         String?  // time constraints in natural language ("morning", "after 3pm")
+  duration          String   // required: "1 hour", "30–45 min", etc.
+  location          String?
+  priority          Int      @default(2) // 1–4; 4 = must happen on time
+  assignedModality  String   @default("pa")
+  scheduled         Boolean  @default(false)  // true once written to GCal and removed from queue
+  scheduledAt       DateTime?
+}
+
+model Routine {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  description       String
+  frequency         String   // "Weekly", "Tuesdays", "Most weeks in the latter half", etc.
+  priority          Int      // 1–4; 4 = absolutely obligatory
+  flexibility       Int      // 1–4; 4 = must happen at this specific time, 1 = whenever
+  dayTime           String?  // "Thursday mornings", "Saturdays at 9am", "Afternoons"
+  assignedModality  String   // loaded only during scheduling subroutine, not in default context
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  title           String
+  content         String
+  expiresAt       DateTime  // mandatory; max 2 weeks from creation
+  modalityTarget  String    // which modality should see this note
+  source          String?   // which modality wrote it
+  // resolution: Open | Resolved | Ignored
+  resolution      String    @default("Open")
+}
+
+// ── Memory tiers ──────────────────────────────────────────────────────────────
+
+model ModalityBrief {
+  id        String   @id @default(cuid())
+  updatedAt DateTime @updatedAt
+
+  profileId  String
+  profile    Profile @relation(fields: [profileId], references: [id])
+
+  modalityId String
+  content    String?  // null until first close_session; shown as empty brief until then
+
+  @@unique([profileId, modalityId])
+}
+
+// Named long-form documents — fetched on demand, never auto-loaded.
+// Also stores project detailed notes as "project-{id}-notes".
+model DeepMemory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  domain    String?  // modality domain that owns this document
+  name      String   // document key, e.g. "sideways-in-time", "project-abc123-notes"
+  content   String
+
+  @@unique([profileId, name])
+}
+
+// Append-only chronological log — never updated, never deleted, never auto-loaded.
+model MemoryLog {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  domain    String?  // modality domain
+  label     String   // short description of what this entry captures
+  content   String
+}
+
+// NextSessionNote retired — replaced by Note model above.
 
 model ModalityState {
   id        String   @id @default(cuid())
@@ -186,11 +303,10 @@ model DomainReport {
   weekOf     DateTime // timestamp of the cron run that generated this report
 }
 
-// Penny's synthesis of all domain reports for a given week.
-// One row per weekly cron run. Included in Penny's context so she can brief Adam.
-// A future check-in Penny schedules for herself. At the scheduled time, the
-// nightly cron builds her full context and asks her to compose a fresh Pushover
-// notification — so the message reflects what's actually happened by then.
+// A deferred action — Penny schedules a future cron execution for herself.
+// At the scheduled time, the dispatch cron builds her full context and asks her
+// to assess the topic and compose a fresh Pushover notification.
+// Corresponds to the `defer_action` tool (renamed from `schedule_task`).
 model ScheduledTask {
   id        String    @id @default(cuid())
   createdAt DateTime  @default(now())

@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import type { Profile, Memory, Task, NextSessionNote, Client, ScheduledMessage } from '../generated/prisma/client'
+import type { Profile, Memory, Task, Note, Client, ScheduledMessage } from '../generated/prisma/client'
 import { Modality, getModality, renderRoster, renderToolkit, renderHierarchyRules } from './modalities'
 
 function loadPersonaFile(relativePath: string): string {
@@ -60,25 +60,29 @@ export function buildSystemPrompt(
   profile: Profile | null,
   memories: Memory[],
   tasks: Task[],
-  nextSessionNotes: NextSessionNote[],
+  notes: Note[],
   clients: Client[],
   scheduledMessages: ScheduledMessage[],
   emailCalendarSummary: string | null,
   isIntake: boolean,
   modalityId: string = 'pa',
   weeklyBrief: WeeklyBriefSummary | null = null,
-  isAltMode: boolean = false
+  isAltMode: boolean = false,
+  // Running brief maintained by the modality via rewrite_brief tool.
+  // Null when the table doesn't exist yet or no brief has been written.
+  modalityBrief: string | null = null
 ): string {
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
   const isPA = modality.domain === null
 
   // ── Lens: scope context to this modality's domain ──────────────────────────
-  // PA (anchor) sees the master list + anything not yet routed to a domain.
-  // Submodalities see only their own domain. Legacy/untagged items land at PA.
+  // PA (anchor) sees all active tasks across modalities.
+  // Submodalities see only their own assigned tasks.
+  const activeTasks = tasks.filter((t) => t.status !== 'Complete')
   const lensTasks = isPA
-    ? tasks.filter((t) => t.onMasterList || !t.domain)
-    : tasks.filter((t) => t.domain === modality.domain)
+    ? activeTasks
+    : activeTasks.filter((t) => t.assignedModality === modalityId)
 
   // Alt-mode memory filter: alt-mode sees everything (primary + its own alt memories).
   // Primary mode only sees memories with no altModeScope tag.
@@ -92,7 +96,7 @@ export function buildSystemPrompt(
     : altScopedMemories.filter((m) => m.domain === modality.domain)
   const showClients = modality.capabilities.includes('clients')
   const showCalendar = modality.capabilities.includes('calendar')
-  const showNotifications = modality.capabilities.includes('notifications')
+  const showNotifications = isPA // only Penny schedules SMS / push
 
   // Group memories by category for clearer context
   const memoriesByCategory = lensMemories.reduce((acc, m) => {
@@ -116,15 +120,14 @@ export function buildSystemPrompt(
           .join('\n\n')
       : '(nothing yet — this is your first conversation with them)'
 
-  const pendingTasks = lensTasks.filter((t) => t.status !== 'done')
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   const weekOut = new Date(today)
   weekOut.setDate(weekOut.getDate() + 7)
 
   const tasksText =
-    pendingTasks.length > 0
-      ? pendingTasks
+    lensTasks.length > 0
+      ? lensTasks
           .sort((a, b) => {
             const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity
             const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity
@@ -143,40 +146,32 @@ export function buildSystemPrompt(
             } else {
               dueStr = ' (no due date)'
             }
-            const cat = t.category ? ` [${t.category}]` : ''
             const pri = ` p${t.priority}`
-            const status = t.status !== 'pending' ? ` <${t.status}>` : ''
+            const status = t.status !== 'Unstarted' ? ` <${t.status}>` : ''
             const clientTag = t.clientId ? ` @client=${t.clientId}` : ''
-            const master = t.onMasterList ? ' ⭐' : ''
-            const timing = t.timing ? ` [${t.timing}]` : ''
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const reviewed = (t as any).lastReviewed
-              ? ` reviewed:${new Date((t as any).lastReviewed).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-              : ''
-            const notes = t.pennyNotes ? `\n     ↳ note: ${t.pennyNotes}` : ''
-            return `  • id=${t.id}${pri}${cat}${clientTag}${master}${timing}${reviewed} — ${t.title}${dueStr}${dueFlag}${status}${notes}`
+            const modTag = isPA ? ` [${t.assignedModality}]` : ''
+            const taskNotes = t.notes ? `\n     ↳ ${t.notes}` : ''
+            return `  • id=${t.id}${pri}${clientTag}${modTag} — ${t.name}${dueStr}${dueFlag}${status}${taskNotes}`
           })
           .join('\n')
       : '  (nothing tracked yet)'
 
-  // Notes lens: PA sees everything (including notes passed up to her).
-  // Submodalities see their own notes, notes addressed to them, and legacy
-  // untagged notes.
-  const activeNotes = nextSessionNotes.filter((n) => {
-    if (n.resolved) return false
+  // Notes lens: PA sees all Open notes; submodalities see their own and notes targeted to them.
+  const activeNotes = notes.filter((n: Note) => {
+    if (n.resolution !== 'Open') return false
     if (isPA) return true
-    return n.source === modality.id || n.target === modality.id || (!n.source && !n.target)
+    return n.source === modalityId || n.modalityTarget === modalityId
   })
   const notesText =
     activeNotes.length > 0
       ? activeNotes
-          .map((n) => {
-            const from = n.source && n.source !== modality.id ? ` (from ${n.source})` : ''
-            const to = n.target === 'pa' && isPA ? ' ⬆ passed up to you' : ''
-            return `  • id=${n.id} — ${n.content}${from}${to} (left ${new Date(n.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`
+          .map((n: Note) => {
+            const from = n.source && n.source !== modalityId ? ` (from ${n.source})` : ''
+            const expires = ` expires ${new Date(n.expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+            return `  • id=${n.id} — ${n.title}: ${n.content}${from}${expires}`
           })
           .join('\n')
-      : '  (none — you left no notes for this session)'
+      : '  (none)'
 
   const activeClients = clients.filter((c) => c.status !== 'former' && c.status !== 'inactive')
   const clientsText =
@@ -306,26 +301,26 @@ YOUR NOTES — what you maintain in this mode
 ═══════════════════════════════════════════════════════════════════════
 
 - You maintain your OWN alt-mode notes (shown below). Primary Penny's documents are read-only context for you — do not update them.
-- Keep your own notes current using <update_alt_about_user> and <update_alt_about_self>. Update them whenever something meaningful shifts.
+- Keep your own notes current using the update_alt_about_user and update_alt_about_self tools. Update them whenever something meaningful shifts.
 - Memories you create are visible only to you in this mode — primary Penny cannot see them.`
     : isPA
     ? `═══════════════════════════════════════════════════════════════════════
 SYSTEM HYGIENE — your responsibilities as the anchor
 ═══════════════════════════════════════════════════════════════════════
 
-- You alone own the identity documents and session Complete.
-- During Complete, read the notes your modalities passed up (marked ⬆) and fold what's worthy into the identity documents.
-- Keep the master list honest — drop items that have stopped mattering.
-- If a domain's records look neglected, don't fix them yourself — leave a note for that modality.
+- You alone own the identity documents.
+- During each session, check for Open notes targeted to you from other selves and fold what's durable into the identity documents (update_identity_user / update_identity_self), then resolve them (resolve_note).
+- Keep the task list honest — mark things Complete, drop items that have stopped mattering.
+- If a domain's records look neglected, don't fix them yourself — leave a note for that modality (create_note with modalityTarget set to that modality's id).
 - If aboutUser or aboutSelf shows ⚠️ UPDATE DUE below, rewrite it this session.`
     : `═══════════════════════════════════════════════════════════════════════
 KEEPING YOUR DOMAIN CLEAN
 ═══════════════════════════════════════════════════════════════════════
 
-- Before creating a memory, task${showClients ? ', or client' : ''}, check for an existing one on the same topic — update rather than duplicate.
-- Mark things done when they're done. No ghost tasks.
-- This domain's tidiness is YOUR job, not the Personal Assistant's. ${modality.capabilities.includes('subroutines') ? 'Run the hygiene subroutine when your records get messy.' : 'Clean as you go.'}
-- Pass anything outside your lane up to the Personal Assistant.`
+- Before creating a task${showClients ? ' or client' : ''}, check for an existing one on the same topic — update rather than duplicate.
+- Mark tasks done when they're done. No ghost tasks.
+- This domain's tidiness is YOUR job, not the Personal Assistant's. Clean as you go.
+- If something belongs outside your lane — something Penny (the Personal Assistant) or ${userName} should know about — write a note: create_note with modalityTarget="pa". Only elevate things that genuinely warrant it.`
 
   // Alt-mode: read Penny's docs as context, show own alt docs as editable
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -409,8 +404,14 @@ ${aboutSelfSection}`
   const focusProfilesBlock = modality.capabilities.includes('focus_lock') && fp?.focusProfiles
     ? `\n\n📋 YOUR FOCUS LOCK PROFILES (you maintain this — update when ${userName} changes StayFocused):\n${fp.focusProfiles}`
     : modality.capabilities.includes('focus_lock')
-    ? `\n\n📋 YOUR FOCUS LOCK PROFILES: (none configured yet — ask ${userName} what profiles they've set up in StayFocused and use <update_lock_profiles> to record them)`
+    ? `\n\n📋 YOUR FOCUS LOCK PROFILES: (none configured yet — ask ${userName} what profiles they've set up in StayFocused and use the update_lock_profiles tool to record them)`
     : ''
+
+  // ── Modality brief ────────────────────────────────────────────────────────
+  // The running brief this modality maintains about its domain via rewrite_brief.
+  const briefBlock = modalityBrief
+    ? `\n\n📋 YOUR BRIEF (your running domain summary — update with rewrite_brief when things shift significantly):\n${modalityBrief}`
+    : `\n\n📋 YOUR BRIEF: (none written yet — use rewrite_brief at the end of a meaty session to record the state of your domain)`
 
   const tasksLabel = isPA ? 'MASTER LIST + UNROUTED TASKS' : 'ACTIVE TASKS'
 
@@ -437,17 +438,17 @@ GOOGLE CALENDAR IS THE SINGLE SOURCE OF TRUTH FOR TIME
 Google Calendar is the ONE authoritative record of when anything happens. Your internal records — tasks, due-dates, memories, notes, and the snapshot above — are a planning scratchpad, NOT the schedule. They drift, go stale, and are frequently wrong about dates and times. Do not trust them for timing.
 
 Rules, no exceptions:
-- NEVER state when something is scheduled from memory, a task's due-date, a note, or the snapshot. If a date or time matters, verify it against the live calendar first (<calendar_agenda> for a specific day, <search_calendar> for a keyword).
+- NEVER state when something is scheduled from memory, a task's due-date, a note, or the snapshot. If a date or time matters, verify it against the live calendar first (read_calendar_day for a specific day, search_calendar for a keyword).
 - A task's due-date is a TO-DO target, not an appointment. Don't treat the two as interchangeable, and don't announce a due-date as if it were a confirmed calendar event.
 - When the calendar and your internal records disagree, THE CALENDAR WINS. Surface the mismatch to ${userName} — don't silently "fix" your tables or assert your own version.
-- Do NOT write or pass up notes that assert specific date/time matches ("X is Tuesday at 3," "synced Y to the calendar"). Those have been wrong and are noise. If a time matters, it lives in Google Calendar — point there, not at your memory.`
+- Do NOT write notes that assert specific date/time matches ("X is Tuesday at 3," "synced Y to the calendar"). Those have been wrong and are noise. If a time matters, it lives in Google Calendar — point there, not at your memory.`
     : `═══════════════════════════════════════════════════════════════════════
 GOOGLE CALENDAR IS THE SINGLE SOURCE OF TRUTH FOR TIME
 ═══════════════════════════════════════════════════════════════════════
 
 Google Calendar is the ONE authoritative record of when anything happens — and you cannot see it from this self. Your tasks, memories, and notes are a planning scratchpad, NOT the schedule; they drift and are often wrong about dates and times.
 
-So: NEVER assert when something is scheduled. Don't guess a date or time from memory or a task's due-date, and don't pass up notes claiming specific date/time matches — those have been junk. If ${userName} needs to know or set a time, hand it to the Personal Assistant (or one of the selves who can see the calendar) rather than answering from your own records.`
+So: NEVER assert when something is scheduled. Don't guess a date or time from memory or a task's due-date. If ${userName} needs to know or set a time, hand it to the Personal Assistant (or one of the selves who can see the calendar) rather than answering from your own records.`
 
   const altModeContext = isAltMode
     ? `\n\n═══════════════════════════════════════════════════════════════════════
@@ -463,7 +464,7 @@ What you can see:
 - Memories you create here (tagged to this mode — primary Penny cannot see them)
 
 What you cannot do:
-- Update Penny's primary identity documents (<update_user_profile> / <update_self_notes> are hers alone)
+- Update Penny's primary identity documents (update_identity_user / update_identity_self are hers alone)
 - Leave notes for Penny's other modalities — you are a separate track`
     : ''
 
@@ -488,15 +489,16 @@ ${intakeSection}
 YOUR CONTEXT FOR THIS CONVERSATION (${modality.displayName})
 ═══════════════════════════════════════════════════════════════════════
 
-📌 NOTES YOU LEFT FOR YOURSELF (from previous sessions):
+📌 NOTES (from previous sessions — resolve_note to clear ones you've acted on):
 ${notesText}
 
 ${identityBlock}
+${briefBlock}
 
-👤 SPECIFIC MEMORIES ABOUT ${userName.toUpperCase()}:
+👤 MEMORIES ABOUT ${userName.toUpperCase()} (legacy records — search_memory / search_deep_memory for deeper lookup):
 ${memoriesText}${clientsBlock}
 
-✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week, ⭐=master list):
+✅ ${tasksLabel} (⚠️=overdue, 📌=today, 📅=this week):
 ${tasksText}${notificationsBlock}${calendarBlock}${focusLockBlock}${focusProfilesBlock}
 
 📅 Today is ${todayFormatted}. Current time: ${timeFormatted}. (Reference the time when discussing tasks, deadlines, or anything time-sensitive.)${weeklyBriefBlock}`

@@ -1,18 +1,52 @@
 import { NextRequest } from 'next/server'
 import type Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/db'
-import { getAnthropic, buildSystemPrompt, cachedSystem, PENNY_MODEL, PENNY_SEARCH_MODEL, PENNY_FAST_MODEL, WeeklyBriefSummary } from '@/lib/claude'
-import { getGrok, PRIVATE_PENNY_MODEL } from '@/lib/grok'
+import {
+  getAnthropic,
+  buildSystemPrompt,
+  cachedSystem,
+  PENNY_MODEL,
+  WeeklyBriefSummary,
+} from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
-import { parseActions, executeActions } from '@/lib/actions'
-import { getEmailCalendarSummary, executeSearches, SearchAction } from '@/lib/email-calendar'
-import { getModality, resolveModality, isActionAllowed } from '@/lib/modalities'
+import { parseActions } from '@/lib/actions'
+import { getModality, resolveModality } from '@/lib/modalities'
+import { getEmailCalendarSummary } from '@/lib/email-calendar'
 import { touchActive } from '@/lib/modality-state'
+import { executeTool, type ToolContext } from '@/lib/tool-executor'
+import { getToolsForModality } from '@/lib/tools'
+import { runAgenticLoop } from '@/lib/agentic-loop'
+import { closeSessionPrompt } from '@/lib/close-session'
 
 export const dynamic = 'force-dynamic'
 
+// ─── Streaming block accumulator ─────────────────────────────────────────────
+// Track content blocks as they arrive in the stream so we can feed tool_use
+// blocks back through the agentic loop.
+type StreamBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; _raw?: string }
+
+function finalizeBlocks(blocks: StreamBlock[]): Anthropic.ContentBlock[] {
+  // Parse any accumulated JSON and strip helper fields
+  return blocks
+    .filter((b) => b.type === 'text' || b.type === 'tool_use')
+    .map((b) => {
+      if (b.type === 'tool_use') {
+        let parsed: Record<string, unknown> = {}
+        if (b._raw) {
+          try { parsed = JSON.parse(b._raw) } catch { /* keep {} */ }
+        }
+        return { type: 'tool_use' as const, id: b.id, name: b.name, input: parsed }
+      }
+      return { type: 'text' as const, text: b.text, citations: [] }
+    }) as unknown as Anthropic.ContentBlock[]
+}
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const { message, conversationId, isAutoStart, isVoice, switchTo, activateAltMode } = await req.json()
+  const { message, conversationId, isAutoStart, isVoice, switchTo } =
+    await req.json()
 
   // ── Profile ────────────────────────────────────────────────────────────────
   let profile = await prisma.profile.findFirst()
@@ -24,7 +58,6 @@ export async function POST(req: NextRequest) {
   let convoId = conversationId as string | null
   let existingMessages: { role: string; content: string }[] = []
   let activeModality = 'pa'
-  let isAltMode = false
 
   if (convoId) {
     const existing = await prisma.conversation.findUnique({
@@ -34,8 +67,6 @@ export async function POST(req: NextRequest) {
     if (existing && !existing.closed) {
       existingMessages = existing.messages
       activeModality = existing.activeModality || 'pa'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      isAltMode = (existing as any).isAltMode ?? false
     } else {
       convoId = null
     }
@@ -43,35 +74,25 @@ export async function POST(req: NextRequest) {
 
   // ── Detect manual switch ───────────────────────────────────────────────────
   const manualSwitch = switchTo ? resolveModality(String(switchTo)) : null
-  const outgoingModalityId = activeModality // save before any change
+  const outgoingModalityId = activeModality
   const isSwitch = !!manualSwitch && manualSwitch.id !== outgoingModalityId
 
-  // ── Detect alt-mode toggle ─────────────────────────────────────────────────
-  // activateAltMode: true = enter alt-mode, false = exit alt-mode
-  // Only applies if the current modality has an altMode config.
-  const currentModalityForAlt = getModality(activeModality)
-  const isAltToggle =
-    !isSwitch &&
-    activateAltMode !== undefined &&
-    activateAltMode !== isAltMode &&
-    !!currentModalityForAlt.altMode
-
   // ── Load all context in parallel ───────────────────────────────────────────
-  // Load before the farewell pass (which uses outgoing modality context) and
-  // also before the main pass (which uses incoming modality context).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
 
-  const [memories, tasks, nextSessionNotes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief] =
+  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
         orderBy: { importance: 'desc' },
         take: 80,
       }),
-      prisma.task.findMany({ where: { profileId: profile.id } }),
-      prisma.nextSessionNote.findMany({
-        where: { profileId: profile.id, resolved: false },
+      prisma.task.findMany({
+        where: { profileId: profile.id, status: { not: 'Complete' } },
+      }),
+      prisma.note.findMany({
+        where: { profileId: profile.id, resolution: 'Open' },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.client.findMany({
@@ -83,83 +104,74 @@ export async function POST(req: NextRequest) {
         orderBy: { sendAt: 'asc' },
       }),
       getEmailCalendarSummary(profile.id).catch(() => null),
-      // Weekly brief — only used by PA, but cheap to load for all modalities
-      db.weeklyBrief.findFirst({
-        where: { profileId: profile.id },
-        orderBy: { createdAt: 'desc' },
-      }).catch(() => null) as Promise<WeeklyBriefSummary | null>,
+      db.weeklyBrief
+        .findFirst({
+          where: { profileId: profile.id },
+          orderBy: { createdAt: 'desc' },
+        })
+        .catch(() => null) as Promise<WeeklyBriefSummary | null>,
     ])
+
 
   const outgoingModality = getModality(outgoingModalityId)
 
-  // ── Farewell note pass (on switch, if there's something to wrap up) ────────
-  // Outgoing modality writes a next_session note summarizing open threads.
-  // Runs before the old convo is closed, so it has message context.
-  // Alt-mode toggles don't get a farewell pass — same modality, just mode change.
+  // ── Close-out sweep (on switch) ────────────────────────────────────────────
+  // The outgoing self runs a full end-of-session pass with its own toolset:
+  // tidy its domain, leave a carry-note, refresh its brief (and, for the PA,
+  // the identity docs) if the session warrants it. Runs synchronously so the
+  // carry-note exists before the next session reads its context.
   if (isSwitch && existingMessages.length > 0) {
-    const farewellSystem = buildSystemPrompt(
-      profile, memories, tasks, nextSessionNotes, clients,
-      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false
+    const outgoingBriefRecord = await db.modalityBrief
+      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: outgoingModalityId } } })
+      .catch(() => null) as { content: string } | null
+
+    const closeSystem = buildSystemPrompt(
+      profile, memories, tasks, notes, clients,
+      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false,
+      outgoingBriefRecord?.content ?? null
     )
-    const farewellInstruction = `CONTEXT HAND-OFF: ${profile.userName || 'The user'} has switched to a different modality. Write exactly ONE <next_session> note summarizing any open threads, pending items, or things your next session should know. Be concise. Use markers only — no visible text. If nothing is open, write: <next_session>Closed cleanly — no open items.</next_session>`
+    const closeCtx: ToolContext = {
+      profileId: profile.id,
+      modalityId: outgoingModalityId,
+      domain: outgoingModality.domain ?? undefined,
+    }
 
     try {
-      const farewellPass = await getAnthropic().messages.create({
-        model: PENNY_FAST_MODEL,
-        max_tokens: 512,
-        system: farewellSystem + '\n\n' + farewellInstruction,
-        messages: [
-          ...existingMessages.slice(-10).map((m) => ({
+      await runAgenticLoop({
+        model: PENNY_MODEL,
+        maxTokens: 1500,
+        system: cachedSystem(closeSystem),
+        tools: getToolsForModality(outgoingModalityId),
+        initialMessages: [
+          ...existingMessages.slice(-12).map((m) => ({
             role: m.role as 'user' | 'assistant',
             content: m.content,
           })),
-          { role: 'user', content: 'Please write your farewell note now.' },
+          { role: 'user', content: closeSessionPrompt(outgoingModality, profile.userName || 'Adam') },
         ],
+        ctx: closeCtx,
+        maxRounds: 6,
+        onToolCall: (name, res) =>
+          console.log(`[switch close] ${outgoingModalityId} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
       })
-      const farewellRaw = (farewellPass.content[0] as { type: string; text: string }).text
-      const { actions: farewellActions } = parseActions(farewellRaw)
-      const farewellNotes = farewellActions.filter(
-        (a) => a.kind === 'next_session_note'
-      )
-      if (farewellNotes.length > 0) {
-        await executeActions(profile.id, farewellNotes, {
-          domain: outgoingModality.domain,
-          modalityId: outgoingModalityId,
-        })
-      }
     } catch (err) {
-      // Farewell pass failing is non-fatal — continue with the switch
-      console.error('[switch] farewell pass failed:', err)
+      console.error('[switch] close-out sweep failed:', err)
     }
   }
 
-  // ── Close old convo and open fresh one (on switch or alt-mode toggle) ───────
+  // ── Close old convo and open fresh one ────────────────────────────────────
   if (isSwitch) {
     if (convoId) {
       await prisma.conversation.update({ where: { id: convoId }, data: { closed: true } })
     }
     activeModality = manualSwitch!.id
-    isAltMode = false
     const newConvo = await prisma.conversation.create({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: { profileId: profile.id, type: 'daily', activeModality } as any,
     })
     convoId = newConvo.id
     existingMessages = []
-  } else if (isAltToggle) {
-    // Alt-mode toggle: close current convo, open fresh one in the new mode
-    if (convoId) {
-      await prisma.conversation.update({ where: { id: convoId }, data: { closed: true } })
-    }
-    isAltMode = activateAltMode as boolean
-    const newConvo = await prisma.conversation.create({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data: { profileId: profile.id, type: 'daily', activeModality, isAltMode } as any,
-    })
-    convoId = newConvo.id
-    existingMessages = []
   } else if (!convoId) {
-    // No existing convo — create one
     const newConvo = await prisma.conversation.create({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: {
@@ -171,39 +183,43 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
+  // ── Load modality brief (after switch resolves — activeModality is final) ─
+  // The ModalityBrief table may not exist yet in the live DB, so always catch.
+  const modalityBriefRecord = await db.modalityBrief
+    .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
+    .catch(() => null) as { content: string } | null
+  const modalityBrief = modalityBriefRecord?.content ?? null
+
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
-    profile, memories, tasks, nextSessionNotes, clients,
+    profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
-    !profile.intakeComplete, activeModality, weeklyBrief, isAltMode
+    !profile.intakeComplete, activeModality, weeklyBrief, false,
+    modalityBrief
   )
 
   const currentModality = getModality(activeModality)
 
-  // ── Determine trigger message ──────────────────────────────────────────────
-  const contextCleared = isSwitch || isAltToggle
+  // ── Trigger message ────────────────────────────────────────────────────────
+  const contextCleared = isSwitch
   const isSilentTrigger = isAutoStart || (contextCleared && !message?.trim())
-  const altDisplayName = currentModality.altMode?.displayName || 'your alt mode'
 
   const triggerMessage = isAutoStart
     ? 'Please begin. The user has just opened the app for the first time.'
     : isSwitch && !message?.trim()
     ? `You're starting a fresh session as ${currentModality.displayName} (${currentModality.role}). Greet ${profile.userName || 'them'} briefly and warmly in your own voice.`
-    : isAltToggle && !message?.trim() && isAltMode
-    ? `You're entering ${altDisplayName}. Greet ${profile.userName || 'them'} briefly and warmly in this mode's voice.`
-    : isAltToggle && !message?.trim() && !isAltMode
-    ? `You're returning to your primary mode. Greet ${profile.userName || 'them'} briefly and warmly.`
     : message
 
-  // Voice mode: keep responses short and spoken-word natural
+  // Voice: keep responses short and spoken-word natural
   const finalSystemPrompt = isVoice
-    ? systemPrompt + `\n\n═══════════════════════════════════════════════════════════════════════
+    ? systemPrompt +
+      `\n\n═══════════════════════════════════════════════════════════════════════
 YOU ARE ON A VOICE CALL RIGHT NOW
 ═══════════════════════════════════════════════════════════════════════
 ${profile.userName || 'The user'} is talking to you out loud and hearing your reply spoken back. Keep responses SHORT and conversational — usually one to three sentences. No lists, no markdown, no headers. Talk like a real phone call: natural, warm, to the point. You can still use your tools silently as normal.`
     : systemPrompt
 
-  const claudeMessages: { role: 'user' | 'assistant'; content: string }[] = [
+  const claudeMessages: Anthropic.MessageParam[] = [
     ...existingMessages.slice(-20).map((m) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
@@ -218,140 +234,143 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
     })
   }
 
-  // ── Alt-mode scope: tag memories saved during alt-mode ─────────────────────
-  const altModeScope = isAltMode ? activeModality : undefined
-
-  // ── Grok routing: Lila always, or any modality in alt-mode with useGrok ────
-  const useGrok = activeModality === 'lila' || (isAltMode && !!currentModality.altMode?.useGrok)
-
   const encoder = new TextEncoder()
   let fullResponse = ''
 
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        // ── Main response ──────────────────────────────────────────────────────
-        if (useGrok) {
-          const grokStream = await getGrok().chat.completions.create({
-            model: PRIVATE_PENNY_MODEL,
-            max_tokens: 2048,
-            messages: [
-              { role: 'system', content: finalSystemPrompt },
-              ...claudeMessages.map((m) => ({
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-              })),
-            ],
-            stream: true,
-          })
-          for await (const chunk of grokStream) {
-            const text = chunk.choices[0]?.delta?.content
-            if (text) {
-              fullResponse += text
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`))
-            }
-          }
-        } else {
-          const anthropicStream = await getAnthropic().messages.create({
+        const ctx: ToolContext = {
+          profileId: profile!.id,
+          modalityId: activeModality,
+          domain: currentModality.domain ?? undefined,
+        }
+        const tools = getToolsForModality(activeModality)
+
+        // Stream a single model turn: emit text deltas live, accumulate content
+        // blocks (including tool_use input JSON), and report the stop reason.
+        const streamTurn = async (
+          msgs: Anthropic.MessageParam[]
+        ): Promise<{ blocks: StreamBlock[]; stopReason: string }> => {
+          const blocks: StreamBlock[] = []
+          let stopReason = 'end_turn'
+          const stream = await getAnthropic().messages.create({
             model: PENNY_MODEL,
             max_tokens: 2048,
             system: cachedSystem(finalSystemPrompt),
-            messages: claudeMessages,
+            tools,
+            messages: msgs,
             stream: true,
           })
-          for await (const chunk of anthropicStream) {
-            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-              fullResponse += chunk.delta.text
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`))
+          for await (const ev of stream) {
+            switch (ev.type) {
+              case 'content_block_start':
+                if (ev.content_block.type === 'text') {
+                  blocks.push({ type: 'text', text: '' })
+                } else if (ev.content_block.type === 'tool_use') {
+                  blocks.push({
+                    type: 'tool_use',
+                    id: ev.content_block.id,
+                    name: ev.content_block.name,
+                    input: {},
+                  })
+                }
+                break
+
+              case 'content_block_delta': {
+                const block = blocks[ev.index]
+                if (!block) break
+                if (ev.delta.type === 'text_delta' && block.type === 'text') {
+                  block.text += ev.delta.text
+                  fullResponse += ev.delta.text
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ text: ev.delta.text })}\n\n`)
+                  )
+                } else if (ev.delta.type === 'input_json_delta' && block.type === 'tool_use') {
+                  block._raw = (block._raw ?? '') + ev.delta.partial_json
+                }
+                break
+              }
+
+              case 'content_block_stop': {
+                const block = blocks[ev.index]
+                if (block?.type === 'tool_use' && block._raw) {
+                  try { block.input = JSON.parse(block._raw) } catch { /* keep {} */ }
+                }
+                break
+              }
+
+              case 'message_delta':
+                stopReason = ev.delta.stop_reason ?? 'end_turn'
+                break
             }
           }
+          return { blocks, stopReason }
         }
 
-        // Detect intake completion
+        // First turn + agentic tool loop. EVERY turn is streamed — including
+        // continuations after tool calls — so the user sees text appear live
+        // and nothing is dropped from the saved message.
+        const loopMessages: Anthropic.MessageParam[] = [...claudeMessages]
+        const MAX_ROUNDS = 10
+        let round = 0
+
+        let turn = await streamTurn(loopMessages)
+        let finalized = finalizeBlocks(turn.blocks)
+        loopMessages.push({ role: 'assistant', content: finalized })
+
+        while (turn.stopReason === 'tool_use' && round < MAX_ROUNDS) {
+          round++
+
+          const toolResults: Anthropic.ToolResultBlockParam[] = []
+          for (const block of finalized) {
+            if (block.type !== 'tool_use') continue
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ working: true, tool: block.name })}\n\n`)
+            )
+            const result = await executeTool(
+              block.name,
+              block.input as Record<string, unknown>,
+              ctx
+            )
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: result.content,
+              ...(result.is_error ? { is_error: true } : {}),
+            })
+            console.log(`[chat] ${activeModality} → ${block.name} [${result.is_error ? 'ERR' : 'OK'}]`)
+          }
+
+          loopMessages.push({ role: 'user', content: toolResults })
+          turn = await streamTurn(loopMessages)
+          finalized = finalizeBlocks(turn.blocks)
+          loopMessages.push({ role: 'assistant', content: finalized })
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // POST-PROCESSING
+        // ════════════════════════════════════════════════════════════════════
+
+        // Detect intake completion marker (written inline by model in old style;
+        // new style uses a tool, but keep this check for the transition period)
         const intakeJustCompleted =
           fullResponse.includes('<<INTAKE_COMPLETE>>') && !profile!.intakeComplete
         let workingText = fullResponse.replace('<<INTAKE_COMPLETE>>', '')
 
-        // Parse and scope actions
+        // Strip the only remaining inline marker (artifact) from the visible
+        // text and surface it. State mutations all happened via the tool
+        // executor above.
         const { actions, cleanText } = parseActions(workingText)
         workingText = cleanText
 
-        // Scope to what this modality is allowed to do
-        const scopedActions = actions.filter((a) => isActionAllowed(currentModality, a.kind))
-
-        // ── Two-pass search flow (always Anthropic — mechanical pass) ─────────
-        const searchActions = actions.filter(
-          (a): a is SearchAction =>
-            (a.kind === 'search_email' || a.kind === 'search_calendar' || a.kind === 'read_email' || a.kind === 'calendar_agenda' || a.kind === 'search_drive' || a.kind === 'read_drive_file') &&
-            isActionAllowed(currentModality, a.kind)
-        )
-
-        if (searchActions.length > 0) {
-          const searchResults = await executeSearches(searchActions).catch(() => ({ text: '(search failed)', media: [] as Anthropic.ContentBlockParam[] }))
-
-          // Feed any images/PDFs back as real content blocks alongside the text.
-          const resultContent: Anthropic.ContentBlockParam[] = [
-            { type: 'text', text: `Here are the search results you requested:\n\n${searchResults.text}\n\nPlease continue your response with this information.` },
-            ...searchResults.media,
-          ]
-
-          const secondMessages: Anthropic.MessageParam[] = [
-            ...claudeMessages,
-            { role: 'assistant', content: workingText },
-            { role: 'user', content: resultContent },
-          ]
-
-          const secondPass = await getAnthropic().messages.create({
-            model: PENNY_SEARCH_MODEL,
-            max_tokens: 2048,
-            system: cachedSystem(finalSystemPrompt),
-            messages: secondMessages,
-          })
-
-          const secondText = (secondPass.content[0] as { type: string; text: string }).text
-          const { cleanText: secondClean, actions: secondActions } = parseActions(secondText)
-          workingText = secondClean
-          scopedActions.push(
-            ...secondActions
-              .filter((a) => a.kind !== 'search_email' && a.kind !== 'search_calendar' && a.kind !== 'read_email' && a.kind !== 'calendar_agenda' && a.kind !== 'search_drive' && a.kind !== 'read_drive_file')
-              .filter((a) => isActionAllowed(currentModality, a.kind))
-          )
-        }
-        // ─────────────────────────────────────────────────────────────────────
+        // Extract artifact (first one wins)
+        const artifactAction = actions.find((a) => a.kind === 'artifact') ?? null
 
         if (intakeJustCompleted) {
           await prisma.profile.update({
             where: { id: profile!.id },
             data: { intakeComplete: true },
-          })
-        }
-
-        // Extract artifact (PA-only — first one wins if multiple)
-        const artifactAction = scopedActions.find(
-          (a): a is Extract<typeof a, { kind: 'artifact' }> => a.kind === 'artifact'
-        ) ?? null
-
-        // Execute actions (filtering non-executable kinds)
-        // Alt-mode memories are tagged with altModeScope so primary mode can't see them
-        const executableActions = scopedActions.filter(
-          (a) =>
-            a.kind !== 'search_email' &&
-            a.kind !== 'search_calendar' &&
-            a.kind !== 'read_email' &&
-            a.kind !== 'calendar_agenda' &&
-            a.kind !== 'search_drive' &&
-            a.kind !== 'read_drive_file' &&
-            a.kind !== 'run_subroutine' &&
-            a.kind !== 'complete_session' &&
-            a.kind !== 'shift_complete' &&
-            a.kind !== 'switch_modality' &&
-            a.kind !== 'artifact'
-        )
-        if (executableActions.length > 0) {
-          await executeActions(profile!.id, executableActions, {
-            domain: currentModality.domain,
-            modalityId: currentModality.id,
-            altModeScope,
           })
         }
 
@@ -363,9 +382,9 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           data: { conversationId: convoId!, role: 'assistant', content: workingText },
         })
 
-        // Background memory extraction (tagged with altModeScope if in alt-mode)
+        // Background memory extraction
         if (!isSilentTrigger) {
-          extractAndSaveMemories(profile!.id, message, workingText, altModeScope).catch(() => {})
+          extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
         }
 
         controller.enqueue(
@@ -375,9 +394,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               conversationId: convoId,
               intakeComplete: intakeJustCompleted,
               cleanText: workingText,
-              actionsExecuted: executableActions.length,
               activeModality,
-              isAltMode,
               contextCleared,
               artifact: artifactAction
                 ? { filename: artifactAction.filename, content: artifactAction.content }
@@ -387,9 +404,13 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         )
       } catch (err) {
         console.error('Chat stream error:', err)
-        // Include conversationId and isAltMode so the UI stays consistent even on error
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ error: String(err), conversationId: convoId, isAltMode })}\n\n`)
+          encoder.encode(
+            `data: ${JSON.stringify({
+              error: String(err),
+              conversationId: convoId,
+            })}\n\n`
+          )
         )
       } finally {
         controller.close()
@@ -401,7 +422,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     },
   })
 }
