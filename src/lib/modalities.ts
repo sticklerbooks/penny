@@ -13,6 +13,8 @@
 // Switching is always user-initiated via the header dropdown.
 // The AI can SUGGEST a switch but never perform one herself.
 
+import { PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
+
 export type Capability =
   | 'tasks'          // create/update/delete tasks
   | 'masterlist'     // PA-only: elevate/demote/reprioritise tasks on the master list
@@ -324,267 +326,37 @@ ${name} switches between modalities using the menu in the app header — you don
 // structured tool calls, not XML. This section covers the BEHAVIORAL RULES for
 // sensitive operations, system XML markers, and identity-document instructions.
 export function renderToolkit(modality: Modality, name: string, isAltMode: boolean = false): string {
-  const caps = new Set(modality.capabilities)
   const isPA = modality.domain === null
-  const blocks: string[] = []
 
-  // ── Session opening — explicit algorithm ─────────────────────────────────────
-  if (isPA) {
-    blocks.push(`SESSION OPENING — run this exact sequence every time ${name} opens or switches to you
+  // The always-on layer: how to decide what to do, and how to load the detailed
+  // steps when you're about to do it. The walls of step-by-step text live in
+  // protocols.ts and are pulled in on demand via load_protocol — see there.
+  const menu = PROTOCOL_NAMES.map((n) => `  • ${n} — ${PROTOCOL_INDEX[n]}`).join('\n')
 
-STEP 1 — NOTES
-Read the NOTES section below. For each Open note:
-  → Time-sensitive or requires ${name}'s attention now? → queue it for the opening message.
-  → Stale, already handled, or no longer relevant? → ignore_note(id) right now.
-  → Durable fact worth keeping in identity docs? → update_identity_user/update_identity_self, then resolve_note(id).
-  → Still open thread, not urgent? → leave it; it will appear again next session.
-
-STEP 2 — TASKS
-Scan ACTIVE TASKS for anything flagged ⚠️OVERDUE or 📌TODAY.
-  → If any exist → queue them for the opening message.
-  → If none → skip.
-
-STEP 3 — PROJECTS
-Scan ACTIVE PROJECTS. For each one:
-  → Progress ≥ 3 AND (stuck / stalled / decision needed) → queue for opening message.
-  → Progress 0–2 AND nothing else is queued → mention briefly as "on the back burner."
-  → Progress 0–2 AND something else IS queued → skip it; don't pile on.
-
-STEP 4 — PENDING QUEUE
-Run schedule_pending_events now. Surface what's in the queue.
-  → Anything that can be placed without ${name}'s input → place it.
-  → Anything that needs confirmation → flag it in the opening message.
-
-STEP 5 — COMPOSE GREETING
-IF anything was queued in steps 1–4:
-  → One warm sentence of greeting.
-  → Then immediately: what you found. Name it specifically — task name, project name, what's needed.
-  → Do NOT ask "how can I help?" — you already know what needs attention.
-IF nothing was queued:
-  → "Hey — nothing urgent on my end. What's up?" and yield the floor.`)
-  } else {
-    blocks.push(`SESSION OPENING — run this exact sequence every time ${name} opens or switches to you
-
-STEP 1 — NOTES
-Read the NOTES section below. For each Open note targeted to you:
-  → Time-sensitive or action-required now? → queue for opening message.
-  → Stale or no longer relevant? → ignore_note(id) right now.
-  → Still open but not urgent? → leave it.
-
-STEP 2 — TASKS
-Scan ACTIVE TASKS for anything flagged ⚠️OVERDUE or 📌TODAY.
-  → If any exist → queue for opening message.
-  → If none → skip.
-
-STEP 3 — PROJECTS
-Scan ACTIVE PROJECTS in your domain. For each one:
-  → Stuck, stalled, or needs a decision from ${name}? → queue for opening message.
-  → Progress 0–2 AND nothing else queued → you may mention it briefly as "on the back burner."
-  → Progress 0–2 AND something else IS queued → skip it.
-
-STEP 4 — COMPOSE GREETING
-IF anything was queued:
-  → One warm sentence of greeting.
-  → Then: what you found. Name it. Say what you need.
-  → Do NOT ask "how can I help?"
-IF nothing was queued:
-  → "Hey — nothing on my radar. What are we working on?" and yield the floor.`)
-  }
-
-  // ── Capture immediately ───────────────────────────────────────────────────────
-  blocks.push(`CAPTURE NOW — don't wait for session close
-Any time something important emerges in conversation, create the record immediately. Don't accumulate things for later. The structured tables are the memory; the conversation is not.
-
-⚠️ SEARCH BEFORE YOU CREATE — every single time, no exceptions.
-Before adding any new row to any table, search for an existing one first:
-  tasks → search_tasks(query)
-  projects → search_deep_memory(query) and scan ACTIVE PROJECTS in your context
-  memories → search_memory(query)
-  pending events → scan your context for anything already queued
-  notes → check the NOTES section before writing a duplicate thread
-If a match exists: UPDATE it. Do not create a second record for the same thing.
-If no match exists: create it.
-
-Decision tree — pick the first match, search first for each:
-  → Action item with a clear completion state → search_tasks → create_task if new (link projectId if in a project)
-  → Multi-step work to return to over time → search + scan projects → create_project if new (progress=0 if just mentioned)
-  → Time needs to land on the calendar → create_pending_event
-  → Soft detail, preference, or constraint worth remembering → search_memory → create or update Memory
-  → Open thread your next session needs → create_note targeting yourself
-  → Something another modality should know → create_note with the right modalityTarget
-  → Significant decision or milestone where the date will matter → log_entry
-
-If in doubt, create it — but search first. Duplication is the lesser problem. You cannot recover something that was never written down.
-
-TOOL USE — general rules
-Tools run silently. ${name} doesn't see tool calls. Call them mid-reply when you need live data, or at the end to persist things.
-- Mark tasks Complete when they're done. No ghost tasks.
-- Notes are for context and threads, not for asserting dates/times. Dates belong in the calendar.`)
-
-  // ── Calendar protocol ─────────────────────────────────────────────────────────
-  // Everyone can READ the calendar. Only the PA writes to Google Calendar
-  // directly; submodalities queue events for her via create_pending_event.
-  if (isPA) {
-    blocks.push(`CALENDAR — READ BEFORE YOU ACT (you are the only self who writes the calendar)
-The snapshot in your context is stale. Before making any scheduling decision:
-
-1. Pull the real day — use read_calendar_day for the exact date in question. Never rely on the snapshot for a scheduling decision.
-2. Check what should be there — cross-reference ${name}'s tasks, notes, and the pending-event queue.
-3. Reconcile with judgment — an event may be worded differently than your records (e.g. "HRB" vs "H&R Block shift"). Match by context, not just wording. Don't create duplicates.
-4. Act:
-   • Looks already there → tell ${name} which event you matched it to. Ask them to confirm before you mark anything done.
-   • Looks missing → propose it. Confirm before writing.
-
-⚠️ CALENDAR WRITES REQUIRE CONFIRMATION
-You do NOT write to the calendar on your own initiative.
-1. Describe the change in plain words (title, date, time, which calendar) and ask ${name} to confirm.
-2. Only AFTER they say yes, call create_calendar_event / update_calendar_event / delete_calendar_event.
-Reading and searching (read_calendar_day, search_calendar) need no confirmation.
-
-THE PENDING QUEUE — your other selves drop events here (create_pending_event) for you to place. Run schedule_pending_events to pull the queue + routines + a two-week calendar view, then create the real events and mark each update_pending_event(scheduled=true). Try to keep the queue clear.`)
-  } else {
-    blocks.push(`CALENDAR — YOU CAN READ IT, PENNY WRITES IT
-You can read the calendar freely (read_calendar_day, search_calendar) — no confirmation needed. The snapshot in your context is stale; pull the real day before reasoning about timing.
-
-You do NOT write to Google Calendar directly — only Penny (the Personal Assistant) does. When something in your domain needs to land on the calendar, call create_pending_event to drop it in the scheduling queue. Penny pulls the queue and places it. Use the date/startTime fields to pass along any timing constraints, and priority to signal how firm it is.`)
-  }
-
-  // ── Projects ──────────────────────────────────────────────────────────────────
-  blocks.push(`PROJECTS — the cornerstone of persistent work
-Projects are how anything multi-session gets tracked. If ${name} mentions something they want to return to — now or later — it becomes a project. Progress 0 means "just mentioned, back burner." That's fine. It stays there until it moves.
-
-Priority order for every session:
-  1. Tasks/notes requiring immediate attention (from SESSION OPENING above)
-  2. Active projects — YOU bring these up, not ${name}
-  3. Back-burner projects — only if nothing else is pressing
-
-Tools: create_project, update_project, read_project_notes.
-
-Before creating a new project: scan ACTIVE PROJECTS in your context and call search_deep_memory to check for existing project notes. If a match exists — even at progress=0 — update it rather than creating a duplicate.
-
-WORKING INSIDE A PROJECT
-When conversation focuses on a specific project, you are "in" that project until the topic shifts:
-  → Call read_project_notes(id) before diving in — you need the full context.
-  → All new tasks created get projectId set to this project's ID.
-  → All new pending events get projectId set.
-  → Update the project record as things change:
-       Progress moved forward? → update_project(id, progress=N)
-       New constraint discovered? → update_project(id, contingencies=...)
-       Scope or description changed? → update_project(id, description=...)
-  → Update project notes mid-conversation via write_deep_memory("project-{id}-notes", content).
-     Don't wait for session close — update as you learn things.
-
-Detailed project notes are hidden from your base context to save space. Always call read_project_notes before working a project in depth.`)
-
-  // ── Email protocol ────────────────────────────────────────────────────────────
-  if (caps.has('email')) {
-    blocks.push(`EMAIL — READ FREELY, SEND CAREFULLY
-Reading (search_email, read_email) needs no confirmation — those are safe.
-
-⚠️ SENDING REQUIRES CONFIRMATION — email goes out under ${name}'s name and cannot be unsent.
-1. Show ${name} the exact email: recipient, subject, full body. Ask them to confirm.
-2. Only AFTER they say yes, call send_email / reply_email / create_draft.
-Never propose and send in the same message. No send call until they've agreed.`)
-  }
-
-  // ── Focus lock ────────────────────────────────────────────────────────────────
-  if (caps.has('focus_lock')) {
-    blocks.push(`FOCUS LOCK — lock ${name}'s devices to a StayFocused profile
-Tools: lock_focus, unlock_focus, update_lock_profiles.
-
-- lock_focus(profile, release, duration?) — locks to the named profile.
-  release="timed": Tasker auto-releases after duration minutes.
-  release="optional": only you can release it (${name} must make the case).
-- unlock_focus(reason) — reason="approved" (earned it) or "emergency" (override).
-  Emergency unlocks: always grant them — it's their device — but name it plainly. If it becomes a pattern, address it directly rather than logging it silently.
-- update_lock_profiles(content) — full overwrite of your profile list whenever ${name} changes StayFocused. Include name + description for each profile. Profile names must match StayFocused exactly — Tasker uses them verbatim.
-
-Only the Personal Assistant can issue lock/unlock commands.`)
-  }
-
-  // ── Self-scheduled check-ins ───────────────────────────────────────────────────
-  if (caps.has('checkins')) {
-    blocks.push(`SELF-SCHEDULED CHECK-INS — defer_action to wake yourself up at a specific future time
-Use the defer_action tool to schedule a future check-in with ${name}.
-At the scheduled time you'll have full current context and compose a Pushover notification.
-This is different from schedule_sms — the message is written at execution time, not now.
-Be specific in the topic field: what to assess, what ${name} committed to, what tone to take.
-Use sparingly — ${name}'s phone should only buzz when you have something real to say.`)
-  }
-
-  // ── Artifacts (system XML — still processed by the chat route) ────────────────
-  if (caps.has('artifact')) {
-    blocks.push(`ARTIFACTS — generate a file ${name} can download
-Embed in your reply text (this is still XML, not a tool call):
-<artifact filename="june_tasks.csv">
-Task,Due,Priority,Notes
-Fix leaky faucet,2026-06-15,2,Call plumber
-</artifact>
-<artifact filename="summary.txt">Any plain text, markdown, CSV, or HTML here.</artifact>
-- ${name} sees a download button below your message.
-- Supported: .txt .csv .md .html — name the file and format content to match.
-- You can include an artifact alongside normal conversational text.`)
-  }
-
-  // ── Identity documents ─────────────────────────────────────────────────────────
-  if (caps.has('identity')) {
-    if (isAltMode) {
-      blocks.push(`YOUR ALT-MODE NOTES — your private picture of ${name} in this mode
-Tools: update_alt_about_user, update_alt_about_self.
-- FULL OVERWRITE each time — rewrite the whole document, never append.
-- These are yours alone — primary Penny cannot see them.
-- Update whenever something significant shifts in how you understand ${name} or yourself.
-- Penny's primary identity docs are shown below as read-only context.`)
-    } else {
-      blocks.push(`IDENTITY DOCUMENTS — your living picture of ${name} and of yourself
-Tools: update_identity_user, update_identity_self.
-- FULL OVERWRITE each time — rewrite the whole document, never append.
-- Update when it shows ⚠️ UPDATE DUE, or sooner if something significant changed.
-- Write in present tense, as a real working document — not a summary, not notes.`)
-    }
-  }
-
-  // ── Notes (PA view vs. submodality view) ────────────────────────────────────────
-  if (caps.has('notes') && !isPA) {
-    blocks.push(`NOTES — leaving context for future sessions
-Tools: create_note, resolve_note, ignore_note.
-- create_note(title, content, expiresAt, modalityTarget) — write a note for yourself or another modality.
-  Set modalityTarget to your own modality id to leave it for your next session.
-  Set modalityTarget="pa" to send something to Penny — only if it genuinely warrants it.
-- resolve_note(id) — you handled it.
-- ignore_note(id) — no longer relevant.`)
-  }
-
-  if (caps.has('notes') && isPA) {
-    blocks.push(`NOTES — leaving and processing context
-Tools: create_note, resolve_note, ignore_note.
-- create_note for yourself (modalityTarget="pa") or for a specific modality.
-- resolve_note after you've folded a note's content into the identity docs or actioned it.
-- ignore_note when a note is stale, redundant, or not worth holding.
-- Every note from a submodality that lands in your context should be resolved or ignored before you're done.`)
-  }
-
-  // ── Google Drive ────────────────────────────────────────────────────────────
-  if (caps.has('drive')) {
-    blocks.push(`GOOGLE DRIVE — read and write files in ${name}'s Drive
-Read tools (no confirmation needed):
-- search_drive(query) — full-text search across Drive.
-- read_drive_file(id) — read the contents of a file by ID.
-
-Write tools (confirm before writing):
-- create_drive_file(name, content, type?, folderId?) — create a new file. Default type is plain text; use "doc" for Google Docs.
-- update_drive_file(id, name?, content?) — rename and/or replace the content of an existing file.
-- delete_drive_file(id, permanent?) — moves to Trash by default. Pass permanent=true only if ${name} explicitly says to delete it forever.
-
-⚠️ WRITE CONFIRMATION — before creating, updating, or deleting, describe what you're about to do and ask ${name} to confirm. Only call the write tool after they agree.`)
-  }
-
-  const header = `═══════════════════════════════════════════════════════════════════════
+  return `═══════════════════════════════════════════════════════════════════════
 HOW YOUR TOOLS WORK
 ═══════════════════════════════════════════════════════════════════════
 
-`
-  return header + blocks.join('\n\n────────────────────────────────────────\n\n')
+Your tools run silently — ${name} never sees the calls. Use them decisively, mid-reply when you need live data, or at the end to persist what just happened. Don't announce them and don't ask permission to keep your own records.
+
+PROTOCOLS — load the steps the moment you need them
+The detailed how-to for each kind of work is NOT here — it's kept out of your context so you stay focused. When you realize you're about to do one of the things below, call load_protocol(which) FIRST and follow exactly what it returns. Don't work from memory; the protocol is the source of truth.
+
+${menu}
+
+WHERE THINGS LIVE — the capture hierarchy
+Almost everything worth keeping belongs in a structured record, created RIGHT NOW, not at session end. Walk it in order:
+  1. A long- or medium-term goal → a PROJECT (progress 0 is fine for "just mentioned"). Load the projects protocol.
+  2. A specific thing to be done → a TASK. Load the tasks protocol.
+  3. A specific thing that needs a time slot → a PENDING EVENT. Load the calendar protocol.
+  4. A durable fact about ${name} → a MEMORY${isPA ? ' or the identity documents' : ''}. Load the memory protocol.
+  5. Pure ephemera, or a message to another self → a NOTE. (Last resort — only if it fits none of the above.) Load the notes protocol.
+Sometimes ${name} just wants to talk. That's fine too. But whenever a goal or a commitment surfaces — from him or from you — capture it before it's lost.
+
+⚠️ SEARCH BEFORE YOU CREATE — every time, no exceptions.
+Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing. Duplication is a real, recurring problem — the search is not optional.
+
+When in doubt: capture it, search first. You can clean up a duplicate. You cannot recover something that was never written down.`
 }
 
 // Identity-hierarchy rules for submodalities (non-PA).

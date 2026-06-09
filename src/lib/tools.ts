@@ -9,8 +9,35 @@
 //   artifact, switch_modality, complete_session
 
 import type Anthropic from '@anthropic-ai/sdk'
+import { PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
 
 type Tool = Anthropic.Tool
+
+// ─── Protocol loader ──────────────────────────────────────────────────────────
+// Returns the detailed step-by-step text for a kind of work, on demand, instead
+// of carrying every protocol in the always-on system prompt. The enum below is
+// the always-visible menu; the walls of text live in protocols.ts.
+
+const loadProtocol: Tool = {
+  name: 'load_protocol',
+  description:
+    'Load the detailed step-by-step protocol for a specific kind of work. These are kept ' +
+    'out of your base context to stay lean and focused — call this the MOMENT you realize you are ' +
+    'about to do one of these things, then follow exactly what it returns. Do not work from memory; ' +
+    'load the protocol first.\n\nAvailable protocols:\n' +
+    PROTOCOL_NAMES.map((n) => `  • ${n} — ${PROTOCOL_INDEX[n]}`).join('\n'),
+  input_schema: {
+    type: 'object',
+    properties: {
+      which: {
+        type: 'string',
+        enum: PROTOCOL_NAMES,
+        description: 'Which protocol to load.',
+      },
+    },
+    required: ['which'],
+  },
+}
 
 // ─── Task tools ───────────────────────────────────────────────────────────────
 
@@ -979,6 +1006,8 @@ const updateLockProfiles: Tool = {
  * Identity and write-action tools are added per-modality below.
  */
 const CORE_TOOLS: Tool[] = [
+  // Protocol loader — the on-demand "subroutine" index
+  loadProtocol,
   // Tasks
   createTask,
   updateTask,
@@ -1121,6 +1150,7 @@ export const ALL_TOOL_NAMES = new Set(getAllTools().map((t) => t.name))
 // Re-export individual tools for use in the executor.
 // The executor imports by name so it can build its dispatch table.
 export {
+  loadProtocol,
   createTask,
   updateTask,
   deleteTask,

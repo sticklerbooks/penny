@@ -29,6 +29,8 @@ import {
   type EventTime,
 } from './google'
 import { ALL_TOOL_NAMES } from './tools'
+import { getModality } from './modalities'
+import { getProtocol, PROTOCOL_NAMES, type ProtocolName } from './protocols'
 
 // ─── Context ─────────────────────────────────────────────────────────────────
 
@@ -131,6 +133,25 @@ export async function executeTool(
 
   try {
     switch (name) {
+
+      // ── Protocol loader ───────────────────────────────────────────────────
+
+      case 'load_protocol': {
+        const which = str(args.which) as ProtocolName
+        if (!PROTOCOL_NAMES.includes(which)) {
+          return {
+            content: `Unknown protocol "${which}". Available: ${PROTOCOL_NAMES.join(', ')}`,
+            is_error: true,
+          }
+        }
+        const modality = getModality(modalityId)
+        const profile = await prisma.profile.findUnique({ where: { id: profileId } })
+        const text = getProtocol(which, {
+          isPA: modality.domain === null,
+          name: profile?.userName || 'them',
+        })
+        return { content: text }
+      }
 
       // ── Tasks ─────────────────────────────────────────────────────────────
 
