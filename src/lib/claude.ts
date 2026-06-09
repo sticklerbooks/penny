@@ -498,13 +498,13 @@ RIGHT NOW YOU ARE: ${modality.emoji} ${modality.displayName.toUpperCase()} — $
 ═══════════════════════════════════════════════════════════════════════
 ${altModeContext}
 
-${modality.personaFile || isAltMode ? '' : personaText}
-
-${roster}${hierarchy}
-
 ${toolkit}
 
 ${calendarTruth}
+
+${modality.personaFile || isAltMode ? '' : personaText}
+
+${roster}${hierarchy}
 
 ${hygiene}
 ${intakeSection}
