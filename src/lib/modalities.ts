@@ -395,20 +395,29 @@ IF nothing was queued:
   blocks.push(`CAPTURE NOW — don't wait for session close
 Any time something important emerges in conversation, create the record immediately. Don't accumulate things for later. The structured tables are the memory; the conversation is not.
 
-Decision tree — pick the first match:
-  → Action item with a clear completion state → create_task (link projectId if in a project)
-  → Multi-step work to return to over time → create_project (progress=0 if just mentioned)
+⚠️ SEARCH BEFORE YOU CREATE — every single time, no exceptions.
+Before adding any new row to any table, search for an existing one first:
+  tasks → search_tasks(query)
+  projects → search_deep_memory(query) and scan ACTIVE PROJECTS in your context
+  memories → search_memory(query)
+  pending events → scan your context for anything already queued
+  notes → check the NOTES section before writing a duplicate thread
+If a match exists: UPDATE it. Do not create a second record for the same thing.
+If no match exists: create it.
+
+Decision tree — pick the first match, search first for each:
+  → Action item with a clear completion state → search_tasks → create_task if new (link projectId if in a project)
+  → Multi-step work to return to over time → search + scan projects → create_project if new (progress=0 if just mentioned)
   → Time needs to land on the calendar → create_pending_event
-  → Soft detail, preference, or constraint worth remembering → create a Memory (search first for an existing one to update)
+  → Soft detail, preference, or constraint worth remembering → search_memory → create or update Memory
   → Open thread your next session needs → create_note targeting yourself
   → Something another modality should know → create_note with the right modalityTarget
   → Significant decision or milestone where the date will matter → log_entry
 
-If in doubt, create it. Duplication is the lesser problem — you can clean up duplicates. You cannot recover something that was never written down.
+If in doubt, create it — but search first. Duplication is the lesser problem. You cannot recover something that was never written down.
 
 TOOL USE — general rules
 Tools run silently. ${name} doesn't see tool calls. Call them mid-reply when you need live data, or at the end to persist things.
-- Search before creating: check for an existing task, project, or memory to update before making a new one.
 - Mark tasks Complete when they're done. No ghost tasks.
 - Notes are for context and threads, not for asserting dates/times. Dates belong in the calendar.`)
 
@@ -450,6 +459,8 @@ Priority order for every session:
   3. Back-burner projects — only if nothing else is pressing
 
 Tools: create_project, update_project, read_project_notes.
+
+Before creating a new project: scan ACTIVE PROJECTS in your context and call search_deep_memory to check for existing project notes. If a match exists — even at progress=0 — update it rather than creating a duplicate.
 
 WORKING INSIDE A PROJECT
 When conversation focuses on a specific project, you are "in" that project until the topic shifts:
