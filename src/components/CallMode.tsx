@@ -69,7 +69,8 @@ export default function CallMode({
   const [avatarErr, setAvatarErr]   = useState(avatarImgError)
 
   const recognitionRef      = useRef<SpeechRecognizer | null>(null)
-  const accumulated         = useRef('')
+  const accumulated         = useRef('')            // finals from current recognition session
+  const totalAccumRef       = useRef('')            // accumulated across breath-pause restarts
   const callStateRef        = useRef<CallState>('listening')
   const audioRef            = useRef<HTMLAudioElement | null>(null)
   const activeRef           = useRef(true)         // false when call ends
@@ -89,7 +90,8 @@ export default function CallMode({
 
   // ── Speech → text ──────────────────────────────────────────────────────────
   // continuous = false: one utterance per session. Chrome's VAD fires onend
-  // when you pause (~1 s). We add 500 ms on top → ~1.5 s effective silence.
+  // when you pause (~1 s). We immediately restart and set a 2 s send timer.
+  // New speech cancels the timer so natural breath pauses don't cut you off.
   const startListening = useCallback(() => {
     if (!activeRef.current) return
     const SR = getSpeechRecognizer()
@@ -104,32 +106,47 @@ export default function CallMode({
 
     r.onresult = (event) => {
       if (!activeRef.current) return
-      let allFinal = ''
-      let interim  = ''
+      // New speech arriving — cancel any pending send
+      if (pendingSendTimerRef.current) {
+        clearTimeout(pendingSendTimerRef.current)
+        pendingSendTimerRef.current = null
+      }
+      let sessionFinal = ''
+      let interim      = ''
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i]
-        if (result.isFinal) allFinal += result[0].transcript + ' '
+        if (result.isFinal) sessionFinal += result[0].transcript + ' '
         else interim += result[0].transcript
       }
-      accumulated.current = allFinal.trim()
-      setTranscript((accumulated.current + ' ' + interim).trim())
+      accumulated.current = sessionFinal.trim()
+      const displayBase = [totalAccumRef.current, accumulated.current].filter(Boolean).join(' ')
+      setTranscript((displayBase + ' ' + interim).trim())
     }
 
     r.onend = () => {
       if (recognitionRef.current !== r) return
       if (!activeRef.current || callStateRef.current !== 'listening') return
 
-      const text = accumulated.current.trim()
-      if (text) {
-        setTranscript('')
+      const sessionText = accumulated.current.trim()
+      if (sessionText) {
+        totalAccumRef.current = [totalAccumRef.current, sessionText].filter(Boolean).join(' ')
         accumulated.current = ''
-        // Extra 500 ms delay so brief mid-sentence pauses don't cut you off.
+        setTranscript(totalAccumRef.current)
+        // Clear any leftover timer, then restart + arm a fresh 2 s send window
+        if (pendingSendTimerRef.current) {
+          clearTimeout(pendingSendTimerRef.current)
+          pendingSendTimerRef.current = null
+        }
+        startListeningRef.current()
         pendingSendTimerRef.current = setTimeout(() => {
-          if (activeRef.current) handleSendRef.current(text)
-        }, 500)
+          const toSend = totalAccumRef.current.trim()
+          totalAccumRef.current = ''
+          setTranscript('')
+          if (toSend && activeRef.current) handleSendRef.current(toSend)
+        }, 2000)
       } else {
-        // No speech — keep mic open
-        try { r.start() } catch { startListeningRef.current() }
+        // No speech this session — keep mic open
+        startListeningRef.current()
       }
     }
 
@@ -149,6 +166,7 @@ export default function CallMode({
       clearTimeout(pendingSendTimerRef.current)
       pendingSendTimerRef.current = null
     }
+    totalAccumRef.current = ''
   }, [])
 
   // ── Interrupt ──────────────────────────────────────────────────────────────
@@ -452,7 +470,7 @@ export default function CallMode({
         <p className="text-xs text-center" style={{ color: C.textMuted }}>
           {callState === 'speaking'
             ? 'Tap avatar or button above to interrupt'
-            : 'Penny hears you. Pause for a moment to send.'}
+            : 'Penny hears you. Stop talking for 2 seconds to send.'}
         </p>
       </div>
     </div>
