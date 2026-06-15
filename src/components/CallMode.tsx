@@ -210,7 +210,10 @@ export default function CallMode({
       await new Promise<void>((resolve) => {
         audio.onended = () => { URL.revokeObjectURL(url); resolve() }
         audio.onerror = () => { URL.revokeObjectURL(url); resolve() }
-        audio.onpause = () => { URL.revokeObjectURL(url); resolve() } // interrupt support
+        // Only resolve on pause if it was a deliberate interrupt — browsers can fire
+        // pause transiently during buffering/media-session suspension, which would
+        // otherwise prematurely end speech and snap back to listening.
+        audio.onpause = () => { if (interruptedRef.current) { URL.revokeObjectURL(url); resolve() } }
         audio.play().catch(() => resolve())
       })
     } catch (err) {
