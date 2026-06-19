@@ -62,6 +62,7 @@ model Profile {
   domainReports        DomainReport[]
   weeklyBriefs         WeeklyBrief[]
   scheduledTasks       ScheduledTask[]
+  outerLives           OuterLife[]
 }
 
 model Client {
@@ -309,8 +310,9 @@ model ModalityState {
   @@unique([profileId, modalityId])
 }
 
-// Weekly domain assessment filed by each sub-modality (Margot, June, Iris, Sage, Vera).
-// One row per modality per week. The cron endpoint writes these; Penny reads them.
+// Weekly domain assessment filed by each sub-modality (Margot, June, Nora, Ada,
+// Iris, Remy). Eve is independent and never files. One row per modality per week;
+// the cron endpoint writes these and Penny reads them.
 model DomainReport {
   id         String   @id @default(cuid())
   createdAt  DateTime @default(now())
@@ -318,7 +320,7 @@ model DomainReport {
   profileId  String
   profile    Profile  @relation(fields: [profileId], references: [id])
 
-  modalityId String   // e.g. 'bookkeeping', 'household', 'creative', 'friend', 'political'
+  modalityId String   // e.g. 'bookkeeping', 'household', 'relationships', 'maker', 'creative', 'health'
   adjective  String?  // headline word / phrase extracted from the first line of reportText
   reportText String   // full assessment response from the modality
   weekOf     DateTime // timestamp of the cron run that generated this report
@@ -349,6 +351,30 @@ model WeeklyBrief {
   briefText String   // Penny's synthesised summary (her private notes)
   weekOf    DateTime
   flagged   Boolean  @default(false) // true if at least one domain needs Adam's attention
+}
+
+// Off-screen lives authored by the Showrunner cron (FLAGGED via OUTER_LIFE_ENABLED;
+// dormant unless that table-backed feature is turned on AND this table exists).
+// One row per modality. Only `ledger` is ever injected into a self's chat context,
+// and it's length-capped (see OUTER_LIFE_LEDGER_MAX). `bible` and `storyline` are
+// the Showrunner's private writer's notes — extensive, never shown to anyone.
+model OuterLife {
+  id        String   @id @default(cuid())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  modalityId String
+
+  ledger     String?   // compact, first-person "what's going on with me lately" — INJECTED (capped)
+  bible      String?   // extensive backstory: age, family, work, hobbies, health, aesthetics — Showrunner-only
+  storyline  String?   // append-only log of authored life events — Showrunner-only
+
+  seeded     Boolean   @default(false)  // has the opening backstory been generated yet?
+  lastTickAt DateTime?
+
+  @@unique([profileId, modalityId])
 }
 
 model ScheduledMessage {

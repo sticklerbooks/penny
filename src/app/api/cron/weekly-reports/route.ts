@@ -117,9 +117,10 @@ export async function POST(req: NextRequest) {
   const db = prisma as any
 
   // ── Domain assessments ─────────────────────────────────────────────────────
-  // PA and Lila are excluded: PA is the synthesiser, Lila is a private companion.
+  // PA, Lila, and any `independent` self (Eve) are excluded: PA is the synthesiser,
+  // Lila is a private companion, and Eve does not report to Penny by design.
   const assessable = MODALITIES.filter(
-    (m) => !m.disabled && m.id !== 'pa' && m.id !== 'lila'
+    (m) => !m.disabled && m.id !== 'pa' && m.id !== 'lila' && !m.independent
   )
 
   const domainReports: {

@@ -159,16 +159,23 @@ export async function POST(req: NextRequest) {
   const userName = profile.userName || 'Adam'
   const results: { modalityId: string; toolCalls: number; rounds: number; error?: string }[] = []
 
-  // Submodalities that were active and need a domain pass (exclude PA + Lila).
-  const subsToRun = dirty.filter((id) => id !== 'pa' && id !== 'lila')
+  // Submodalities that were active and need a domain pass. Exclude PA, Lila, and
+  // any `independent` self (Eve): the sub pass escalates notes up to Penny, which
+  // Eve must never do.
+  const subsToRun = dirty.filter(
+    (id) => id !== 'pa' && id !== 'lila' && !getModality(id).independent
+  )
 
   // PA runs if she was active OR notes are waiting for her.
   const passUpCount = notes.filter((n) => n.modalityTarget === 'pa').length
   const paNeedsRun = dirty.includes('pa') || passUpCount > 0
 
-  // Lila is a private companion — never auto-cleaned; just clear her dirty flag.
-  if (dirty.includes('lila')) {
-    await touchCompleted(profile.id, 'lila')
+  // Lila (private) and independent selves (Eve) are never auto-cleaned — just
+  // clear their dirty flags so they don't re-trigger.
+  for (const id of dirty) {
+    if (id === 'lila' || getModality(id).independent) {
+      await touchCompleted(profile.id, id)
+    }
   }
 
   if (subsToRun.length === 0 && !paNeedsRun) {

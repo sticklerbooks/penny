@@ -4,10 +4,14 @@ import { join } from 'path'
 import type { Profile, Memory, Task, Note, Client, ScheduledMessage, Project, PendingCalendarEvent } from '../generated/prisma/client'
 import { Modality, getModality } from './modalities'
 
-// Load a prose prompt template (.md). The PA and the submodalities each have one;
-// the submodalities share a single template differentiated by {modality_name}.
-function loadPromptTemplate(isPA: boolean): string {
-  const file = isPA ? 'src/prompts/pa.md' : 'src/prompts/modality.md'
+// Load a prose prompt template (.md). The PA has her own; an `independent` self
+// (Eve) has her own; every other submodality shares modality.md, differentiated
+// by {modality_name}.
+function loadPromptTemplate(modality: Modality): string {
+  const file =
+    modality.independent ? 'src/prompts/eve.md'
+    : modality.domain === null ? 'src/prompts/pa.md'
+    : 'src/prompts/modality.md'
   try {
     return readFileSync(join(process.cwd(), file), 'utf-8')
   } catch {
@@ -245,6 +249,10 @@ export function buildSystemPrompt(
     // Transitional fallback for the PA until her ModalityIdentity row is in use.
     const a = fmtAge(profile.aboutSelfUpdatedAt)
     aboutSelfSection = `${profile.aboutSelf}${a.label ? `\n\n  ↳ Last updated: ${a.label}${a.stale ? ' ⚠️ UPDATE DUE' : ''}` : ''}`
+  } else if (modality.seedAboutSelf) {
+    // No identity row yet — wake her with the editable seed from the registry.
+    // ({name} only gets interpolated on the template itself, so do it here too.)
+    aboutSelfSection = `${modality.seedAboutSelf.replace(/\{name\}/g, userName)}\n\n  ↳ (this is your starting self — rewrite it in your own voice with update_identity_self whenever it feels true)`
   } else {
     aboutSelfSection = `  (not yet written — reflect and write this with update_identity_self when you're ready)`
   }
@@ -330,7 +338,7 @@ Before doing any category of work (calendar, email, drive, projects, tasks, note
 ⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing.`
 
   // ── Assemble from the .md template ─────────────────────────────────────────
-  const template = loadPromptTemplate(isPA)
+  const template = loadPromptTemplate(modality)
   let prompt = template
     .replace(/\{modality_name\}/g, modality.displayName)
     .replace(/\{name\}/g, userName)

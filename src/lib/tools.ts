@@ -1093,8 +1093,11 @@ const FOCUS_LOCK_TOOLS: Tool[] = [lockFocus, unlockFocus, updateLockProfiles]
  * Returns the tools array for a given modality, scoped to what that modality
  * is permitted to do. Pass directly to the Anthropic API `tools` parameter.
  *
- * Active modality IDs: 'pa', 'bookkeeping', 'household', 'creative', 'friend', 'political'.
- * (Lila / private + alt-mode are retired.)
+ * Active modality IDs: 'pa', 'bookkeeping', 'household', 'relationships', 'maker',
+ * 'creative', 'health', 'friend' (Eve). ('political'/Vera + 'lila' are retired/disabled.)
+ *
+ * NOTE: tool grants are keyed off the id here, NOT off Modality.capabilities (which is
+ * only used cosmetically, e.g. showClients). Adding a new modality means adding it here.
  */
 export function getToolsForModality(modalityId: string): Tool[] {
   switch (modalityId) {
@@ -1120,14 +1123,19 @@ export function getToolsForModality(modalityId: string): Tool[] {
         ...CLIENT_TOOLS,
       ]
 
+    // ── Domain workers — same toolset: core + own identity + projects ───────
     // ── Household / June ────────────────────────────────────────────────────
     case 'household':
+    // ── Relationships / Nora ────────────────────────────────────────────────
+    case 'relationships':
+    // ── Maker / Ada ─────────────────────────────────────────────────────────
+    case 'maker':
     // ── Creative / Iris ─────────────────────────────────────────────────────
     case 'creative':
-    // ── Friend / Sage ───────────────────────────────────────────────────────
+    // ── Health / Remy ───────────────────────────────────────────────────────
+    case 'health':
+    // ── Emotional / Eve (independent — same tools; she chooses when to use) ──
     case 'friend':
-    // ── Political / Vera ────────────────────────────────────────────────────
-    case 'political':
       return [
         ...CORE_TOOLS,
         ...PUBLIC_IDENTITY_TOOLS,
