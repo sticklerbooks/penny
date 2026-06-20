@@ -47,7 +47,9 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         text: cleanForSpeech(text),
-        model_id: 'eleven_turbo_v2_5',  // fast + cheap, good quality
+        // Flash v2.5: ~75ms model latency (vs turbo's ~250-300ms). Override with
+        // ELEVENLABS_MODEL_ID if you want to trade latency for quality.
+        model_id: process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5',
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.75,

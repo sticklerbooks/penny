@@ -31,6 +31,27 @@ import {
 import { ALL_TOOL_NAMES } from './tools'
 import { getModality } from './modalities'
 import { getProtocol, PROTOCOL_NAMES, type ProtocolName } from './protocols'
+import { invalidateContext } from './context-cache'
+
+// Read-only tools — these never change anything the system-prompt context cache
+// holds, so they leave it intact. Everything else invalidates the cache after it
+// runs so the next turn rebuilds context from fresh data (see context-cache.ts).
+const READ_ONLY_TOOLS = new Set<string>([
+  'load_protocol',
+  'search_tasks',
+  'read_project_notes',
+  'read_calendar_day',
+  'search_calendar',
+  'schedule_pending_events',
+  'search_email',
+  'read_email',
+  'search_drive',
+  'read_drive_file',
+  'search_memory',
+  'search_deep_memory',
+  'read_deep_memory',
+  'search_log',
+])
 
 // ─── Context ─────────────────────────────────────────────────────────────────
 
@@ -130,6 +151,11 @@ export async function executeTool(
   if (!ALL_TOOL_NAMES.has(name)) {
     return { content: `Unknown tool: ${name}`, is_error: true }
   }
+
+  // Any tool that can write drops this profile's cached context so the next turn
+  // rebuilds from fresh data. Safe to do up front: the current turn already
+  // loaded its context before any tool ran; the cache is next read next turn.
+  if (!READ_ONLY_TOOLS.has(name)) invalidateContext(profileId)
 
   try {
     switch (name) {

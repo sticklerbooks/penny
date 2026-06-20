@@ -6,17 +6,17 @@ import {
   buildSystemPrompt,
   cachedSystem,
   PENNY_MODEL,
-  WeeklyBriefSummary,
 } from '@/lib/claude'
 import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions } from '@/lib/actions'
 import { getModality, resolveModality } from '@/lib/modalities'
-import { getEmailCalendarSummary } from '@/lib/email-calendar'
 import { touchActive } from '@/lib/modality-state'
 import { executeTool, type ToolContext } from '@/lib/tool-executor'
 import { getToolsForModality } from '@/lib/tools'
 import { runAgenticLoop } from '@/lib/agentic-loop'
 import { closeSessionPrompt } from '@/lib/close-session'
+import { outerLifeEnabled } from '@/lib/outer-life'
+import { getContextBundle, getModalityBrief, getModalityIdentity } from '@/lib/context-cache'
 
 export const dynamic = 'force-dynamic'
 
@@ -77,49 +77,12 @@ export async function POST(req: NextRequest) {
   const outgoingModalityId = activeModality
   const isSwitch = !!manualSwitch && manualSwitch.id !== outgoingModalityId
 
-  // ── Load all context in parallel ───────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const db = prisma as any
-
-  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents] =
-    await Promise.all([
-      prisma.memory.findMany({
-        where: { profileId: profile.id, archived: false },
-        orderBy: { importance: 'desc' },
-        take: 80,
-      }),
-      prisma.task.findMany({
-        where: { profileId: profile.id, status: { not: 'Complete' } },
-      }),
-      prisma.note.findMany({
-        where: { profileId: profile.id, resolution: 'Open' },
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.client.findMany({
-        where: { profileId: profile.id },
-        orderBy: { updatedAt: 'desc' },
-      }),
-      prisma.scheduledMessage.findMany({
-        where: { profileId: profile.id, sent: false },
-        orderBy: { sendAt: 'asc' },
-      }),
-      getEmailCalendarSummary(profile.id).catch(() => null),
-      db.weeklyBrief
-        .findFirst({
-          where: { profileId: profile.id },
-          orderBy: { createdAt: 'desc' },
-        })
-        .catch(() => null) as Promise<WeeklyBriefSummary | null>,
-      prisma.project.findMany({
-        where: { profileId: profile.id, progress: { lt: 10 } },
-        orderBy: { updatedAt: 'desc' },
-      }).catch(() => [] as import('../../../generated/prisma/client').Project[]),
-      prisma.pendingCalendarEvent.findMany({
-        where: { profileId: profile.id, scheduled: false },
-        orderBy: { createdAt: 'desc' },
-      }).catch(() => [] as import('../../../generated/prisma/client').PendingCalendarEvent[]),
-    ])
-
+  // ── Load all context (cached) ──────────────────────────────────────────────
+  // The heavy profile-scoped fan-out lives in an in-memory cache that any
+  // mutating tool invalidates, so this is usually instant and never stale within
+  // a conversation. See src/lib/context-cache.ts.
+  const { memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents } =
+    await getContextBundle(profile.id)
 
   const outgoingModality = getModality(outgoingModalityId)
 
@@ -129,17 +92,13 @@ export async function POST(req: NextRequest) {
   // the identity docs) if the session warrants it. Runs synchronously so the
   // carry-note exists before the next session reads its context.
   if (isSwitch && existingMessages.length > 0) {
-    const outgoingBriefRecord = await db.modalityBrief
-      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: outgoingModalityId } } })
-      .catch(() => null) as { content: string } | null
-    const outgoingIdentity = await prisma.modalityIdentity
-      .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: outgoingModalityId } } })
-      .catch(() => null)
+    const outgoingBrief = await getModalityBrief(profile.id, outgoingModalityId)
+    const outgoingIdentity = await getModalityIdentity(profile.id, outgoingModalityId)
 
     const closeSystem = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
       scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false,
-      outgoingBriefRecord?.content ?? null, projects, pendingEvents, outgoingIdentity
+      outgoingBrief, projects, pendingEvents, outgoingIdentity
     )
     const closeCtx: ToolContext = {
       profileId: profile.id,
@@ -194,25 +153,31 @@ export async function POST(req: NextRequest) {
     convoId = newConvo.id
   }
 
-  // ── Load modality brief (after switch resolves — activeModality is final) ─
-  // The ModalityBrief table may not exist yet in the live DB, so always catch.
-  const modalityBriefRecord = await db.modalityBrief
-    .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
-    .catch(() => null) as { content: string } | null
-  const modalityBrief = modalityBriefRecord?.content ?? null
+  // ── Load modality brief + identity (after switch resolves — activeModality is final) ─
+  // Both come from the context cache (per-modality, same TTL as the bundle).
+  const modalityBrief = await getModalityBrief(profile.id, activeModality)
 
   // Per-modality identity (own self-portrait + slice of the user). May not exist
   // yet — buildSystemPrompt falls back to the persona seed when null.
-  const modalityIdentity = await prisma.modalityIdentity
-    .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
-    .catch(() => null)
+  const modalityIdentity = await getModalityIdentity(profile.id, activeModality)
+
+  // Outer life (FLAGGED) — the Showrunner-authored ledger of this self's life
+  // outside work. Table may not exist; always catch. Null unless OUTER_LIFE_ENABLED.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any
+  const outerLifeLedger = outerLifeEnabled()
+    ? await db.outerLife
+        .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
+        .then((r: { ledger: string | null } | null) => r?.ledger ?? null)
+        .catch(() => null)
+    : null
 
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
     profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief, false,
-    modalityBrief, projects, pendingEvents, modalityIdentity
+    modalityBrief, projects, pendingEvents, modalityIdentity, outerLifeLedger
   )
 
   const currentModality = getModality(activeModality)
@@ -409,13 +374,11 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // +2 for the user message + assistant response just saved (or +1 for silent).
         const newMsgCount = existingMessages.length + (!isSilentTrigger && message?.trim() ? 2 : 1)
         if (newMsgCount >= 20 && newMsgCount % 20 === 0) {
-          const midBriefRecord = await db.modalityBrief
-            .findUnique({ where: { profileId_modalityId: { profileId: profile!.id, modalityId: activeModality } } })
-            .catch(() => null) as { content: string } | null
+          const midBrief = await getModalityBrief(profile!.id, activeModality)
           const midCloseSystem = buildSystemPrompt(
             profile!, memories, tasks, notes, clients,
             scheduledMessages, emailCalendarSummary, false,
-            activeModality, null, false, midBriefRecord?.content ?? null, projects, pendingEvents, modalityIdentity
+            activeModality, null, false, midBrief, projects, pendingEvents, modalityIdentity
           )
           const midCtx: ToolContext = {
             profileId: profile!.id,

@@ -53,6 +53,48 @@ function getSpeechRecognizer(): SpeechRecognizerCtor | undefined {
   return w.SpeechRecognition || w.webkitSpeechRecognition
 }
 
+// ─── Streaming-speech helpers ────────────────────────────────────────────────
+
+// The text we're willing to speak from the raw stream so far. The chat endpoint
+// streams RAW deltas (including the inline <artifact> block and a few legacy
+// control tags), so we never feed those to TTS: hard-stop at an <artifact> tag
+// and strip stray markers.
+function speakablePrefix(raw: string): string {
+  const a = raw.search(/<artifact\b/i)
+  return a >= 0 ? raw.slice(0, a) : raw
+}
+
+// Defensive per-sentence cleanup — strips any marker that slipped through.
+function stripMarkers(s: string): string {
+  return s
+    .replace(/<<INTAKE_COMPLETE>>/g, '')
+    .replace(/<\/?(?:complete_session|shift_complete|switch_modality|run_subroutine|artifact)\b[^>]*>/gi, '')
+    .trim()
+}
+
+// Pull complete sentences off the front of a buffer, leaving the trailing
+// (still-incomplete) fragment. Splits on whitespace that follows . ! ? …
+function takeSentences(buf: string): { sentences: string[]; rest: string } {
+  const parts = buf.split(/(?<=[.!?…])\s+/)
+  const rest = parts.pop() ?? ''
+  return { sentences: parts, rest }
+}
+
+// Append one chunk to a MediaSource SourceBuffer, resolving when it's accepted.
+function appendChunk(sb: SourceBuffer, chunk: Uint8Array): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      sb.removeEventListener('updateend', ok)
+      sb.removeEventListener('error', err)
+    }
+    const ok = () => { cleanup(); resolve() }
+    const err = () => { cleanup(); reject(new Error('appendBuffer error')) }
+    sb.addEventListener('updateend', ok)
+    sb.addEventListener('error', err)
+    try { sb.appendBuffer(chunk as BufferSource) } catch (e) { cleanup(); reject(e) }
+  })
+}
+
 export default function CallMode({
   conversationId,
   onConversationId,
@@ -75,14 +117,25 @@ export default function CallMode({
   const audioRef            = useRef<HTMLAudioElement | null>(null)
   const activeRef           = useRef(true)         // false when call ends
   const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const interruptedRef      = useRef(false)         // cancellation signal for speak()
+  const interruptedRef      = useRef(false)         // cancellation signal for the speech player
+
+  // ── Streaming-speech state ──
+  // Penny's reply is spoken sentence-by-sentence as it streams, so audio starts
+  // after the FIRST sentence instead of waiting for the whole response.
+  const rawRef             = useRef('')             // full raw text received this turn
+  const speakBufRef        = useRef('')             // speakable text awaiting a sentence boundary
+  const flushedLenRef      = useRef(0)              // chars of speakable text already buffered
+  const speechQueueRef     = useRef<string[]>([])   // sentences queued for TTS + playback
+  const drainingRef        = useRef(false)          // is the playback loop running
+  const streamDoneRef      = useRef(false)          // chat stream finished — no more sentences coming
+  const artifactSeenRef    = useRef(false)          // hit an <artifact> block — stop speaking
+  const chatAbortRef       = useRef<AbortController | null>(null)
 
   // Refs that keep the latest closures available inside long-lived callbacks.
   const conversationIdRef  = useRef(conversationId)
   const activeModalityRef  = useRef<string>(activeModality)
   const handleSendRef      = useRef<(text: string) => void>(() => {})
   const startListeningRef  = useRef<() => void>(() => {})
-  const speakRef           = useRef<(text: string) => Promise<void>>(async () => {})
 
   useEffect(() => { callStateRef.current = callState }, [callState])
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
@@ -170,59 +223,14 @@ export default function CallMode({
   }, [])
 
   // ── Interrupt ──────────────────────────────────────────────────────────────
-  // Tap the avatar or the Interrupt button to stop Penny mid-sentence.
-  // speak() has an onpause handler that resolves its promise naturally.
+  // Tap the avatar or the Interrupt button to stop Penny mid-sentence: cancel the
+  // in-flight reply, drop the queued sentences, stop the current clip, and listen.
   const handleInterrupt = useCallback(() => {
     if (callStateRef.current !== 'speaking') return
     interruptedRef.current = true
-    audioRef.current?.pause()   // → onpause fires → speak()'s promise resolves
-    // If still fetching TTS (audioRef null), interruptedRef guards the flow
-  }, [])
-
-  // ── Response → audio ───────────────────────────────────────────────────────
-  const speak = useCallback(async (text: string) => {
-    if (!activeRef.current) return
-    interruptedRef.current = false
-    setCallState('speaking')
-
-    try {
-      const res = await fetch('/api/speak', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text, modality: activeModalityRef.current }),
-      })
-      if (!res.ok) throw new Error('TTS failed')
-
-      // Guard: was interrupt() called while we were fetching?
-      if (interruptedRef.current) throw new Error('interrupted')
-
-      const blob = await res.blob()
-      const url  = URL.createObjectURL(blob)
-      const audio = new Audio(url)
-      audioRef.current = audio
-
-      // Guard again after setting audioRef (tiny race window)
-      if (interruptedRef.current) {
-        URL.revokeObjectURL(url)
-        throw new Error('interrupted')
-      }
-
-      await new Promise<void>((resolve) => {
-        audio.onended = () => { URL.revokeObjectURL(url); resolve() }
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve() }
-        // Only resolve on pause if it was a deliberate interrupt — browsers can fire
-        // pause transiently during buffering/media-session suspension, which would
-        // otherwise prematurely end speech and snap back to listening.
-        audio.onpause = () => { if (interruptedRef.current) { URL.revokeObjectURL(url); resolve() } }
-        audio.play().catch(() => resolve())
-      })
-    } catch (err) {
-      if ((err as Error).message !== 'interrupted') {
-        console.error('[call] speak error:', err)
-      }
-    }
-
-    // Whether we finished naturally or were interrupted, restart listening
+    speechQueueRef.current = []
+    chatAbortRef.current?.abort()       // stop the chat stream — no more sentences
+    audioRef.current?.pause()           // current clip resolves via its onpause
     if (activeRef.current) {
       setPennyText('')
       setCallState('listening')
@@ -230,18 +238,170 @@ export default function CallMode({
     }
   }, [])
 
-  // ── Text → Penny response ──────────────────────────────────────────────────
+  // ── Speech finish ────────────────────────────────────────────────────────────
+  // Return to listening once the stream is done AND every queued sentence has
+  // been spoken. Called both when the player drains and when the stream ends, so
+  // whichever finishes last triggers it.
+  const maybeFinish = useCallback(() => {
+    if (!activeRef.current || interruptedRef.current) return
+    if (drainingRef.current) return
+    if (speechQueueRef.current.length > 0) return
+    if (!streamDoneRef.current) return
+    setPennyText('')
+    setCallState('listening')
+    startListeningRef.current()
+  }, [])
+
+  // ── Play one TTS clip, streaming audio as it arrives ──────────────────────────
+  const playResponse = useCallback((res: Response): Promise<void> => {
+    const canStream =
+      typeof MediaSource !== 'undefined' &&
+      MediaSource.isTypeSupported('audio/mpeg') &&
+      !!res.body
+
+    // Fallback: buffer the whole (short) clip, then play.
+    const playBlob = async () => {
+      try {
+        const blob = await res.blob()
+        if (interruptedRef.current || !activeRef.current) return
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audioRef.current = audio
+        await new Promise<void>((resolve) => {
+          audio.onended = () => { URL.revokeObjectURL(url); resolve() }
+          audio.onerror = () => { URL.revokeObjectURL(url); resolve() }
+          audio.onpause = () => { if (interruptedRef.current) { URL.revokeObjectURL(url); resolve() } }
+          audio.play().catch(() => resolve())
+        })
+      } catch { /* skip this clip */ }
+    }
+
+    if (!canStream) return playBlob()
+
+    // Stream via MediaSource: start playing as the first bytes land.
+    return new Promise<void>((resolve) => {
+      const ms = new MediaSource()
+      const audio = new Audio()
+      audioRef.current = audio
+      const objUrl = URL.createObjectURL(ms)
+      audio.src = objUrl
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        try { URL.revokeObjectURL(objUrl) } catch { /* noop */ }
+        resolve()
+      }
+      audio.onended = finish
+      audio.onerror = finish
+      // Browsers fire pause transiently while buffering; only finish on a real interrupt.
+      audio.onpause = () => { if (interruptedRef.current) finish() }
+
+      ms.addEventListener('sourceopen', () => {
+        let sb: SourceBuffer
+        try { sb = ms.addSourceBuffer('audio/mpeg') } catch { finish(); return }
+        const reader = res.body!.getReader()
+        ;(async () => {
+          try {
+            while (true) {
+              if (interruptedRef.current || !activeRef.current) break
+              const { done, value } = await reader.read()
+              if (done) break
+              await appendChunk(sb, value)
+              if (audio.paused && !interruptedRef.current) audio.play().catch(() => {})
+            }
+          } catch {
+            /* append/codec error — fall through to endOfStream */
+          } finally {
+            try { if (ms.readyState === 'open') ms.endOfStream() } catch { /* noop */ }
+            if (interruptedRef.current || !activeRef.current) finish()
+            else if (audio.paused) audio.play().catch(() => finish())
+          }
+        })()
+      })
+    })
+  }, [])
+
+  // ── Fetch + play one sentence ─────────────────────────────────────────────────
+  const playOne = useCallback(async (text: string): Promise<void> => {
+    if (interruptedRef.current || !activeRef.current) return
+    let res: Response
+    try {
+      res = await fetch('/api/speak', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text, modality: activeModalityRef.current }),
+      })
+    } catch { return }
+    if (!res.ok || interruptedRef.current || !activeRef.current) return
+    await playResponse(res)
+  }, [playResponse])
+
+  // ── Playback loop: speak queued sentences one after another ───────────────────
+  const drainQueue = useCallback(async () => {
+    if (drainingRef.current) return       // already running — new sentences just queue
+    drainingRef.current = true
+    try {
+      while (speechQueueRef.current.length > 0) {
+        if (interruptedRef.current || !activeRef.current) break
+        const sentence = speechQueueRef.current.shift()!
+        if (callStateRef.current !== 'speaking') setCallState('speaking')
+        await playOne(sentence)
+      }
+    } finally {
+      drainingRef.current = false
+      maybeFinish()
+    }
+  }, [playOne, maybeFinish])
+
+  const enqueueSentence = useCallback((s: string) => {
+    const clean = stripMarkers(s)
+    if (!clean) return
+    speechQueueRef.current.push(clean)
+    void drainQueue()
+  }, [drainQueue])
+
+  // ── Text → Penny response (streamed, spoken sentence-by-sentence) ─────────────
   const handleSend = useCallback(async (text: string) => {
     if (!activeRef.current) return
     stopListening()
     setCallState('thinking')
     onMessage('user', text)
 
+    // Reset per-turn streaming-speech state
+    interruptedRef.current  = false
+    rawRef.current          = ''
+    speakBufRef.current     = ''
+    flushedLenRef.current   = 0
+    speechQueueRef.current  = []
+    drainingRef.current     = false
+    streamDoneRef.current   = false
+    artifactSeenRef.current = false
+
+    // Feed a raw text delta: extend the buffer, flush any complete sentences to TTS.
+    const feed = (delta: string) => {
+      rawRef.current += delta
+      if (artifactSeenRef.current) return
+      if (/<artifact\b/i.test(rawRef.current)) artifactSeenRef.current = true
+      const speakable = speakablePrefix(rawRef.current)
+      if (speakable.length <= flushedLenRef.current) return
+      speakBufRef.current += speakable.slice(flushedLenRef.current)
+      flushedLenRef.current = speakable.length
+      const { sentences, rest } = takeSentences(speakBufRef.current)
+      speakBufRef.current = rest
+      for (const s of sentences) enqueueSentence(s)
+      setPennyText(speakablePrefix(rawRef.current).trim())
+    }
+
+    const ac = new AbortController()
+    chatAbortRef.current = ac
+
     try {
       const res = await fetch('/api/chat', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ message: text, conversationId: conversationIdRef.current, isVoice: true }),
+        signal:  ac.signal,
       })
       if (!res.body) throw new Error('No response')
 
@@ -256,7 +416,7 @@ export default function CallMode({
           if (!line.startsWith('data: ')) continue
           try {
             const data = JSON.parse(line.slice(6))
-            if (data.text) fullText += data.text
+            if (data.text) { fullText += data.text; feed(data.text) }
             if (data.done) {
               if (data.conversationId) {
                 conversationIdRef.current = data.conversationId
@@ -272,11 +432,24 @@ export default function CallMode({
               const clean = data.cleanText ?? fullText
               onMessage('assistant', clean)
               setPennyText(clean)
-              await speakRef.current(clean)
+              // Speak whatever speakable text is left as a final sentence.
+              if (!interruptedRef.current) {
+                const speakable = speakablePrefix(rawRef.current)
+                if (speakable.length > flushedLenRef.current) {
+                  speakBufRef.current += speakable.slice(flushedLenRef.current)
+                  flushedLenRef.current = speakable.length
+                }
+                const tail = speakBufRef.current.trim()
+                speakBufRef.current = ''
+                if (tail) enqueueSentence(tail)
+              }
+              streamDoneRef.current = true
+              maybeFinish()       // in case nothing was queued (drain already idle)
             }
             if (data.error) {
               console.error('[call] server error:', data.error)
-              if (activeRef.current) {
+              streamDoneRef.current = true
+              if (activeRef.current && !interruptedRef.current) {
                 setCallState('listening')
                 startListeningRef.current()
               }
@@ -284,19 +457,29 @@ export default function CallMode({
           } catch { /* skip */ }
         }
       }
+
+      // Safety net: stream closed without a done/error event — don't hang in
+      // "thinking". Mark done so the player (or this) returns us to listening.
+      if (!streamDoneRef.current && !interruptedRef.current) {
+        streamDoneRef.current = true
+        maybeFinish()
+      }
     } catch (err) {
+      if ((err as Error).name === 'AbortError') return   // interrupted — already listening
       console.error('[call] chat error:', err)
-      setCallState('listening')
-      startListeningRef.current()
+      streamDoneRef.current = true
+      if (activeRef.current && !interruptedRef.current) {
+        setCallState('listening')
+        startListeningRef.current()
+      }
     }
-  }, [stopListening, onConversationId, onMessage, onModality])
+  }, [stopListening, onConversationId, onMessage, onModality, enqueueSentence, maybeFinish])
 
   // Keep refs pointed at the latest function instances
   useEffect(() => {
     handleSendRef.current     = handleSend
     startListeningRef.current = startListening
-    speakRef.current          = speak
-  }, [handleSend, startListening, speak])
+  }, [handleSend, startListening])
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -304,7 +487,10 @@ export default function CallMode({
     startListening()
     return () => {
       activeRef.current = false
+      interruptedRef.current = true
+      speechQueueRef.current = []
       stopListening()
+      chatAbortRef.current?.abort()
       audioRef.current?.pause()
     }
   }, [startListening, stopListening])
@@ -312,7 +498,10 @@ export default function CallMode({
   const handleClose = () => {
     if (pendingSendTimerRef.current) clearTimeout(pendingSendTimerRef.current)
     activeRef.current = false
+    interruptedRef.current = true
+    speechQueueRef.current = []
     stopListening()
+    chatAbortRef.current?.abort()
     audioRef.current?.pause()
     onClose()
   }
