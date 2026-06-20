@@ -3,27 +3,26 @@ healthcheckPath = "/api/health"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
-# ─── Cron job setup ───────────────────────────────────────────────────────────
+# ─── Cron jobs ──────────────────────────────────────────────────────────────
 #
-# Railway doesn't configure crons in this file — set them up in the Railway
-# dashboard: project > New Service > Cron.
+# Crons are NOT run by Railway. They live in GitHub Actions, in
+# .github/workflows/cron-*.yml — one workflow per endpoint:
 #
-# You need TWO cron services:
+#   cron-dispatch.yml          every 5 min   POST /api/cron/dispatch
+#   cron-nightly-hygiene.yml   4 AM UTC      POST /api/cron/nightly-hygiene
+#   cron-weekly-reports.yml    Sun 10 PM UTC POST /api/cron/weekly-reports
+#   cron-showrunner.yml        Mon 8 AM UTC  POST /api/cron/showrunner
 #
-# 1. NIGHTLY HYGIENE (runs every night for dirty modalities)
-#    Schedule:  0 4 * * *           (4 AM UTC = midnight Eastern)
-#    Command:   curl -s -X POST $APP_URL/api/cron/nightly-hygiene \
-#                    -H "Authorization: Bearer $CRON_SECRET"
+# Why moved off Railway: the old "cron service runs curl" setup failed silently
+# because `curl` without --fail treats a 401/500 as success. The Actions
+# workflows use `curl --fail-with-body`, so an auth or server error makes the run
+# go red and visible. They also have a manual "Run workflow" button for testing.
 #
-# 2. WEEKLY REPORTS (Sunday night — domain assessments + Penny synthesis)
-#    Schedule:  0 22 * * 0          (10 PM UTC Sunday = 6 PM Eastern)
-#    Command:   curl -s -X POST $APP_URL/api/cron/weekly-reports \
-#                    -H "Authorization: Bearer $CRON_SECRET"
-#
-# Environment variables to add to BOTH cron services:
-#   APP_URL      = https://your-penny-app.railway.app
+# Two GitHub repo secrets drive them (Settings > Secrets and variables > Actions):
+#   APP_URL      = https://your-penny-app.up.railway.app   (no trailing slash)
 #   CRON_SECRET  = (generate once: openssl rand -hex 32)
 #
-# Add CRON_SECRET to your main app service too — endpoints check it.
-# APP_URL is only needed by the cron services, not the main app.
+# CRON_SECRET must ALSO be set on this Railway app service — every cron endpoint
+# rejects the request with 401 unless the bearer token matches. APP_URL lives
+# only in GitHub.
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,35 @@
+# Weekly reporting pipeline: per-domain assessments + Penny's synthesis brief.
+# Hits POST /api/cron/weekly-reports once a week.
+#
+# Requires two repo secrets (Settings > Secrets and variables > Actions):
+#   APP_URL      = https://your-penny-app.up.railway.app   (no trailing slash)
+#   CRON_SECRET  = the exact same value set on the Railway app service
+
+name: cron · weekly reports (Sun 10pm UTC)
+
+on:
+  schedule:
+    # 10 PM UTC Sunday = 6 PM Eastern.
+    - cron: "0 22 * * 0"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+concurrency:
+  group: cron-weekly-reports
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/weekly-reports
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::APP_URL and/or CRON_SECRET repo secret is not set."
+            exit 1
+          fi
+          curl --fail-with-body -sS --retry 2 --retry-delay 10 --max-time 330 \
+            -X POST "${APP_URL%/}/api/cron/weekly-reports" \
+            -H "Authorization: Bearer ${CRON_SECRET}"

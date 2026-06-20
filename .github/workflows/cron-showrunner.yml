@@ -1,0 +1,40 @@
+# Showrunner: advances the modalities' off-screen lives one beat.
+# Hits POST /api/cron/showrunner once a week (Monday morning).
+#
+# NOTE: this endpoint is dormant unless OUTER_LIFE_ENABLED=true on the app.
+# When the flag is off it returns {ok:false, disabled:true} with a 200 — so this
+# workflow will pass harmlessly until you choose to enable the feature.
+#
+# Requires two repo secrets (Settings > Secrets and variables > Actions):
+#   APP_URL      = https://your-penny-app.up.railway.app   (no trailing slash)
+#   CRON_SECRET  = the exact same value set on the Railway app service
+
+name: cron · showrunner (Mon 8am UTC)
+
+on:
+  schedule:
+    # 8 AM UTC Monday — so a fresh "weekend just happened" beat is ready early
+    # in the week.
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+concurrency:
+  group: cron-showrunner
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/showrunner
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::APP_URL and/or CRON_SECRET repo secret is not set."
+            exit 1
+          fi
+          curl --fail-with-body -sS --retry 2 --retry-delay 10 --max-time 330 \
+            -X POST "${APP_URL%/}/api/cron/showrunner" \
+            -H "Authorization: Bearer ${CRON_SECRET}"

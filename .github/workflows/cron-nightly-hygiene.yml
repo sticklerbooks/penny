@@ -1,0 +1,35 @@
+# Nightly domain-hygiene pass for any modality that was active since its last run.
+# Hits POST /api/cron/nightly-hygiene once a night.
+#
+# Requires two repo secrets (Settings > Secrets and variables > Actions):
+#   APP_URL      = https://your-penny-app.up.railway.app   (no trailing slash)
+#   CRON_SECRET  = the exact same value set on the Railway app service
+
+name: cron · nightly hygiene (4am UTC)
+
+on:
+  schedule:
+    # 4 AM UTC = midnight Eastern.
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+concurrency:
+  group: cron-nightly-hygiene
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/nightly-hygiene
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::APP_URL and/or CRON_SECRET repo secret is not set."
+            exit 1
+          fi
+          curl --fail-with-body -sS --retry 2 --retry-delay 10 --max-time 330 \
+            -X POST "${APP_URL%/}/api/cron/nightly-hygiene" \
+            -H "Authorization: Bearer ${CRON_SECRET}"

@@ -1,0 +1,42 @@
+# Fires Penny's dispatch loop: due scheduled messages + self-scheduled check-ins.
+# Hits POST /api/cron/dispatch on a short cadence.
+#
+# This replaces the old Railway "cron service + curl" setup, which failed
+# silently (curl without --fail treated a 401 as success). Here, an auth or
+# server error makes the run go RED in the Actions tab so you can actually see it.
+#
+# Requires two repo secrets (Settings > Secrets and variables > Actions):
+#   APP_URL      = https://your-penny-app.up.railway.app   (no trailing slash)
+#   CRON_SECRET  = the exact same value set on the Railway app service
+
+name: cron · dispatch (every 5 min)
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub may delay scheduled runs under load — that's
+    # expected and fine for this best-effort check-in loop.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # adds a manual "Run workflow" button for testing
+
+# If a run is still going when the next one fires, skip the new one rather
+# than stacking them up.
+concurrency:
+  group: cron-dispatch
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/dispatch
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::APP_URL and/or CRON_SECRET repo secret is not set."
+            exit 1
+          fi
+          curl --fail-with-body -sS --retry 2 --retry-delay 5 --max-time 150 \
+            -X POST "${APP_URL%/}/api/cron/dispatch" \
+            -H "Authorization: Bearer ${CRON_SECRET}"
