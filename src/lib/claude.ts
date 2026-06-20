@@ -3,6 +3,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import type { Profile, Memory, Task, Note, Client, ScheduledMessage, Project, PendingCalendarEvent } from '../generated/prisma/client'
 import { Modality, getModality } from './modalities'
+import { renderOuterLifeSection, SHOWRUNNER_TARGET } from './outer-life'
 
 // Load a prose prompt template (.md). The PA has her own; an `independent` self
 // (Eve) has her own; every other submodality shares modality.md, differentiated
@@ -85,7 +86,11 @@ export function buildSystemPrompt(
   modalityBrief: string | null = null,
   projects: Project[] = [],
   pendingEvents: PendingCalendarEvent[] = [],
-  identity: ModalityIdentityLite | null = null
+  identity: ModalityIdentityLite | null = null,
+  // FLAGGED outer-life ledger — the Showrunner-authored "recent life" note. Passed
+  // in only when OUTER_LIFE_ENABLED; null/empty for everyone else, so the prompt is
+  // unchanged unless the feature is on AND this self has been seeded.
+  outerLife: string | null = null
 ): string {
   // Unused-but-reserved params kept for call-site compatibility while the prompt
   // layout is migrating to the .md templates: memories, emailCalendarSummary,
@@ -115,6 +120,8 @@ export function buildSystemPrompt(
   // Notes: PA sees all Open notes; submodalities see their own + ones aimed at them.
   const activeNotes = notes.filter((n: Note) => {
     if (n.resolution !== 'Open') return false
+    // Backstage notes a self leaves for the Showrunner are never shown in chat.
+    if (n.modalityTarget === SHOWRUNNER_TARGET) return false
     if (isPA) return true
     return n.source === modalityId || n.modalityTarget === modalityId
   })
@@ -283,9 +290,12 @@ This is the most important conversation you will ever have with ${userName}. You
 Use your tools as you go — every commitment becomes a task; every durable fact becomes a memory or goes into the identity documents. When you genuinely have a full, rich understanding, end your message with exactly this on its own line: <<INTAKE_COMPLETE>>`
     : ''
 
+  // Outer life — Showrunner-authored, capped, and only present when the flag is on.
+  const outerLifeSection = renderOuterLifeSection(outerLife, userName)
+
   // ── Bundle 1: identity docs + brief ────────────────────────────────────────
   const identityAndBrief = `🪞 YOUR CORE IDENTITY — who you are, in your own evolving words:
-${aboutSelfSection}
+${aboutSelfSection}${outerLifeSection}
 
 🧑 ${userName.toUpperCase()}'S CORE IDENTITY — the shared picture of him${isPA ? ' (yours to keep current)' : ''}:
 ${globalUserSection}${facetSection}
