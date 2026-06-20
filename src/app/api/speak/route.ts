@@ -2,6 +2,7 @@
 // Streams audio/mpeg back to the client.
 
 import { NextRequest } from 'next/server'
+import { getModality } from '@/lib/modalities'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,26 +25,12 @@ export async function POST(req: NextRequest) {
 
   const apiKey = process.env.ELEVENLABS_API_KEY
 
-  // Per-modality voice IDs — set these env vars in Railway to give each
-  // modality her own voice. Falls back to ELEVENLABS_VOICE_ID for any
-  // modality that doesn't have her own var set.
-  //   ELEVENLABS_VOICE_ID     — Penny (PA), default fallback
-  //   MARGOT_VOICE_ID         — Bookkeeping Secretary
-  //   JUNE_VOICE_ID           — Household Manager
-  //   IRIS_VOICE_ID           — Creative Partner
-  //   SAGE_VOICE_ID           — Friend / Life Coach
-  //   VERA_VOICE_ID           — Political Ally
-  //   LILA_VOICE_ID           — Private Companion
-  const voiceEnvVarMap: Record<string, string> = {
-    pa:          'ELEVENLABS_VOICE_ID',
-    bookkeeping: 'MARGOT_VOICE_ID',
-    household:   'JUNE_VOICE_ID',
-    creative:    'IRIS_VOICE_ID',
-    friend:      'SAGE_VOICE_ID',
-    political:   'VERA_VOICE_ID',
-    lila:        'LILA_VOICE_ID',
-  }
-  const envVar = voiceEnvVarMap[modality] ?? 'ELEVENLABS_VOICE_ID'
+  // Per-modality voice IDs — set these env vars in Railway to give each modality
+  // her own voice. Sourced from Modality.voiceEnvVar in the registry (the single
+  // source of truth — see src/lib/modalities.ts) so a new modality just works as
+  // soon as her env var is set, with no separate map to keep in sync here.
+  // Falls back to ELEVENLABS_VOICE_ID (Penny) if her var isn't set.
+  const envVar = getModality(modality).voiceEnvVar ?? 'ELEVENLABS_VOICE_ID'
   const voiceId = process.env[envVar] || process.env.ELEVENLABS_VOICE_ID
   if (!apiKey || !voiceId) {
     return new Response('ElevenLabs not configured', { status: 503 })
