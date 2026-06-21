@@ -9,8 +9,9 @@
 //   • storyline— an append-only log of the life events the Showrunner has authored.
 // bible + storyline never touch a modality's context; only the Showrunner reads them.
 //
-// FLAGGED: the whole system is dormant unless OUTER_LIFE_ENABLED=true. Even then it
-// stays inert until the OuterLife table exists and the Showrunner has run at least once.
+// Launched and live by default; OUTER_LIFE_ENABLED=false is the kill switch. Even
+// when on, it stays inert until the OuterLife table exists and the Showrunner has
+// run at least once (no ledger -> nothing injected).
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -24,7 +25,9 @@ export const SHOWRUNNER_TARGET = 'showrunner'
 export const OUTER_LIFE_LEDGER_MAX = 1200
 
 export function outerLifeEnabled(): boolean {
-  return process.env.OUTER_LIFE_ENABLED === 'true'
+  // Live by default now that the feature is launched. Retained as a kill switch:
+  // set OUTER_LIFE_ENABLED=false to make the whole system inert again.
+  return process.env.OUTER_LIFE_ENABLED !== 'false'
 }
 
 // The block spliced into a self's identity context, right after her core identity.
