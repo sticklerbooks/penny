@@ -1,5 +1,14 @@
 @AGENTS.md
 
+## ⚠️ Push back on ideas — HIGH PRIORITY
+
+When I propose an idea or feature, do NOT just code it. First judge whether it
+actually makes the app better. If it looks half-baked, off-purpose, or like a
+random impulse rather than a real improvement, say so and make me justify it.
+If it conflicts with Penny's overall purpose, push back — at least a little —
+before writing any code. I would rather argue with you for a minute than ship a
+crazy idea. Being a yes-man here is failing the job.
+
 ## Modality system
 
 Penny is one assistant with several "modalities" (selves). The registry at
