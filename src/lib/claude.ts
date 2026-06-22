@@ -47,9 +47,12 @@ export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haik
 const TIMESTAMP_MARKER = '📅 Today is '
 export function cachedSystem(prompt: string): Anthropic.TextBlockParam[] {
   const i = prompt.lastIndexOf(TIMESTAMP_MARKER)
+  // ttl: '1h' keeps each modality's large system prefix warm for an hour instead
+  // of the default 5 minutes — so coming back to a self (or switching away and
+  // back) usually hits a warm cache instead of reprocessing the whole prompt.
   if (i <= 0) return [{ type: 'text', text: prompt }]
   return [
-    { type: 'text', text: prompt.slice(0, i), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: prompt.slice(0, i), cache_control: { type: 'ephemeral', ttl: '1h' } },
     { type: 'text', text: prompt.slice(i) },
   ]
 }
@@ -95,7 +98,10 @@ export function buildSystemPrompt(
   // Unused-but-reserved params kept for call-site compatibility while the prompt
   // layout is migrating to the .md templates: memories, emailCalendarSummary,
   // weeklyBrief, isAltMode. See the migration notes.
-  void memories; void emailCalendarSummary; void weeklyBrief; void isAltMode
+  // memories is intentionally NOT rendered: the prose redesign moved recall to the
+  // on-demand search_memory / search_deep_memory tools rather than dumping rows into
+  // every turn. emailCalendarSummary IS rendered now, but PA-only (see below).
+  void memories; void isAltMode
 
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
@@ -278,6 +284,19 @@ export function buildSystemPrompt(
     ? modalityBrief
     : '  (none written yet — write one with rewrite_brief after a substantive session)'
 
+  // ── Weekly brief (PA only) ─────────────────────────────────────────────────
+  // The Sunday-night reporting pipeline (cron/weekly-reports) has each self file a
+  // domain assessment, then PA synthesises them into this private brief. It's hers
+  // alone — render it only for the anchor so she can actually act on the picture
+  // she built. Without this it's written to the DB and never read back.
+  const weeklyBriefSection =
+    isPA && weeklyBrief && weeklyBrief.briefText?.trim()
+      ? `\n\n📊 YOUR WEEKLY BRIEF${weeklyBrief.flagged ? ' ⚠️ (flagged — something needs your attention)' : ''} — your private synthesis of last week's domain reports (week of ${new Date(weeklyBrief.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: tz })}):
+${weeklyBrief.briefText.trim()}
+
+  ↳ This is your own running read on how ${userName} is doing across every domain. Don't recite it unprompted, but let it inform you — and lean on it when he asks how he's doing or when it bears on the conversation.`
+      : ''
+
   // ── Intake (first-conversation flow) ───────────────────────────────────────
   const intakeSection = isIntake
     ? `
@@ -301,7 +320,7 @@ ${aboutSelfSection}${outerLifeSection}
 ${globalUserSection}${facetSection}
 
 📋 YOUR BRIEF — your most recent working thoughts on your domain:
-${briefText}`
+${briefText}${weeklyBriefSection}`
 
   // ── Bundle 2: working set ──────────────────────────────────────────────────
   const clientsSection = showClients
@@ -327,6 +346,14 @@ ${briefText}`
     ? `\n\n📱 SCHEDULED NOTIFICATIONS (queued for ${userName}'s phone — cancel_sms to pull one back):\n${smsText}`
     : ''
 
+  // Email/calendar snapshot — PA only. She owns the calendar and is the one who
+  // proactively flags what's coming up; submodalities reach for the on-demand
+  // calendar/email tools on the rare occasion they need them, so they don't carry
+  // (or pay to fetch) this always-on. Falls back to nothing when not configured.
+  const emailCalendarSection = isPA && emailCalendarSummary && emailCalendarSummary.trim()
+    ? `\n\n📨 EMAIL & CALENDAR (recent snapshot — search the live tools for detail):\n${emailCalendarSummary.trim()}`
+    : ''
+
   const workingSet = `📁 PROJECTS:
 ${projectsText}
 
@@ -337,7 +364,7 @@ ${tasksText}
 ${pendingText}
 
 📌 NOTES:
-${notesText}${clientsSection}${notificationsSection}`
+${notesText}${clientsSection}${notificationsSection}${emailCalendarSection}`
 
   // ── Ground rules — mechanical guardrails the prose doesn't carry ───────────
   const groundRules = `═══════════════════════════════════════════════════════════════════════

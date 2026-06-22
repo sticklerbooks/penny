@@ -17,6 +17,7 @@ import { runAgenticLoop } from '@/lib/agentic-loop'
 import { closeSessionPrompt } from '@/lib/close-session'
 import { outerLifeEnabled } from '@/lib/outer-life'
 import { getContextBundle, getModalityBrief, getModalityIdentity } from '@/lib/context-cache'
+import { getEmailCalendarSummary } from '@/lib/email-calendar'
 
 export const dynamic = 'force-dynamic'
 
@@ -81,7 +82,7 @@ export async function POST(req: NextRequest) {
   // The heavy profile-scoped fan-out lives in an in-memory cache that any
   // mutating tool invalidates, so this is usually instant and never stale within
   // a conversation. See src/lib/context-cache.ts.
-  const { memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents } =
+  const { memories, tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents } =
     await getContextBundle(profile.id)
 
   const outgoingModality = getModality(outgoingModalityId)
@@ -97,7 +98,7 @@ export async function POST(req: NextRequest) {
 
     const closeSystem = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
-      scheduledMessages, emailCalendarSummary, false, outgoingModalityId, null, false,
+      scheduledMessages, null, false, outgoingModalityId, null, false,
       outgoingBrief, projects, pendingEvents, outgoingIdentity
     )
     const closeCtx: ToolContext = {
@@ -143,11 +144,11 @@ export async function POST(req: NextRequest) {
     existingMessages = []
   } else if (!convoId) {
     const newConvo = await prisma.conversation.create({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: {
         profileId: profile.id,
         type: profile.intakeComplete ? 'daily' : 'intake',
         activeModality,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
     })
     convoId = newConvo.id
@@ -171,6 +172,14 @@ export async function POST(req: NextRequest) {
         .then((r: { ledger: string | null } | null) => r?.ledger ?? null)
         .catch(() => null)
     : null
+
+  // Email/calendar snapshot is PA-only — fetch it just for her (its own 30-min
+  // cache covers repeat turns), so the six submodalities never pay the Google +
+  // Haiku cost for a summary they don't render.
+  const emailCalendarSummary =
+    getModality(activeModality).domain === null
+      ? await getEmailCalendarSummary(profile.id).catch(() => null)
+      : null
 
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
@@ -380,6 +389,8 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             scheduledMessages, emailCalendarSummary, false,
             activeModality, null, false, midBrief, projects, pendingEvents, modalityIdentity
           )
+          // (emailCalendarSummary above is the PA-only value from this turn — null
+          // for submodalities — which is correct for the hygiene sweep too.)
           const midCtx: ToolContext = {
             profileId: profile!.id,
             modalityId: activeModality,

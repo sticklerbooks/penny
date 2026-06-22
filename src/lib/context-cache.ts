@@ -19,7 +19,7 @@
 // state that must always be fresh, and it's a single cheap query.
 
 import { prisma } from './db'
-import { getEmailCalendarSummary } from './email-calendar'
+import type { Memory } from '../generated/prisma/client'
 import type { WeeklyBriefSummary, ModalityIdentityLite } from './claude'
 
 const TTL_MS = 60_000 // backstop; writes invalidate explicitly
@@ -29,13 +29,13 @@ const TTL_MS = 60_000 // backstop; writes invalidate explicitly
 async function fetchBundle(profileId: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
-  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents] =
+  // NOTE: memories are NOT fetched here — they're not rendered into any turn
+  // (recall is on-demand via search_memory / search_deep_memory). The
+  // email/calendar summary is also not here: it's PA-only and fetched in the
+  // chat route just for her (its own 30-min cache covers repeat turns), so the
+  // six submodalities never pay the Google + Haiku cost.
+  const [tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents] =
     await Promise.all([
-      prisma.memory.findMany({
-        where: { profileId, archived: false },
-        orderBy: { importance: 'desc' },
-        take: 80,
-      }),
       prisma.task.findMany({
         where: { profileId, status: { not: 'Complete' } },
       }),
@@ -51,7 +51,6 @@ async function fetchBundle(profileId: string) {
         where: { profileId, sent: false },
         orderBy: { sendAt: 'asc' },
       }),
-      getEmailCalendarSummary(profileId).catch(() => null),
       db.weeklyBrief
         .findFirst({ where: { profileId }, orderBy: { createdAt: 'desc' } })
         .catch(() => null) as Promise<WeeklyBriefSummary | null>,
@@ -65,7 +64,7 @@ async function fetchBundle(profileId: string) {
       }).catch(() => []),
     ])
 
-  return { memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary, weeklyBrief, projects, pendingEvents }
+  return { memories: [] as Memory[], tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents }
 }
 
 export type ContextBundle = Awaited<ReturnType<typeof fetchBundle>>

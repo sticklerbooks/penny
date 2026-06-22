@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import CallMode from './CallMode'
 import { MODALITIES, getModality } from '@/lib/modalities'
+import { playClip, type SpeechHandle } from '@/lib/speak-client'
 
 // ─── Base palette (non-modality colours) ─────────────────────────────────────
 const C = {
@@ -94,10 +95,21 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [showSwitcher, setShowSwitcher]       = useState(false)
   const [isDictating, setIsDictating]         = useState(false)
   const [isMobile, setIsMobile]               = useState(false)
+  // Text-mode TTS: when speakReplies is on, each completed assistant reply (incl.
+  // the first greeting after a switch) is spoken aloud. playingIdx tracks which
+  // bubble is currently being read so its 🔊 button can show a stop state.
+  const [speakReplies, setSpeakReplies]       = useState(false)
+  const [playingIdx, setPlayingIdx]           = useState<number | null>(null)
 
   const messagesEndRef     = useRef<HTMLDivElement>(null)
   const textareaRef        = useRef<HTMLTextAreaElement>(null)
   const hasInitialized     = useRef(false)
+
+  // Speech playback refs
+  const speechRef          = useRef<SpeechHandle | null>(null)
+  const speakRepliesRef    = useRef(false)
+  const lastSpokenRef      = useRef(-1)        // index of the last message we auto-spoke
+  const activeModalityRef  = useRef('pa')
 
   // Dictate mode refs
   const dictateRecogRef    = useRef<DictSpeechRecognizer | null>(null)
@@ -108,6 +120,59 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   // ── Mobile detection ────────────────────────────────────────────────────────
   useEffect(() => {
     setIsMobile(window.matchMedia('(pointer: coarse)').matches)
+  }, [])
+
+  // ── Speak-replies preference (persisted) ─────────────────────────────────────
+  useEffect(() => {
+    const saved = localStorage.getItem('penny-speak-replies') === '1'
+    setSpeakReplies(saved)
+    speakRepliesRef.current = saved
+  }, [])
+  useEffect(() => { speakRepliesRef.current = speakReplies }, [speakReplies])
+  useEffect(() => { activeModalityRef.current = activeModality }, [activeModality])
+
+  // ── Speech playback ──────────────────────────────────────────────────────────
+  const stopSpeaking = useCallback(() => {
+    speechRef.current?.stop()
+    speechRef.current = null
+    setPlayingIdx(null)
+  }, [])
+
+  const speakMessage = useCallback((text: string, idx: number) => {
+    speechRef.current?.stop()
+    if (!text.trim()) { setPlayingIdx(null); return }
+    setPlayingIdx(idx)
+    const handle = playClip(text, activeModalityRef.current)
+    speechRef.current = handle
+    handle.done.then(() => {
+      setPlayingIdx((cur) => (cur === idx ? null : cur))
+    })
+  }, [])
+
+  // Auto-speak a newly-completed assistant reply when the toggle is on. Guarded
+  // by lastSpokenRef so we never replay; reset on switch / fresh load so the
+  // greeting after a switch still gets spoken.
+  useEffect(() => {
+    if (!speakReplies) return
+    const idx = messages.length - 1
+    const last = messages[idx]
+    if (!last || last.role !== 'assistant' || last.streaming) return
+    if (lastSpokenRef.current >= idx) return
+    if (!last.content.trim()) return
+    lastSpokenRef.current = idx
+    speakMessage(last.content, idx)
+  }, [messages, speakReplies, speakMessage])
+
+  // Stop any playback on unmount.
+  useEffect(() => () => { speechRef.current?.stop() }, [])
+
+  // ── Prewarm: prime context + prompt cache so the first turn isn't cold ────────
+  const prewarm = useCallback((modalityId: string) => {
+    fetch('/api/prewarm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modalityId }),
+    }).catch(() => {})
   }, [])
 
   // ── Keep isDictatingRef in sync ─────────────────────────────────────────────
@@ -217,6 +282,11 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     const content = isAutoStart ? '' : text.trim()
     if (!isAutoStart && !switchTo && !content && activateAltMode === undefined) return
     if (isLoading) return
+
+    // A new turn supersedes any reply currently being read aloud.
+    speechRef.current?.stop()
+    speechRef.current = null
+    setPlayingIdx(null)
 
     // Show the user's message bubble (not for auto-start or silent switches)
     if (!isAutoStart && content) {
@@ -331,11 +401,15 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             setMessages(data.messages.map((m: { role: 'user' | 'assistant'; content: string }) => ({
               role: m.role, content: m.content,
             })))
+            // Don't auto-speak the last historical message on load.
+            lastSpokenRef.current = data.messages.length - 1
           }
+          // Warm context + this self's prompt cache for the first real turn.
+          prewarm(data?.activeModality || 'pa')
         })
         .catch(() => {})
     }
-  }, [type, sendMessage])
+  }, [type, sendMessage, prewarm])
 
   // ─── Keyboard handler ──────────────────────────────────────────────────────
   // On desktop (pointer: fine): Enter sends, Shift+Enter = new line.
@@ -410,10 +484,13 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     setShowSwitcher(false)
     if (id === activeModality || isLoading) return
     // Clear messages immediately — fresh context for the new modality
+    stopSpeaking()
+    lastSpokenRef.current = -1   // so the new self's greeting still gets spoken
     setMessages([])
     setActiveModality(id)
+    activeModalityRef.current = id   // speak the greeting in the NEW self's voice
     sendMessage('', false, id)
-  }, [activeModality, isLoading, sendMessage])
+  }, [activeModality, isLoading, sendMessage, stopSpeaking])
 
   const current = getModality(activeModality)
   // Per-modality accent (used for borders, rings, active highlights)
@@ -470,10 +547,37 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             </div>
           </div>
 
+          {/* Speak-replies toggle — read each reply aloud (incl. the first greeting
+              after a switch). For the phone-and-headphones, hands-free case. */}
+          <button
+            onClick={() => {
+              setSpeakReplies(prev => {
+                const next = !prev
+                speakRepliesRef.current = next
+                localStorage.setItem('penny-speak-replies', next ? '1' : '0')
+                if (!next) stopSpeaking()
+                // Turning it ON shouldn't replay the message already on screen.
+                else lastSpokenRef.current = messages.length - 1
+                return next
+              })
+            }}
+            title={speakReplies ? 'Stop reading replies aloud' : 'Read replies aloud'}
+            className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95"
+            style={{
+              background: speakReplies ? accent + '40' : accent + '12',
+              borderColor: speakReplies ? accent : accentBorder,
+              color: speakReplies ? accent : C.textMuted,
+            }}
+          >
+            {speakReplies ? '🔊' : '🔇'}
+          </button>
+
           {/* Alt-mode toggle — only shown when the active modality has an altMode */}
           {type !== 'intake' && current.altMode && (
             <button
               onClick={() => {
+                stopSpeaking()
+                lastSpokenRef.current = -1
                 setMessages([])
                 sendMessage('', false, undefined, !isAltMode)
               }}
@@ -584,6 +688,17 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                       <span style={{ opacity: 0.6 }}>↓</span>
                     </button>
                   )}
+                  {/* Per-message replay — hear this one aloud (or stop it). */}
+                  {isAssistant && msg.content && !msg.streaming && (
+                    <button
+                      onClick={() => playingIdx === i ? stopSpeaking() : speakMessage(msg.content, i)}
+                      title={playingIdx === i ? 'Stop' : 'Read aloud'}
+                      className="mt-2 ml-0.5 text-xs transition-opacity hover:opacity-100"
+                      style={{ color: accent, opacity: playingIdx === i ? 1 : 0.55 }}
+                    >
+                      {playingIdx === i ? '⏹ Stop' : '🔊 Listen'}
+                    </button>
+                  )}
                 </div>
               </div>
             )
@@ -600,7 +715,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
             {/* Call button */}
             <button
-              onClick={() => setInCall(true)}
+              onClick={() => { stopSpeaking(); setInCall(true) }}
               className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
               style={{ background: accent + '20', border: `1px solid ${accentBorder}` }}
               title="Start a voice call with Penny"
