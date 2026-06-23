@@ -521,6 +521,16 @@ export async function executeTool(
         return { content: `Note ${id} marked Ignored.` }
       }
 
+      case 'acknowledge_item_note': {
+        const id = str(args.id)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (prisma as any).itemNote.update({
+          where: { id },
+          data: { acknowledged: true, acknowledgedAt: new Date() },
+        })
+        return { content: `Adam's flag ${id} acknowledged — it will stop appearing in your context.` }
+      }
+
       // ── Communication ─────────────────────────────────────────────────────
 
       case 'search_email': {

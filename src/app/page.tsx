@@ -7,7 +7,7 @@ export default async function HomePage() {
   const profile = await prisma.profile.findFirst()
 
   if (profile?.intakeComplete) {
-    redirect('/chat')
+    redirect('/dashboard')
   } else {
     redirect('/intake')
   }

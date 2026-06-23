@@ -65,6 +65,15 @@ export interface WeeklyBriefSummary {
   flagged: boolean
 }
 
+// Adam's note/flag on a specific item, from the dashboard (lightweight type).
+export interface ItemNoteLite {
+  id: string
+  itemType: string   // 'task' | 'event' | 'project'
+  itemId: string
+  kind: string       // stale | blocked | note (Class A is born acknowledged, never here)
+  body: string | null
+}
+
 // Per-modality identity row (lightweight — avoids importing generated prisma).
 export interface ModalityIdentityLite {
   aboutSelf: string | null
@@ -93,7 +102,10 @@ export function buildSystemPrompt(
   // FLAGGED outer-life ledger — the Showrunner-authored "recent life" note. Passed
   // in only when OUTER_LIFE_ENABLED; null/empty for everyone else, so the prompt is
   // unchanged unless the feature is on AND this self has been seeded.
-  outerLife: string | null = null
+  outerLife: string | null = null,
+  // Adam's open flags on individual items, left from the dashboard. Class B only
+  // (stale/blocked/note) — things he needs this self to act on and acknowledge.
+  itemNotes: ItemNoteLite[] = []
 ): string {
   // Unused-but-reserved params kept for call-site compatibility while the prompt
   // layout is migrating to the .md templates: memories, emailCalendarSummary,
@@ -149,6 +161,26 @@ export function buildSystemPrompt(
     hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz,
   })
 
+  // ── Adam's dashboard flags ─────────────────────────────────────────────────
+  // Class-B notes Adam left on specific items. Rendered inline under the matching
+  // task/project/event with a loud marker so this self acts on them, not re-asks.
+  const flagsByItem = new Map<string, ItemNoteLite[]>()
+  for (const n of itemNotes) {
+    const key = `${n.itemType}:${n.itemId}`
+    const arr = flagsByItem.get(key) ?? []
+    arr.push(n)
+    flagsByItem.set(key, arr)
+  }
+  const KIND_VERB: Record<string, string> = {
+    stale: 'thinks this may be STALE — consider deleting it',
+    blocked: 'says this is BLOCKED',
+    note: 'note',
+  }
+  const renderFlags = (type: string, id: string): string =>
+    (flagsByItem.get(`${type}:${id}`) ?? [])
+      .map((n) => `\n     ⚑ ADAM: ${KIND_VERB[n.kind] ?? n.kind}${n.body ? ` — "${n.body}"` : ''} (acknowledge_item_note id=${n.id} once handled)`)
+      .join('')
+
   // ── Renderers ──────────────────────────────────────────────────────────────
   const tasksText =
     lensTasks.length > 0
@@ -177,7 +209,7 @@ export function buildSystemPrompt(
             const projTag = t.projectId ? ` @project=${t.projectId}` : ''
             const modTag = isPA ? ` [${t.assignedModality}]` : ''
             const taskNotes = t.notes ? `\n     ↳ ${t.notes}` : ''
-            return `  • id=${t.id}${pri}${clientTag}${projTag}${modTag} — ${t.name}${dueStr}${dueFlag}${status}${taskNotes}`
+            return `  • id=${t.id}${pri}${clientTag}${projTag}${modTag} — ${t.name}${dueStr}${dueFlag}${status}${taskNotes}${renderFlags('task', t.id)}`
           })
           .join('\n')
       : '  (nothing tracked yet)'
@@ -190,7 +222,7 @@ export function buildSystemPrompt(
             const bar = `[${progressBar(p.progress)} ${p.progress}/10]`
             const mod = isPA ? ` [${p.assignedModality}]` : ''
             const contingency = p.contingencies ? `\n     ↳ constraint: ${p.contingencies}` : ''
-            return `  • id=${p.id}${mod} ${bar} "${p.name}" — ${p.expectedDuration}${contingency}`
+            return `  • id=${p.id}${mod} ${bar} "${p.name}" — ${p.expectedDuration}${contingency}${renderFlags('project', p.id)}`
           })
           .join('\n')
       : '  (none)'
@@ -202,7 +234,7 @@ export function buildSystemPrompt(
             const when = e.date ? ` ${e.date}${e.startTime ? ` @ ${e.startTime}` : ''}` : ' (timing flexible)'
             const mod = isPA ? ` [${e.assignedModality}]` : ''
             const proj = e.projectId ? ` @project=${e.projectId}` : ''
-            return `  • id=${e.id}${mod}${proj} — "${e.name}" (${e.duration}) p${e.priority}${when}`
+            return `  • id=${e.id}${mod}${proj} — "${e.name}" (${e.duration}) p${e.priority}${when}${renderFlags('event', e.id)}`
           })
           .join('\n')
       : '  (none queued)'
@@ -354,7 +386,25 @@ ${briefText}${weeklyBriefSection}`
     ? `\n\n📨 EMAIL & CALENDAR (recent snapshot — search the live tools for detail):\n${emailCalendarSummary.trim()}`
     : ''
 
-  const workingSet = `📁 PROJECTS:
+  // Banner for Adam's dashboard flags: a count up top + a safety net listing any
+  // flag whose item isn't in the active set below (so it can't go unhandled).
+  const renderedIds = new Set<string>([
+    ...lensTasks.map((t) => `task:${t.id}`),
+    ...lensProjects.map((p) => `project:${p.id}`),
+    ...lensPending.map((e) => `event:${e.id}`),
+  ])
+  const orphanFlags = itemNotes.filter((n) => !renderedIds.has(`${n.itemType}:${n.itemId}`))
+  const flagsBanner = itemNotes.length > 0
+    ? `⚑ ADAM LEFT ${itemNotes.length} FLAG(S) ON YOUR ITEMS from his dashboard — find the ⚑ marks below, act on each, then call acknowledge_item_note. These are his direct instructions; do NOT re-ask him about them.${
+        orphanFlags.length
+          ? `\nFlags on items no longer in your active list:${orphanFlags
+              .map((n) => `\n  ⚑ ${n.kind} on ${n.itemType} ${n.itemId}${n.body ? `: "${n.body}"` : ''} (acknowledge_item_note id=${n.id})`)
+              .join('')}`
+          : ''
+      }\n\n`
+    : ''
+
+  const workingSet = `${flagsBanner}📁 PROJECTS:
 ${projectsText}
 
 ✅ TASKS:
@@ -372,7 +422,8 @@ GROUND RULES
 ═══════════════════════════════════════════════════════════════════════
 Your tools run silently — ${userName} never sees the calls. Use them; don't ask permission to keep your own records.
 Before doing any category of work (calendar, email, drive, projects, tasks, notes, memory…), call load_protocol(which) FIRST and follow it. Never work from memory.
-⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing.`
+⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing.
+⚑ ADAM'S FLAGS — when you see a ⚑ ADAM mark on an item, that is ${userName} speaking directly to you from his dashboard. Act on it (a "stale" flag = consider deleting; "blocked" = reroute or note the blocker; a note = absorb it), then call acknowledge_item_note(id). Treat it as already-true: never ask him whether he did something he's already told you here.`
 
   // ── Assemble from the .md template ─────────────────────────────────────────
   const template = loadPromptTemplate(modality)

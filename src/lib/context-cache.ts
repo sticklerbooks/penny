@@ -34,10 +34,10 @@ async function fetchBundle(profileId: string) {
   // email/calendar summary is also not here: it's PA-only and fetched in the
   // chat route just for her (its own 30-min cache covers repeat turns), so the
   // six submodalities never pay the Google + Haiku cost.
-  const [tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents] =
+  const [tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes] =
     await Promise.all([
       prisma.task.findMany({
-        where: { profileId, status: { not: 'Complete' } },
+        where: { profileId, status: { not: 'Complete' }, archivedAt: null },
       }),
       prisma.note.findMany({
         where: { profileId, resolution: 'Open' },
@@ -59,12 +59,21 @@ async function fetchBundle(profileId: string) {
         orderBy: { updatedAt: 'desc' },
       }).catch(() => []),
       prisma.pendingCalendarEvent.findMany({
-        where: { profileId, scheduled: false },
+        // `scheduled` = on GCal; `completedAt` = it actually happened. Both, plus
+        // archived, drop the event out of context so a past meeting stops nagging.
+        where: { profileId, scheduled: false, completedAt: null, archivedAt: null },
+        orderBy: { createdAt: 'desc' },
+      }).catch(() => []),
+      // Adam's open flags on individual items (Class B: stale/blocked/note). Class A
+      // notes are born acknowledged, so this only ever carries things she must act on.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (prisma as any).itemNote.findMany({
+        where: { profileId, acknowledged: false },
         orderBy: { createdAt: 'desc' },
       }).catch(() => []),
     ])
 
-  return { memories: [] as Memory[], tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents }
+  return { memories: [] as Memory[], tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes }
 }
 
 export type ContextBundle = Awaited<ReturnType<typeof fetchBundle>>

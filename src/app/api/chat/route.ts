@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
   // The heavy profile-scoped fan-out lives in an in-memory cache that any
   // mutating tool invalidates, so this is usually instant and never stale within
   // a conversation. See src/lib/context-cache.ts.
-  const { memories, tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents } =
+  const { memories, tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes } =
     await getContextBundle(profile.id)
 
   const outgoingModality = getModality(outgoingModalityId)
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
         const closeSystem = buildSystemPrompt(
           profile, memories, tasks, notes, clients,
           scheduledMessages, null, false, outgoingModalityId, null, false,
-          outgoingBrief, projects, pendingEvents, outgoingIdentity
+          outgoingBrief, projects, pendingEvents, outgoingIdentity, null, itemNotes
         )
         const closeCtx: ToolContext = {
           profileId: profile.id,
@@ -195,7 +195,7 @@ export async function POST(req: NextRequest) {
     profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief, false,
-    modalityBrief, projects, pendingEvents, modalityIdentity, outerLifeLedger
+    modalityBrief, projects, pendingEvents, modalityIdentity, outerLifeLedger, itemNotes
   )
 
   const currentModality = getModality(activeModality)
@@ -245,7 +245,14 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           modalityId: activeModality,
           domain: currentModality.domain ?? undefined,
         }
-        const tools = getToolsForModality(activeModality)
+        // "Open" (app launch / fresh greeting after a switch) is a silent trigger
+        // with no user message — it should be exactly one DB read (already done
+        // above) → one message to Claude → one response. Withholding tools here
+        // makes that a guarantee, not a hope: with no tools to call, the model
+        // can never produce a tool_use stop reason, so the loop below can't
+        // iterate. Regular conversation still gets the full toolset and its
+        // legitimate multi-round tool use.
+        const tools = isSilentTrigger ? undefined : getToolsForModality(activeModality)
 
         // Stream a single model turn: emit text deltas live, accumulate content
         // blocks (including tool_use input JSON), and report the stop reason.
@@ -396,7 +403,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           const midCloseSystem = buildSystemPrompt(
             profile!, memories, tasks, notes, clients,
             scheduledMessages, emailCalendarSummary, false,
-            activeModality, null, false, midBrief, projects, pendingEvents, modalityIdentity
+            activeModality, null, false, midBrief, projects, pendingEvents, modalityIdentity, null, itemNotes
           )
           // (emailCalendarSummary above is the PA-only value from this turn — null
           // for submodalities — which is correct for the hygiene sweep too.)

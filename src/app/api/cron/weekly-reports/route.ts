@@ -30,7 +30,7 @@ function isAuthorized(req: NextRequest): boolean {
 // ─── Domain assessment prompt ─────────────────────────────────────────────────
 // Sent to each sub-modality as the "user" turn, after building their system prompt.
 // Third-party framing, evidence mandate, no forced balance — per design discussion.
-function domainAssessmentPrompt(modalityRole: string, domain: string): string {
+function domainAssessmentPrompt(modalityRole: string, domain: string, completedBlock: string): string {
   return `WEEKLY DOMAIN ASSESSMENT — REQUEST FROM PENNY
 
 Penny (your Personal Assistant self) is compiling a weekly picture of Adam's life across all domains. She needs honest, accurate data.
@@ -42,7 +42,7 @@ Answer this question:
 In one word or a short phrase, what adjective best describes Adam's engagement with the ${modalityRole} domain this week, measured against his own stated goals and what you would professionally expect from someone in his situation?
 
 Write the adjective on its own line first. Then give 2–3 specific examples from your data: tasks created or avoided, things overdue, patterns you're noticing, dates if you have them. Name actual items — no generalities.
-
+${completedBlock}
 If the data shows strong, genuine engagement this week, say so plainly. If things are genuinely concerning, say that plainly. Do not manufacture balance where none exists. Penny can handle the truth.
 
 Domain being assessed: ${domain}`
@@ -116,6 +116,30 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
 
+  // ── Completed-this-week credit ─────────────────────────────────────────────
+  // Items finished but not yet archived (most via Adam's dashboard "Done"). They're
+  // hidden from each modality's live context, so surface them here so the
+  // assessment CREDITS the work — then archive them below so they stop cluttering.
+  const [completedTasks, completedEvents] = await Promise.all([
+    prisma.task.findMany({
+      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
+    }),
+    prisma.pendingCalendarEvent.findMany({
+      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
+    }),
+  ])
+  const completedByModality = new Map<string, string[]>()
+  for (const t of completedTasks) {
+    const arr = completedByModality.get(t.assignedModality) ?? []
+    arr.push(t.name)
+    completedByModality.set(t.assignedModality, arr)
+  }
+  for (const e of completedEvents) {
+    const arr = completedByModality.get(e.assignedModality) ?? []
+    arr.push(e.name)
+    completedByModality.set(e.assignedModality, arr)
+  }
+
   // ── Domain assessments ─────────────────────────────────────────────────────
   // PA, Lila, and any `independent` self (Eve) are excluded: PA is the synthesiser,
   // Lila is a private companion, and Eve does not report to Penny by design.
@@ -136,7 +160,11 @@ export async function POST(req: NextRequest) {
       scheduledMessages, emailCalendarSummary, false, modality.id, null
     )
 
-    const question = domainAssessmentPrompt(modality.role, modality.domain ?? modality.id)
+    const done = completedByModality.get(modality.id) ?? []
+    const completedBlock = done.length
+      ? `\nCOMPLETED THIS WEEK (Adam marked these done — credit them, do not list them as outstanding): ${done.join('; ')}.\n`
+      : ''
+    const question = domainAssessmentPrompt(modality.role, modality.domain ?? modality.id, completedBlock)
 
     try {
       const response = await getAnthropic().messages.create({
@@ -225,6 +253,22 @@ export async function POST(req: NextRequest) {
 
   console.log(`[weekly-reports] brief complete. flagged=${flagged}`)
 
+  // ── Archive credited completions ───────────────────────────────────────────
+  // Now that the assessment has credited them, stamp archivedAt so they drop out
+  // of the dashboard's default view (done → invisible). Still fully searchable.
+  const archiveAt = new Date()
+  const [taskArch, eventArch] = await Promise.all([
+    prisma.task.updateMany({
+      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
+      data: { archivedAt: archiveAt },
+    }),
+    prisma.pendingCalendarEvent.updateMany({
+      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
+      data: { archivedAt: archiveAt },
+    }),
+  ])
+  console.log(`[weekly-reports] archived ${taskArch.count} tasks + ${eventArch.count} events`)
+
   return NextResponse.json({
     ok: true,
     weekOf: weekOf.toISOString(),
@@ -234,5 +278,6 @@ export async function POST(req: NextRequest) {
       adjective: r.reportText.split('\n').find((l) => l.trim())?.trim() ?? null,
     })),
     flagged,
+    archived: { tasks: taskArch.count, events: eventArch.count },
   })
 }

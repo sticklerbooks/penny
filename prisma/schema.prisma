@@ -63,6 +63,7 @@ model Profile {
   weeklyBriefs         WeeklyBrief[]
   scheduledTasks       ScheduledTask[]
   outerLives           OuterLife[]
+  itemNotes            ItemNote[]
 }
 
 model Client {
@@ -156,6 +157,9 @@ model Task {
   // status: Unstarted | Started | Waiting on Contingency | Mostly Complete | Complete
   status            String   @default("Unstarted")
   notes             String?  // modality observations, equivalent to old pennyNotes
+
+  completedAt       DateTime? // when marked done (by Adam via dashboard, or by the modality)
+  archivedAt        DateTime? // when swept out of view after a weekly brief credited it
 }
 
 model Project {
@@ -197,6 +201,9 @@ model PendingCalendarEvent {
   assignedModality  String   @default("pa")
   scheduled         Boolean  @default(false)  // true once written to GCal and removed from queue
   scheduledAt       DateTime?
+
+  completedAt       DateTime? // when the event actually happened / was marked done — distinct from `scheduled`
+  archivedAt        DateTime? // when swept out of view after a weekly brief credited it
 }
 
 model Routine {
@@ -230,6 +237,35 @@ model Note {
   source          String?   // which modality wrote it
   // resolution: Open | Resolved | Ignored
   resolution      String    @default("Open")
+}
+
+// The principal→item channel. Adam speaks to a specific Task / PendingCalendarEvent
+// / Project from the dashboard without burning chat tokens. Keyed by (itemType,
+// itemId) so the note is glued to its item and rendered inline beneath it.
+//
+//   kind = done | moved | scheduled | stale | blocked | note
+//     done/moved/scheduled — Adam already mutated the item directly (Class A); this
+//                    is the audit trail + reason. Self-executing, no ack needed.
+//                    (scheduled is reserved/deferred — the events-vs-GCal design is
+//                    postponed; the kind exists so the channel is future-proof.)
+//     stale/blocked/note — a flag/request (Class B): the modality reads it, acts,
+//                    then acknowledges. Adam can flag-for-deletion but never delete.
+model ItemNote {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  itemType String   // 'task' | 'event' | 'project'
+  itemId   String   // id of the Task / PendingCalendarEvent / Project
+  kind     String   // done | moved | stale | blocked | note | scheduled
+  body     String?  // Adam's reason / explanation / note
+
+  acknowledged   Boolean   @default(false) // a modality has read + acted on it (Class B)
+  acknowledgedAt DateTime?
+
+  @@index([profileId, itemType, itemId])
 }
 
 // ── Memory tiers ──────────────────────────────────────────────────────────────

@@ -391,6 +391,15 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     if (type === 'intake') {
       sendMessage('', true)
     } else {
+      // "Talk to her" from the dashboard lands here as ?modality=<id>. The dashboard
+      // already wrapped any abandoned session, so start fresh in the requested self
+      // rather than resuming whatever was last open.
+      const wantModality = new URLSearchParams(window.location.search).get('modality')
+      if (wantModality && getModality(wantModality).id === wantModality) {
+        setActiveModality(wantModality)
+        prewarm(wantModality)
+        return
+      }
       fetch('/api/conversation')
         .then(r => r.json())
         .then(data => {

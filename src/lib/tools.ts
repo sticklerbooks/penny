@@ -533,6 +533,21 @@ const ignoreNote: Tool = {
   },
 }
 
+const acknowledgeItemNote: Tool = {
+  name: 'acknowledge_item_note',
+  description:
+    "Acknowledge a flag Adam left on one of your items from his dashboard (the ⚑ ADAM marks). " +
+    'Call this AFTER you have acted on it — deleted a stale task, rerouted a blocked one, or absorbed his note. ' +
+    'Acknowledging clears it so it stops appearing in your context. Never acknowledge a flag you have not yet handled.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'ItemNote ID — shown in the ⚑ mark.' },
+    },
+    required: ['id'],
+  },
+}
+
 // ─── Communication tools ──────────────────────────────────────────────────────
 
 const sendEmail: Tool = {
@@ -1031,6 +1046,7 @@ const CORE_TOOLS: Tool[] = [
   createNote,
   resolveNote,
   ignoreNote,
+  acknowledgeItemNote,
   // Pending calendar events (any modality creates; PA schedules)
   createPendingEvent,
   updatePendingEvent,
@@ -1195,6 +1211,7 @@ export {
   createNote,
   resolveNote,
   ignoreNote,
+  acknowledgeItemNote,
   sendEmail,
   replyEmail,
   createDraft,
