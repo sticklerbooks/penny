@@ -37,10 +37,13 @@ export type PaStatus = (typeof PA_STATUSES)[number]
 
 // Submodality-side lifecycle. `sent-to-PA` means "escalate me": the notes-pass
 // phase spawns a fresh PA-targeted item from this one, then drops this one back to
-// `pending` (so the original keeps living in the modality's world).
+// `pending` (so the original keeps living in the modality's world). `continuing`
+// mirrors the PA side: an ongoing task a submodality keeps as a source, spawning
+// fresh concrete items off it (the spawn is a NEW row, not a move of this one).
 export const MODALITY_STATUSES = [
   'new',
   'pending',
+  'continuing',
   'sent-to-PA',
   'completed',
   'blocked',
@@ -77,14 +80,20 @@ export const PA_TRANSITIONS: Record<PaStatus, readonly PaStatus[]> = {
 
 export const MODALITY_TRANSITIONS: Record<ModalityStatus, readonly ModalityStatus[]> = {
   // A `new` note must be triaged out of `new` during notes-read.
-  new: ['pending', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
-  // May stay pending, be escalated to Penny, finished, blocked, or dropped.
-  pending: ['pending', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
+  new: ['pending', 'continuing', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
+  // May stay pending, be reclassified as an ongoing task (→ continuing), escalated
+  // to Penny, finished, blocked, or dropped.
+  pending: ['pending', 'continuing', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
+  // An ongoing task the submodality keeps as a source. Stays continuing while it
+  // recurs (spawning concrete items is a SEPARATE new row, not a move of this one);
+  // or collapse to a single item (→ pending), escalate the whole thing, finish,
+  // block, or drop.
+  continuing: ['continuing', 'pending', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
   // Escalation in flight. notes-pass copies it to a PA item, then returns this
   // one to pending. Can also simply be dropped.
   'sent-to-PA': ['pending', 'to-delete'],
   // Stuck. The notes-read phase tries to move it off blocked.
-  blocked: ['pending', 'sent-to-PA', 'completed', 'to-delete'],
+  blocked: ['pending', 'continuing', 'sent-to-PA', 'completed', 'to-delete'],
   // Done (acknowledged in notes-read). Only an explicit deletion remains.
   completed: ['to-delete'],
   // True sink.
@@ -96,7 +105,7 @@ export const MODALITY_TRANSITIONS: Record<ModalityStatus, readonly ModalityStatu
 // `blocked`. Terminal/derived states (scheduled, completed, to-delete, sent-to-PA)
 // are never valid first states — they imply a prior lifecycle.
 export const PA_ENTRY_STATES: readonly PaStatus[] = ['new', 'pending', 'schedule', 'continuing']
-export const MODALITY_ENTRY_STATES: readonly ModalityStatus[] = ['new', 'pending', 'blocked']
+export const MODALITY_ENTRY_STATES: readonly ModalityStatus[] = ['new', 'pending', 'blocked', 'continuing']
 
 // ─── Type guards ───────────────────────────────────────────────────────────────
 

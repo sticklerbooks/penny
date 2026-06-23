@@ -144,6 +144,19 @@ describe('modality-side review moves (from the spec)', () => {
     expect(canTransitionModality('sent-to-PA', 'pending')).toBe(true)
   })
 
+  it('a submodality can classify something as continuing (an ongoing source)', () => {
+    expect(canTransitionModality('new', 'continuing')).toBe(true)
+    expect(canTransitionModality('pending', 'continuing')).toBe(true)
+    expect(canTransitionModality(null, 'continuing')).toBe(true) // may be minted directly
+  })
+
+  it('continuing stays continuing while it recurs, or collapses / finishes', () => {
+    expect(canTransitionModality('continuing', 'continuing')).toBe(true)
+    expect(canTransitionModality('continuing', 'pending')).toBe(true)     // collapse to single
+    expect(canTransitionModality('continuing', 'sent-to-PA')).toBe(true)  // escalate the whole thing
+    expect(canTransitionModality('continuing', 'completed')).toBe(true)
+  })
+
   it('blocked can be moved off blocked', () => {
     for (const s of ['pending', 'sent-to-PA', 'completed', 'to-delete'] as ModalityStatus[]) {
       expect(canTransitionModality('blocked', s)).toBe(true)
