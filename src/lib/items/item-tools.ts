@@ -15,12 +15,17 @@ import {
   type ItemRow,
 } from './item-store'
 import { markDiscussed } from '@/lib/review/session'
+import type { GuardViolation } from '@/lib/review/guards'
 
-// ctx for the review loop — the legacy ToolContext plus the session and a mutable
-// control flag the finish_phase tool sets (read by the runner after the loop).
+// ctx for the review loop — the legacy ToolContext plus the session, a mutable
+// control flag the finish_phase tool sets (read by the runner after the loop), and
+// the exit guard the engine evaluates before it will let the phase finish.
 export interface ReviewToolContext extends ToolContext {
   reviewSessionId: string
   finishRequested?: boolean
+  /** The phase's exit predicate, evaluated against the live DB. finish_phase calls
+   *  it and refuses to finish while it returns any violations. */
+  exitCheck?: () => Promise<GuardViolation[]>
 }
 
 type Tool = Anthropic.Tool
@@ -156,8 +161,19 @@ export async function executeReviewTool(
         return { content: `marked discussed: ${args.id}` }
       }
       case 'finish_phase': {
+        const violations = ctx.exitCheck ? await ctx.exitCheck() : []
+        if (violations.length > 0) {
+          ctx.finishRequested = false
+          return {
+            content:
+              `CANNOT FINISH — ${violations.length} item(s) still block this phase:\n` +
+              violations.map((v) => `  • "${v.name}" [${v.id}]: ${v.reason}`).join('\n') +
+              `\nResolve each (set_item_status and/or mark_discussed), then call finish_phase again.`,
+            is_error: true,
+          }
+        }
         ctx.finishRequested = true
-        return { content: 'phase marked complete — the review will advance.' }
+        return { content: 'phase complete — the review will advance.' }
       }
       default:
         return { content: `unknown review tool: ${name}`, is_error: true }

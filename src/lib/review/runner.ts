@@ -12,7 +12,15 @@ import { reviewToolSchemas, executeReviewTool, type ReviewToolContext } from '@/
 import { computeChips, type ItemSnapshot, type EngineChip } from './deltas'
 import { toolsForPhase, phaseInstructions } from './context'
 import { paNotesQueue, subNotesReadQueue, notesPassQueue } from './selectors'
-import { activeReview, advanceReview, type ReviewSessionRow } from './session'
+import {
+  notesExitViolations,
+  notesReadExitViolations,
+  calendarExitViolations,
+  considerationViolations,
+  type GuardViolation,
+  type GuardItem,
+} from './guards'
+import { activeReview, advanceReview, discussedIds, type ReviewSessionRow } from './session'
 import { runSubmodalitiesPrep, runNotesPassCopyUp, runWrapUp } from './scripted'
 import type { ReviewKind, Phase } from './phases'
 import type { PaStatus, ModalityStatus } from '@/lib/items/fsm'
@@ -138,6 +146,58 @@ ${items}
 Stay conversational and brief — this is ${userName}'s review, not a monologue. Record real changes with your tools as you go; never just say you'll do something. 📅 Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}.`
 }
 
+// The phase exit predicate, evaluated against the LIVE DB each time finish_phase is
+// called. Re-reads the session's discussed set (mark_discussed mutates it mid-turn).
+// Empty result = the phase may finish; otherwise the offenders block it.
+async function phaseViolations(
+  profileId: string,
+  kind: ReviewKind,
+  phase: Phase,
+  modalityId: string,
+  sessionId: string,
+  sessionStartedAt: Date
+): Promise<GuardViolation[]> {
+  const sess: ReviewSessionRow = await db().reviewSession.findUnique({ where: { id: sessionId } })
+  const discussed = new Set(discussedIds(sess))
+  const asGuard = (i: ItemRow): GuardItem => ({ id: i.id, name: i.name, paStatus: i.paStatus, modalityStatus: i.modalityStatus })
+
+  if (kind === 'pa' && phase === 'notes') {
+    const items = await searchItems(profileId, { target: 'pa' })
+    const queue = paNotesQueue(items.map((i) => ({ ...i, paStatus: i.paStatus as PaStatus | null }))) as ItemRow[]
+    return notesExitViolations(queue.map(asGuard), discussed)
+  }
+  if (kind === 'submodality' && phase === 'notes-read') {
+    const items = await searchItems(profileId, { target: modalityId })
+    const queue = subNotesReadQueue(items.map((i) => ({ ...i, modalityStatus: i.modalityStatus as ModalityStatus | null }))) as ItemRow[]
+    return notesReadExitViolations(queue.map(asGuard), discussed)
+  }
+  if (kind === 'pa' && phase === 'calendar') {
+    const items = await searchItems(profileId, { target: 'pa' })
+    return calendarExitViolations(items.map(asGuard))
+  }
+  if (phase === 'projects') {
+    const projects = await db().project.findMany({
+      where: {
+        profileId,
+        ...(kind === 'pa' ? { progress: { gte: 3, lte: 9 } } : { assignedModality: modalityId }),
+        visibility: true,
+      },
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return considerationViolations(projects.map((p: any) => ({ id: p.id, name: p.name })), discussed)
+  }
+  if (kind === 'submodality' && phase === 'notes-pass') {
+    const items = await searchItems(profileId, { target: modalityId })
+    const queue = notesPassQueue(
+      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt })),
+      sessionStartedAt
+    )
+    return considerationViolations(queue.map((q) => ({ id: q.id, name: items.find((i) => i.id === q.id)?.name ?? q.id })), discussed)
+  }
+  // greeting / user / submodalities / wrap-up: conversational — no item gate.
+  return []
+}
+
 async function runPhaseTurn(
   profileId: string,
   session: ReviewSessionRow,
@@ -153,6 +213,7 @@ async function runPhaseTurn(
     modalityId: session.modalityId,
     domain: getModality(session.modalityId).domain ?? undefined,
     reviewSessionId: session.id,
+    exitCheck: () => phaseViolations(profileId, kind, phase, session.modalityId, session.id, session.startedAt),
   }
 
   const initial = messages.length ? messages : [{ role: 'user' as const, content: '(begin this phase)' }]
@@ -186,11 +247,17 @@ export async function runReviewStep(profileId: string, messages: ChatMsg[]): Pro
   const after = await snapshot(profileId)
   const chips = computeChips(before, after)
 
+  // The single chokepoint: re-verify the exit guard against the live DB right before
+  // advancing, regardless of how finishRequested got set. There is no path past here
+  // while any item still blocks the phase.
   if (finishRequested) {
-    if (kind === 'submodality' && phase === 'notes-pass') await runNotesPassCopyUp(profileId, session.startedAt)
-    if (phase === 'wrap-up') await runWrapUp(profileId, session.modalityId)
-    const adv = await advanceReview(session.id)
-    return { phase, kind, modalityId: session.modalityId, text, chips, advanced: true, done: adv.done }
+    const blocking = await phaseViolations(profileId, kind, phase, session.modalityId, session.id, session.startedAt)
+    if (blocking.length === 0) {
+      if (kind === 'submodality' && phase === 'notes-pass') await runNotesPassCopyUp(profileId, session.startedAt)
+      if (phase === 'wrap-up') await runWrapUp(profileId, session.modalityId)
+      const adv = await advanceReview(session.id)
+      return { phase, kind, modalityId: session.modalityId, text, chips, advanced: true, done: adv.done }
+    }
   }
   return { phase, kind, modalityId: session.modalityId, text, chips, advanced: false, done: false }
 }
