@@ -24,12 +24,12 @@ Is there anything you learned about yourself, or about ${userName}, in this conv
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 3 — CLEAN UP & ANSWER ADAM'S FLAGS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-First, handle any ⚑ ADAM flags still showing on your items (left from his dashboard). For each one: do what he asked — a "stale" flag → delete the item if you agree (delete_task / delete_pending_event); "blocked" → set the task to 'Waiting on Contingency' and record the blocker; a note → absorb it. Then acknowledge_item_note(id) so it clears. Never leave his flags unhandled, and never re-ask him about something he's already told you here.
+First, handle any ⚑ ADAM flags still showing on your items (left from his dashboard). For each one, take a real action — delete it (delete_task / delete_project / delete_pending_event) if you agree it's stale, fix or reroute a genuine blocker — THEN acknowledge_item_note(id). For 'stale'/'blocked' flags this is enforced: the tool requires resolution and rejects resolution='deleted' if the item still exists. If you genuinely want to keep it, resolution='kept' (or 'handled') with a reason is fine — that reason gets written back so Adam can see why. Acknowledging without doing one or the other is not allowed, and is exactly the bug that broke his trust in this system once already — never repeat it.
 
-Then review all your open Tasks, Notes, and Pending Calendar Events.
-  → Any redundant (a duplicate of another record)? → remove it.
+Then review all your open Tasks, Projects, Notes, and Pending Calendar Events.
+  → Any redundant (a duplicate of another record — same name/purpose created more than once)? → remove it.
   → Any stale (no longer relevant or outdated, but still sitting open)? → remove it.
-Removing means: delete_task for a task, ignore_note for a note, delete_pending_event for a pending event. (For a task that's simply finished rather than redundant, update_task(status='Complete') instead of deleting.)
+Removing means: delete_task for a task, delete_project for a project, ignore_note for a note, delete_pending_event for a pending event. (For a task that's simply finished rather than redundant, update_task(status='Complete') instead of deleting.) Duplicate projects have been a real, recurring problem — actively look for them, don't just wait to be told.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 4 — YOUR BRIEF

@@ -296,6 +296,15 @@ export async function executeTool(
         return { content: doc.content }
       }
 
+      case 'delete_project': {
+        const id = str(args.id)
+        // Unlink rather than cascade-delete tasks that pointed at this project.
+        await prisma.task.updateMany({ where: { projectId: id }, data: { projectId: null } })
+        await prisma.deepMemory.deleteMany({ where: { profileId, name: `project-${id}-notes` } }).catch(() => {})
+        await prisma.project.delete({ where: { id } })
+        return { content: `Project ${id} deleted (linked tasks kept, unlinked).` }
+      }
+
       // ── Routines ──────────────────────────────────────────────────────────
 
       case 'create_routine': {
@@ -533,8 +542,61 @@ export async function executeTool(
 
       case 'acknowledge_item_note': {
         const id = str(args.id)
+        const resolution = str(args.resolution) || undefined
+        const reason = str(args.reason) || undefined
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (prisma as any).itemNote.update({
+        const db = prisma as any
+        const note = await db.itemNote.findUnique({ where: { id } })
+        if (!note) return { content: `ItemNote ${id} not found.`, is_error: true }
+
+        // 'stale' and 'blocked' are live requests — acknowledging requires an actual
+        // resolution, mechanically checked. This closes the loophole where a flag was
+        // cleared with nothing done about it (the original bug Adam hit: 143 stale
+        // flags acknowledged with the underlying item untouched, partly because no
+        // delete_project tool even existed).
+        if (note.kind === 'stale' || note.kind === 'blocked') {
+          const valid = note.kind === 'stale' ? ['deleted', 'kept'] : ['deleted', 'handled']
+          if (!resolution || !valid.includes(resolution)) {
+            return {
+              content: `acknowledge_item_note: a '${note.kind}' flag requires resolution (${valid.join(' or ')}) — take the action first (or decide to keep it with a reason), then call this again with resolution set.`,
+              is_error: true,
+            }
+          }
+
+          if (resolution === 'deleted') {
+            const stillExists = note.itemType === 'task'
+              ? await prisma.task.findUnique({ where: { id: note.itemId } })
+              : note.itemType === 'project'
+              ? await prisma.project.findUnique({ where: { id: note.itemId } })
+              : await prisma.pendingCalendarEvent.findUnique({ where: { id: note.itemId } })
+            if (stillExists) {
+              return {
+                content: `acknowledge_item_note: you said resolution='deleted' but ${note.itemType} ${note.itemId} still exists. Delete it first (delete_task / delete_project / delete_pending_event), then acknowledge.`,
+                is_error: true,
+              }
+            }
+          } else {
+            // 'kept' or 'handled' — a reason is mandatory and gets written back as a
+            // visible note on the item, so Adam sees WHY instead of the flag just
+            // vanishing with no trace.
+            if (!reason?.trim()) {
+              return {
+                content: `acknowledge_item_note: resolution='${resolution}' requires a reason — that's what shows up on the item for Adam.`,
+                is_error: true,
+              }
+            }
+            await db.itemNote.create({
+              data: {
+                profileId, itemType: note.itemType, itemId: note.itemId, kind: 'note',
+                body: `${resolution === 'kept' ? 'Kept' : 'Addressed'} — ${reason.trim()}`,
+                acknowledged: true, acknowledgedAt: new Date(),
+              },
+            })
+          }
+        }
+
+        await db.itemNote.update({
           where: { id },
           data: { acknowledged: true, acknowledgedAt: new Date() },
         })

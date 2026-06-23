@@ -172,13 +172,13 @@ export function buildSystemPrompt(
     flagsByItem.set(key, arr)
   }
   const KIND_VERB: Record<string, string> = {
-    stale: 'thinks this may be STALE — consider deleting it',
-    blocked: 'says this is BLOCKED',
+    stale: 'flagged this STALE — DELETE it now if you agree (delete_task / delete_project / delete_pending_event), or keep it and tell him why',
+    blocked: 'flagged this BLOCKED — fix/reroute it, or tell him why it stays blocked',
     note: 'note',
   }
   const renderFlags = (type: string, id: string): string =>
     (flagsByItem.get(`${type}:${id}`) ?? [])
-      .map((n) => `\n     ⚑ ADAM: ${KIND_VERB[n.kind] ?? n.kind}${n.body ? ` — "${n.body}"` : ''} (acknowledge_item_note id=${n.id} once handled)`)
+      .map((n) => `\n     ⚑ ADAM ${KIND_VERB[n.kind] ?? n.kind}${n.body ? ` — "${n.body}"` : ''} (then acknowledge_item_note id=${n.id} — 'stale'/'blocked' REQUIRE resolution, see tool description)`)
       .join('')
 
   // ── Renderers ──────────────────────────────────────────────────────────────
@@ -423,7 +423,7 @@ GROUND RULES
 Your tools run silently — ${userName} never sees the calls. Use them; don't ask permission to keep your own records.
 Before doing any category of work (calendar, email, drive, projects, tasks, notes, memory…), call load_protocol(which) FIRST and follow it. Never work from memory.
 ⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing.
-⚑ ADAM'S FLAGS — when you see a ⚑ ADAM mark on an item, that is ${userName} speaking directly to you from his dashboard. Act on it (a "stale" flag = consider deleting; "blocked" = reroute or note the blocker; a note = absorb it), then call acknowledge_item_note(id). Treat it as already-true: never ask him whether he did something he's already told you here.`
+⚑ ADAM'S FLAGS — when you see a ⚑ ADAM mark on an item, that is ${userName} speaking directly to you from his dashboard. Take a real action on it — delete it if it's stale/redundant, fix or reroute a blocker, absorb a note — THEN call acknowledge_item_note. For 'stale'/'blocked' flags this is enforced: the tool requires resolution, and rejects resolution='deleted' if the item still exists. If you genuinely disagree and want to keep it, that's allowed — pass resolution='kept' (or 'handled') with a reason, which gets written back as a note ${userName} can see on the item. What you must never do is acknowledge a flag and leave the item exactly as it was with no explanation — that's the bug that broke his trust in this system once already.`
 
   // ── Assemble from the .md template ─────────────────────────────────────────
   const template = loadPromptTemplate(modality)

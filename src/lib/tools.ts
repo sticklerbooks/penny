@@ -233,6 +233,21 @@ const readProjectNotes: Tool = {
   },
 }
 
+const deleteProject: Tool = {
+  name: 'delete_project',
+  description:
+    'Permanently delete a project — including its detailed notes (DeepMemory). Tasks linked to it ' +
+    'are kept but unlinked (their projectId is cleared), not deleted. Use for duplicates created in ' +
+    'error, or when you genuinely agree a project Adam flagged stale should go.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'ID of the project to delete.' },
+    },
+    required: ['id'],
+  },
+}
+
 // ─── Routine tools ────────────────────────────────────────────────────────────
 
 const createRoutine: Tool = {
@@ -537,12 +552,26 @@ const acknowledgeItemNote: Tool = {
   name: 'acknowledge_item_note',
   description:
     "Acknowledge a flag Adam left on one of your items from his dashboard (the ⚑ ADAM marks). " +
-    'Call this AFTER you have acted on it — deleted a stale task, rerouted a blocked one, or absorbed his note. ' +
-    'Acknowledging clears it so it stops appearing in your context. Never acknowledge a flag you have not yet handled.',
+    "For a 'stale' or 'blocked' flag, resolution is REQUIRED and is checked — you cannot silently " +
+    "clear it without doing something:\n" +
+    "  • resolution='deleted' — you actually called delete_task / delete_project / delete_pending_event " +
+    "first. This is rejected if the item still exists.\n" +
+    "  • resolution='kept' (stale) or 'handled' (blocked) — you considered it and are NOT deleting/rerouting " +
+    "it. reason is REQUIRED and is written back as a visible note on the item, so Adam sees why, not silence.\n" +
+    "For a plain 'note' flag, just acknowledge once absorbed — no resolution needed.",
   input_schema: {
     type: 'object',
     properties: {
       id: { type: 'string', description: 'ItemNote ID — shown in the ⚑ mark.' },
+      resolution: {
+        type: 'string',
+        enum: ['deleted', 'kept', 'handled'],
+        description: "Required for 'stale' (deleted|kept) and 'blocked' (deleted|handled) flags.",
+      },
+      reason: {
+        type: 'string',
+        description: "Required when resolution is 'kept' or 'handled'. Shown back to Adam on the item.",
+      },
     },
     required: ['id'],
   },
@@ -1081,7 +1110,7 @@ const CORE_TOOLS: Tool[] = [
 const PUBLIC_IDENTITY_TOOLS: Tool[] = [updateIdentityUser, updateIdentitySelf]
 
 /** Project management — PA and submodalities that manage multi-step work. */
-const PROJECT_TOOLS: Tool[] = [createProject, updateProject, readProjectNotes]
+const PROJECT_TOOLS: Tool[] = [createProject, updateProject, readProjectNotes, deleteProject]
 
 /** Email write access (send / reply / draft). PA + bookkeeping. */
 const EMAIL_WRITE_TOOLS: Tool[] = [sendEmail, replyEmail, createDraft]
@@ -1197,6 +1226,7 @@ export {
   createProject,
   updateProject,
   readProjectNotes,
+  deleteProject,
   createRoutine,
   createPendingEvent,
   updatePendingEvent,
