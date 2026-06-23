@@ -90,44 +90,53 @@ export async function POST(req: NextRequest) {
   // ── Close-out sweep (on switch) ────────────────────────────────────────────
   // The outgoing self runs a full end-of-session pass with its own toolset:
   // tidy its domain, leave a carry-note, refresh its brief (and, for the PA,
-  // the identity docs) if the session warrants it. Runs synchronously so the
-  // carry-note exists before the next session reads its context.
+  // the identity docs) if the session warrants it.
+  //
+  // Fire-and-forget (matches the mid-session sweep below) — NOT awaited. The
+  // context bundle for THIS request was already snapshotted above, before this
+  // runs, so nothing in the current response depends on the sweep finishing
+  // first. Awaiting it used to block the new modality's first reply behind up
+  // to 6 rounds of the outgoing self's own tool-calling — the dominant cost of
+  // "switching feels slow."
   if (isSwitch && existingMessages.length > 0) {
-    const outgoingBrief = await getModalityBrief(profile.id, outgoingModalityId)
-    const outgoingIdentity = await getModalityIdentity(profile.id, outgoingModalityId)
+    const snapshotMessages = existingMessages
+    void (async () => {
+      try {
+        const outgoingBrief = await getModalityBrief(profile.id, outgoingModalityId)
+        const outgoingIdentity = await getModalityIdentity(profile.id, outgoingModalityId)
 
-    const closeSystem = buildSystemPrompt(
-      profile, memories, tasks, notes, clients,
-      scheduledMessages, null, false, outgoingModalityId, null, false,
-      outgoingBrief, projects, pendingEvents, outgoingIdentity
-    )
-    const closeCtx: ToolContext = {
-      profileId: profile.id,
-      modalityId: outgoingModalityId,
-      domain: outgoingModality.domain ?? undefined,
-    }
+        const closeSystem = buildSystemPrompt(
+          profile, memories, tasks, notes, clients,
+          scheduledMessages, null, false, outgoingModalityId, null, false,
+          outgoingBrief, projects, pendingEvents, outgoingIdentity
+        )
+        const closeCtx: ToolContext = {
+          profileId: profile.id,
+          modalityId: outgoingModalityId,
+          domain: outgoingModality.domain ?? undefined,
+        }
 
-    try {
-      await runAgenticLoop({
-        model: PENNY_MODEL,
-        maxTokens: 1500,
-        system: cachedSystem(closeSystem),
-        tools: getToolsForModality(outgoingModalityId),
-        initialMessages: [
-          ...existingMessages.slice(-12).map((m) => ({
-            role: m.role as 'user' | 'assistant',
-            content: m.content,
-          })),
-          { role: 'user', content: closeSessionPrompt(outgoingModality, profile.userName || 'Adam') },
-        ],
-        ctx: closeCtx,
-        maxRounds: 6,
-        onToolCall: (name, res) =>
-          console.log(`[switch close] ${outgoingModalityId} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
-      })
-    } catch (err) {
-      console.error('[switch] close-out sweep failed:', err)
-    }
+        await runAgenticLoop({
+          model: PENNY_MODEL,
+          maxTokens: 1500,
+          system: cachedSystem(closeSystem),
+          tools: getToolsForModality(outgoingModalityId),
+          initialMessages: [
+            ...snapshotMessages.slice(-12).map((m) => ({
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            })),
+            { role: 'user', content: closeSessionPrompt(outgoingModality, profile!.userName || 'Adam') },
+          ],
+          ctx: closeCtx,
+          maxRounds: 6,
+          onToolCall: (name, res) =>
+            console.log(`[switch close] ${outgoingModalityId} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
+        })
+      } catch (err) {
+        console.error('[switch] close-out sweep failed:', err)
+      }
+    })()
   }
 
   // ── Close old convo and open fresh one ────────────────────────────────────
