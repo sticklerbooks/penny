@@ -29,6 +29,16 @@ export interface AgenticLoopOptions {
   maxRounds?: number
   /** Called after each tool executes. Useful for logging / progress indicators. */
   onToolCall?: (name: string, result: { content: string; is_error?: boolean }) => void
+  /**
+   * Tool dispatcher. Defaults to the legacy executeTool (old Task/Note/etc. world).
+   * The review engine passes its own Item-aware executor so its loop stays decoupled
+   * from the legacy tool surface it's replacing.
+   */
+  executeToolFn?: (
+    name: string,
+    args: Record<string, unknown>,
+    ctx: ToolContext
+  ) => Promise<{ content: string; is_error?: boolean }>
 }
 
 export interface AgenticLoopResult {
@@ -56,6 +66,7 @@ export async function runAgenticLoop(opts: AgenticLoopOptions): Promise<AgenticL
     ctx,
     maxRounds = 12,
     onToolCall,
+    executeToolFn = executeTool,
   } = opts
 
   const client = getAnthropic()
@@ -120,7 +131,7 @@ export async function runAgenticLoop(opts: AgenticLoopOptions): Promise<AgenticL
 
     for (const block of toolUseBlocks) {
       const args = (block.input ?? {}) as Record<string, unknown>
-      const result = await executeTool(block.name, args, ctx)
+      const result = await executeToolFn(block.name, args, ctx)
 
       toolCallsExecuted++
       onToolCall?.(block.name, result)
