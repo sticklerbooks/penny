@@ -112,3 +112,108 @@ export function playClip(text: string, modality: string): SpeechHandle {
     done,
   }
 }
+
+// ─── Sentence-streamed speaker ───────────────────────────────────────────────
+// Speaks text sentence-by-sentence as it arrives, the way CallMode does: audio
+// starts on the FIRST complete sentence instead of waiting for the whole reply.
+// Feed it the cumulative text as it streams, then call finish(). Also works for
+// a complete message (feed once, finish) — used by the per-message replay button.
+
+// The text we're willing to speak: hard-stop at an <artifact> block.
+function speakablePrefix(raw: string): string {
+  const a = raw.search(/<artifact\b/i)
+  return a >= 0 ? raw.slice(0, a) : raw
+}
+
+// Strip any control marker that slipped into the text stream.
+function stripMarkers(s: string): string {
+  return s
+    .replace(/<<INTAKE_COMPLETE>>/g, '')
+    .replace(/<\/?(?:complete_session|shift_complete|switch_modality|run_subroutine|artifact)\b[^>]*>/gi, '')
+    .trim()
+}
+
+// Pull complete sentences off the front of a buffer, leaving the trailing
+// (still-incomplete) fragment. Splits on whitespace after . ! ? …
+function takeSentences(buf: string): { sentences: string[]; rest: string } {
+  const parts = buf.split(/(?<=[.!?…])\s+/)
+  const rest = parts.pop() ?? ''
+  return { sentences: parts, rest }
+}
+
+export class SentenceSpeaker {
+  private queue: string[] = []
+  private buf = ''
+  private flushedLen = 0
+  private draining = false
+  private streamDone = false
+  private stopped = false
+  private current: SpeechHandle | null = null
+
+  constructor(
+    private modality: string,
+    private onActive?: (active: boolean) => void,
+  ) {}
+
+  // Feed the cumulative text-so-far; flushes any newly-complete sentences.
+  feed(cumulative: string): void {
+    if (this.stopped) return
+    const speakable = speakablePrefix(cumulative)
+    if (speakable.length <= this.flushedLen) return
+    this.buf += speakable.slice(this.flushedLen)
+    this.flushedLen = speakable.length
+    const { sentences, rest } = takeSentences(this.buf)
+    this.buf = rest
+    for (const s of sentences) this.enqueue(s)
+  }
+
+  // No more text coming — speak whatever's left as a final sentence.
+  finish(): void {
+    if (this.stopped) return
+    this.streamDone = true
+    const tail = this.buf.trim()
+    this.buf = ''
+    if (tail) this.enqueue(tail)
+    this.maybeDone()
+  }
+
+  stop(): void {
+    this.stopped = true
+    this.queue = []
+    this.current?.stop()
+    this.current = null
+    this.onActive?.(false)
+  }
+
+  private enqueue(s: string): void {
+    const clean = stripMarkers(s)
+    if (!clean) return
+    this.queue.push(clean)
+    void this.drain()
+  }
+
+  private async drain(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    this.onActive?.(true)
+    try {
+      while (this.queue.length > 0 && !this.stopped) {
+        const sentence = this.queue.shift()!
+        this.current = playClip(sentence, this.modality)
+        await this.current.done
+        this.current = null
+      }
+    } finally {
+      this.draining = false
+      this.maybeDone()
+    }
+  }
+
+  // Signal "no longer speaking" only once the stream is done and nothing is left.
+  private maybeDone(): void {
+    if (this.stopped) return
+    if (this.streamDone && !this.draining && this.queue.length === 0) {
+      this.onActive?.(false)
+    }
+  }
+}
