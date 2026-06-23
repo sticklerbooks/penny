@@ -64,6 +64,7 @@ model Profile {
   scheduledTasks       ScheduledTask[]
   outerLives           OuterLife[]
   itemNotes            ItemNote[]
+  items                Item[]
 }
 
 model Client {
@@ -172,11 +173,15 @@ model Project {
 
   name              String
   description       String
-  progress          Int      @default(0)  // 0–10; 10 = complete
+  progress          Int      @default(0)  // 0–10; 10 = complete (the "completion level")
   expectedDuration  String   // "sometime this year", "next few weeks", etc.
   contingencies     String?  // "can only be worked on in summer", "needs Jessica home", etc.
   assignedModality  String
   // Detailed notes live in DeepMemory as "project-{id}-notes" — not stored here
+
+  // ── Redesign additions (additive; nullable/defaulted) ──
+  termType   String?  // short | medium | long — the Short/Medium/Long-Term bucket
+  visibility Boolean  @default(true)  // soft-delete / archive (hidden when false)
 
   tasks Task[]
 }
@@ -237,6 +242,50 @@ model Note {
   source          String?   // which modality wrote it
   // resolution: Open | Resolved | Ignored
   resolution      String    @default("Open")
+}
+
+// Unified work item — the redesign's single operational record, collapsing the old
+// Task / Note / PendingCalendarEvent / Routine split into one row keyed by `type`.
+// It carries TWO independent lifecycle fields; the transition rules live in
+// src/lib/items/fsm.ts, NEVER inline here or in prose. The old tables remain until
+// the Stage 3 cutover, and nothing queries Item yet — this is just the foundation.
+//
+// "Discussed this session" from the spec is deliberately NOT a column — it's
+// session-scoped state tracked by the phase engine, not a permanent field.
+model Item {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  projectId String?  // optional link to a Project
+
+  name        String
+  description String
+  type        String   // event | ongoing | memory | suggestion (see ItemType in fsm.ts)
+  createdBy   String   // modality id that created it
+  target      String   // modality id (or 'pa') this item is for
+
+  priority    Int      @default(2)  // 0–5
+  duration    String?  // for events: "30 min", "1 hour"
+  dayTime     String?  // timing/recurrence hint: "Tuesday mornings", "weekdays 9am"
+
+  // Lifecycle — written ONLY through the FSM. Nullable because an item may live in
+  // PA's world, a submodality's world, or both.
+  paStatus       String?  // new|pending|schedule|scheduled|continuing|completed|to-delete
+  modalityStatus String?  // new|pending|sent-to-PA|completed|blocked|to-delete
+
+  visibility   Boolean   @default(true)  // soft-delete / archive (hidden when false)
+  completedAt  DateTime?
+  scheduledAt  DateTime?
+
+  calendarEventId String?  // reserved: GCal event id once scheduled (Stage 4+)
+  escalatedToId   String?  // when a modality item spawns a PA item, the new item's id
+
+  @@index([profileId, target])
+  @@index([profileId, projectId])
 }
 
 // The principal→item channel. Adam speaks to a specific Task / PendingCalendarEvent
@@ -341,7 +390,11 @@ model ModalityState {
 
   modalityId     String
   lastActiveAt   DateTime?  // last time this modality was active in a turn
-  lastCompletedAt DateTime? // last time it ran a Shift/Session Complete
+  lastCompletedAt DateTime? // last time it ran a Shift/Session Complete — also the
+                            // submodality "date of last contact" the review uses
+  // Redesign: 0–5 "needs attention" dial. Nightly cleanup +1; the review wrap-up
+  // resets it to 0. Drives the submodalities phase's "talk to <self>" generation.
+  needsAttention Int       @default(0)
 
   @@unique([profileId, modalityId])
 }
