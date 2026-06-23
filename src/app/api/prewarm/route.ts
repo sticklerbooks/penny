@@ -47,8 +47,8 @@ export async function POST(req: NextRequest) {
     const system = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
       scheduledMessages, emailCalendarSummary,
-      !profile.intakeComplete, id, weeklyBrief, false,
-      brief, projects, pendingEvents, identity, null
+      !profile.intakeComplete, id, weeklyBrief,
+      brief, projects, pendingEvents, identity
     )
 
     await getAnthropic().messages

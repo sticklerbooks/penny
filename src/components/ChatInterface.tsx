@@ -91,7 +91,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [avatarImgError, setAvatarImgError]   = useState(false)
   const [thinkingImgError, setThinkingImgError] = useState(false)
   const [activeModality, setActiveModality]   = useState('pa')
-  const [isAltMode, setIsAltMode]             = useState(false)
   const [showSwitcher, setShowSwitcher]       = useState(false)
   const [isDictating, setIsDictating]         = useState(false)
   const [isMobile, setIsMobile]               = useState(false)
@@ -258,7 +257,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   }, [startDictating])
 
   // ─── Send message ──────────────────────────────────────────────────────────
-  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string, activateAltMode?: boolean) => {
+  const sendMessage = useCallback(async (text: string, isAutoStart = false, switchTo?: string) => {
     // Stop dictation if active (user hit send while dictating)
     if (isDictatingRef.current) {
       setIsDictating(false)
@@ -269,7 +268,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     }
 
     const content = isAutoStart ? '' : text.trim()
-    if (!isAutoStart && !switchTo && !content && activateAltMode === undefined) return
+    if (!isAutoStart && !switchTo && !content) return
     if (isLoading) return
 
     // A new turn supersedes any reply currently being read aloud.
@@ -301,7 +300,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           conversationId,
           isAutoStart,
           switchTo,
-          ...(activateAltMode !== undefined ? { activateAltMode } : {}),
         }),
       })
       if (!res.body) throw new Error('No response body')
@@ -331,7 +329,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             if (data.done) {
               setConversationId(data.conversationId)
               if (data.activeModality) setActiveModality(data.activeModality)
-              if (data.isAltMode !== undefined) setIsAltMode(data.isAltMode)
               if (data.intakeComplete && onIntakeComplete) setTimeout(onIntakeComplete, 2000)
               const finalText = data.cleanText ?? fullText
               setMessages(prev => {
@@ -355,7 +352,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             if (data.error) {
               speaker?.stop()
               if (data.conversationId) setConversationId(data.conversationId)
-              if (data.isAltMode !== undefined) setIsAltMode(data.isAltMode)
               setMessages(prev => {
                 const next = [...prev]
                 const last = next[next.length - 1]
@@ -409,7 +405,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           if (data?.messages?.length) {
             setConversationId(data.id)
             if (data.activeModality) setActiveModality(data.activeModality)
-            if (data.isAltMode !== undefined) setIsAltMode(data.isAltMode)
             setMessages(data.messages.map((m: { role: 'user' | 'assistant'; content: string }) => ({
               role: m.role, content: m.content,
             })))
@@ -548,7 +543,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             <PennyAvatar size="lg" />
             <div>
               <h1 className="font-semibold leading-tight" style={{ color: C.text }}>
-                {type === 'intake' ? 'Penny' : (isAltMode && current.altMode?.displayName) ? current.altMode.displayName : current.displayName}
+                {type === 'intake' ? 'Penny' : current.displayName}
               </h1>
               <p className="text-xs" style={{ color: C.textMuted }}>
                 {type === 'intake' ? 'Getting to know you' : current.role}
@@ -580,27 +575,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           >
             {speakReplies ? '🔊' : '🔇'}
           </button>
-
-          {/* Alt-mode toggle — only shown when the active modality has an altMode */}
-          {type !== 'intake' && current.altMode && (
-            <button
-              onClick={() => {
-                stopSpeaking()
-                setMessages([])
-                sendMessage('', false, undefined, !isAltMode)
-              }}
-              disabled={isLoading}
-              title={isAltMode ? 'Exit alt mode' : 'Enter alt mode'}
-              className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
-              style={{
-                background: isAltMode ? accent + '40' : accent + '12',
-                borderColor: isAltMode ? accent : accentBorder,
-                color: isAltMode ? accent : C.textMuted,
-              }}
-            >
-              {isAltMode ? '◆' : '◇'}
-            </button>
-          )}
 
           {/* Modality switcher */}
           {type !== 'intake' && (

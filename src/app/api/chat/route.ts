@@ -15,7 +15,6 @@ import { executeTool, type ToolContext } from '@/lib/tool-executor'
 import { getToolsForModality } from '@/lib/tools'
 import { runAgenticLoop } from '@/lib/agentic-loop'
 import { closeSessionPrompt } from '@/lib/close-session'
-import { outerLifeEnabled } from '@/lib/outer-life'
 import { getContextBundle, getModalityBrief, getModalityIdentity } from '@/lib/context-cache'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
 
@@ -107,8 +106,8 @@ export async function POST(req: NextRequest) {
 
         const closeSystem = buildSystemPrompt(
           profile, memories, tasks, notes, clients,
-          scheduledMessages, null, false, outgoingModalityId, null, false,
-          outgoingBrief, projects, pendingEvents, outgoingIdentity, null, itemNotes
+          scheduledMessages, null, false, outgoingModalityId, null,
+          outgoingBrief, projects, pendingEvents, outgoingIdentity, itemNotes
         )
         const closeCtx: ToolContext = {
           profileId: profile.id,
@@ -171,17 +170,6 @@ export async function POST(req: NextRequest) {
   // yet — buildSystemPrompt falls back to the persona seed when null.
   const modalityIdentity = await getModalityIdentity(profile.id, activeModality)
 
-  // Outer life (FLAGGED) — the Showrunner-authored ledger of this self's life
-  // outside work. Table may not exist; always catch. Null unless OUTER_LIFE_ENABLED.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const db = prisma as any
-  const outerLifeLedger = outerLifeEnabled()
-    ? await db.outerLife
-        .findUnique({ where: { profileId_modalityId: { profileId: profile.id, modalityId: activeModality } } })
-        .then((r: { ledger: string | null } | null) => r?.ledger ?? null)
-        .catch(() => null)
-    : null
-
   // Email/calendar snapshot is PA-only — fetch it just for her (its own 30-min
   // cache covers repeat turns), so the six submodalities never pay the Google +
   // Haiku cost for a summary they don't render.
@@ -194,8 +182,8 @@ export async function POST(req: NextRequest) {
   const systemPrompt = buildSystemPrompt(
     profile, memories, tasks, notes, clients,
     scheduledMessages, emailCalendarSummary,
-    !profile.intakeComplete, activeModality, weeklyBrief, false,
-    modalityBrief, projects, pendingEvents, modalityIdentity, outerLifeLedger, itemNotes
+    !profile.intakeComplete, activeModality, weeklyBrief,
+    modalityBrief, projects, pendingEvents, modalityIdentity, itemNotes
   )
 
   const currentModality = getModality(activeModality)
@@ -403,7 +391,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           const midCloseSystem = buildSystemPrompt(
             profile!, memories, tasks, notes, clients,
             scheduledMessages, emailCalendarSummary, false,
-            activeModality, null, false, midBrief, projects, pendingEvents, modalityIdentity, null, itemNotes
+            activeModality, null, midBrief, projects, pendingEvents, modalityIdentity, itemNotes
           )
           // (emailCalendarSummary above is the PA-only value from this turn — null
           // for submodalities — which is correct for the hygiene sweep too.)

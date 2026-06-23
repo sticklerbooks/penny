@@ -11,7 +11,6 @@ restartPolicyMaxRetries = 3
 #   cron-dispatch.yml          every 5 min   POST /api/cron/dispatch
 #   cron-nightly-hygiene.yml   4 AM UTC      POST /api/cron/nightly-hygiene
 #   cron-weekly-reports.yml    Sun 10 PM UTC POST /api/cron/weekly-reports
-#   cron-showrunner.yml        Mon 8 AM UTC  POST /api/cron/showrunner
 #
 # Why moved off Railway: the old "cron service runs curl" setup failed silently
 # because `curl` without --fail treats a 401/500 as success. The Actions

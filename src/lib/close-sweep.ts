@@ -33,8 +33,8 @@ export async function runCloseSweep(opts: {
 
   const system = buildSystemPrompt(
     profile, memories, tasks, notes, clients,
-    scheduledMessages, null, false, modalityId, null, false,
-    brief, projects, pendingEvents, identity, null, itemNotes
+    scheduledMessages, null, false, modalityId, null,
+    brief, projects, pendingEvents, identity, itemNotes
   )
   const ctx: ToolContext = {
     profileId,

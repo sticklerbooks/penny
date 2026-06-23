@@ -23,8 +23,7 @@ interface ExtractionResult {
 export async function extractAndSaveMemories(
   profileId: string,
   userMessage: string,
-  assistantMessage: string,
-  altModeScope?: string
+  assistantMessage: string
 ): Promise<void> {
   const prompt = `You are analyzing a short conversation exchange to extract important facts to remember.
 
@@ -71,7 +70,7 @@ Respond with valid JSON only:
 
     const extracted: ExtractionResult = JSON.parse(jsonMatch[0])
 
-    // Save memories (tagged with altModeScope if in alt-mode)
+    // Save memories
     if (extracted.memories?.length) {
       await prisma.memory.createMany({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +79,6 @@ Respond with valid JSON only:
           category: m.category || 'personal',
           content: m.content,
           importance: Math.min(10, Math.max(1, m.importance || 5)),
-          ...(altModeScope ? { altModeScope } : {}),
         })) as any,
       })
     }

@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
-      scheduledMessages, emailCalendarSummary, false, modalityId, null, false,
+      scheduledMessages, emailCalendarSummary, false, modalityId, null,
       briefRecord?.content ?? null
     )
 
@@ -251,7 +251,7 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = buildSystemPrompt(
       profile, memories, tasks, notes, clients,
-      scheduledMessages, emailCalendarSummary, false, 'pa', null, false,
+      scheduledMessages, emailCalendarSummary, false, 'pa', null,
       paBriefRecord?.content ?? null
     )
 
