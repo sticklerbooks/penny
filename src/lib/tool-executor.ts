@@ -29,7 +29,7 @@ import {
   type EventTime,
 } from './google'
 import { ALL_TOOL_NAMES } from './tools'
-import { getModality } from './modalities'
+import { getModality, resolveModality } from './modalities'
 import { getProtocol, PROTOCOL_NAMES, type ProtocolName } from './protocols'
 import { invalidateContext } from './context-cache'
 
@@ -119,6 +119,16 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback
 }
 
+// Canonicalize an assignedModality value to a stable modality ID. The model often
+// passes a display name ("margot", "june") instead of the id ("bookkeeping",
+// "household"); resolveModality maps either to the id. Falls back to the creating
+// modality, then 'pa'. This keeps the data tagged by ID so the domain lens (which
+// filters by id) actually matches — the bug that left submodalities' agendas empty.
+function canonModality(raw: unknown, fallback: string): string {
+  const resolved = typeof raw === 'string' && raw.trim() ? resolveModality(raw)?.id : undefined
+  return resolved ?? (resolveModality(fallback)?.id ?? fallback)
+}
+
 // Simple keyword search helper — splits on whitespace, does case-insensitive LIKE queries.
 // SQLite doesn't have FTS enabled by default; upgrade to fts5 when Turso confirms it.
 function keywordFilter(query: string): string {
@@ -188,7 +198,7 @@ export async function executeTool(
             name: str(args.name),
             description: str(args.description),
             priority: num(args.priority, 2),
-            assignedModality: str(args.assignedModality, modalityId),
+            assignedModality: canonModality(args.assignedModality, modalityId),
             projectId: str(args.projectId) || null,
             clientId: str(args.clientId) || null,
             dueDate: args.dueDate ? new Date(str(args.dueDate)) : null,
@@ -208,7 +218,7 @@ export async function executeTool(
         if (args.name !== undefined) data.name = str(args.name)
         if (args.description !== undefined) data.description = str(args.description)
         if (args.priority !== undefined) data.priority = num(args.priority, 2)
-        if (args.assignedModality !== undefined) data.assignedModality = str(args.assignedModality)
+        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
         if (args.projectId !== undefined) data.projectId = str(args.projectId) || null
         if (args.clientId !== undefined) data.clientId = str(args.clientId) || null
         if (args.dueDate !== undefined) data.dueDate = args.dueDate ? new Date(str(args.dueDate)) : null
@@ -254,7 +264,7 @@ export async function executeTool(
             name: str(args.name),
             description: str(args.description),
             expectedDuration: str(args.expectedDuration),
-            assignedModality: str(args.assignedModality, modalityId),
+            assignedModality: canonModality(args.assignedModality, modalityId),
             progress: num(args.progress, 0),
             contingencies: str(args.contingencies) || null,
           },
@@ -268,7 +278,7 @@ export async function executeTool(
         if (args.name !== undefined) data.name = str(args.name)
         if (args.description !== undefined) data.description = str(args.description)
         if (args.expectedDuration !== undefined) data.expectedDuration = str(args.expectedDuration)
-        if (args.assignedModality !== undefined) data.assignedModality = str(args.assignedModality)
+        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
         if (args.progress !== undefined) data.progress = num(args.progress, 0)
         if (args.contingencies !== undefined) data.contingencies = str(args.contingencies) || null
         if (Object.keys(data).length === 0) return { content: 'update_project: no fields to update' }
@@ -297,7 +307,7 @@ export async function executeTool(
             priority: num(args.priority, 2),
             flexibility: num(args.flexibility, 2),
             dayTime: str(args.dayTime) || null,
-            assignedModality: str(args.assignedModality, modalityId),
+            assignedModality: canonModality(args.assignedModality, modalityId),
           },
         })
         return { content: `Routine created (id=${routine.id}): "${routine.description}"` }
@@ -317,7 +327,7 @@ export async function executeTool(
             date: str(args.date) || null,
             startTime: str(args.startTime) || null,
             location: str(args.location) || null,
-            assignedModality: str(args.assignedModality, modalityId),
+            assignedModality: canonModality(args.assignedModality, modalityId),
           },
         })
         return { content: `Pending event created: "${event.name}" (id=${event.id})` }
@@ -334,7 +344,7 @@ export async function executeTool(
         if (args.date !== undefined) data.date = str(args.date) || null
         if (args.startTime !== undefined) data.startTime = str(args.startTime) || null
         if (args.location !== undefined) data.location = str(args.location) || null
-        if (args.assignedModality !== undefined) data.assignedModality = str(args.assignedModality)
+        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
         // Mark as scheduled — call this after creating the calendar event
         if (args.scheduled === true || args.scheduled === 'true') {
           data.scheduled = true

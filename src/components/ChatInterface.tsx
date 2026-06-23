@@ -392,12 +392,15 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       sendMessage('', true)
     } else {
       // "Talk to her" from the dashboard lands here as ?modality=<id>. The dashboard
-      // already wrapped any abandoned session, so start fresh in the requested self
-      // rather than resuming whatever was last open.
+      // already wrapped any abandoned session, so open a fresh conversation under the
+      // requested self and let her greet — same path as an in-app switch. (Passing
+      // switchTo is what tags the new conversation to her; without it the first turn
+      // would be answered by the PA default.)
       const wantModality = new URLSearchParams(window.location.search).get('modality')
       if (wantModality && getModality(wantModality).id === wantModality) {
         setActiveModality(wantModality)
-        prewarm(wantModality)
+        activeModalityRef.current = wantModality   // greet in her voice
+        sendMessage('', false, wantModality)
         return
       }
       fetch('/api/conversation')
