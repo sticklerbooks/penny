@@ -65,6 +65,7 @@ model Profile {
   outerLives           OuterLife[]
   itemNotes            ItemNote[]
   items                Item[]
+  reviewSessions       ReviewSession[]
 }
 
 model Client {
@@ -286,6 +287,34 @@ model Item {
 
   @@index([profileId, target])
   @@index([profileId, projectId])
+}
+
+// A Review Session — one run of the deliberate phase walk (see src/lib/review).
+// Holds the persisted phase pointer (so an interrupted review resumes) and the
+// session-scoped "discussed" set. `startedAt` is the baseline for "created this
+// session" (used by notes-pass). At most one row per profile should be `active`.
+//
+// "Discussed this session" lives HERE as session state, deliberately not as a
+// column on Item — so there's nothing to mass-reset and a crash can't leave stale
+// flags on permanent rows.
+model ReviewSession {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id])
+
+  kind        String   // 'pa' | 'submodality'
+  modalityId  String   // 'pa' for Penny's review, else the submodality id
+  phase       String   // current phase name (see review/phases.ts)
+  status      String   @default("active") // active | completed | abandoned
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+
+  discussedItemIds String? // JSON string[] — item ids marked discussed this session
+
+  @@index([profileId, status])
 }
 
 // The principal→item channel. Adam speaks to a specific Task / PendingCalendarEvent
