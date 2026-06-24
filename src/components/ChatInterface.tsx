@@ -86,6 +86,7 @@ interface Message {
   // Review mode: engine chips shown under an assistant turn, and phase dividers.
   chips?: string[]
   divider?: string
+  streamId?: string // identifies a review placeholder so it's replaced, never duplicated
 }
 
 interface ChatInterfaceProps {
@@ -412,16 +413,26 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   // self speaks). After an advance, auto-opens the next phase (capped, so a chain of
   // empty phases can't run away). Stored in a ref so it can recurse cleanly.
   const AUTO_STEP_CAP = 8
+  const isSteppingRef = useRef(false)
   const doReviewStepRef = useRef(async (_t: string, _depth = 0): Promise<void> => {})
   doReviewStepRef.current = async (userText: string, autoDepth = 0): Promise<void> => {
-    if (userText) {
-      reviewConvRef.current = [...reviewConvRef.current, { role: 'user', content: userText }]
-      setMessages(prev => [...prev, { role: 'user', content: userText }])
-      setInput('')
+    // One step at a time. An overlapping invocation (e.g. a quick double-send) is
+    // dropped here, so a single response can never be printed twice. Auto-opened
+    // phases (autoDepth > 0) run inside the same held lock.
+    if (autoDepth === 0) {
+      if (isSteppingRef.current) return
+      isSteppingRef.current = true
     }
-    setIsLoading(true)
-    setMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }])
+    const streamId = `s${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     try {
+      if (userText) {
+        reviewConvRef.current = [...reviewConvRef.current, { role: 'user', content: userText }]
+        setMessages(prev => [...prev, { role: 'user', content: userText }])
+        setInput('')
+      }
+      setIsLoading(true)
+      setMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true, streamId }])
+
       const res = await fetch('/api/review', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'step', messages: reviewConvRef.current }),
@@ -432,20 +443,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       const text: string = data.text || ''
       const chips: string[] = Array.isArray(data.chips) ? data.chips.map((c: EngineChip) => chipLabel(c)) : []
       reviewConvRef.current = [...reviewConvRef.current, { role: 'assistant', content: text }]
-      setMessages(prev => {
-        const next = [...prev]
-        const bubble: Message = { role: 'assistant', content: text || '…', streaming: false, chips }
-        if (next[next.length - 1]?.streaming) next[next.length - 1] = bubble
-        else next.push(bubble)
-        return next
-      })
+      // Replace THIS step's own placeholder by id — map can't create a duplicate.
+      setMessages(prev => prev.map(m =>
+        m.streamId === streamId ? { role: 'assistant', content: text || '…', streaming: false, chips, streamId } : m
+      ))
 
       const kind: ReviewKind = data.kind === 'submodality' ? 'submodality' : 'pa'
       if (data.done) {
         setReviewActive(false); setReviewPhase(null); setActiveReviewInfo(null)
         reviewConvRef.current = []
         setMessages(prev => [...prev, { role: 'assistant', content: '', divider: 'review complete' }])
-        setIsLoading(false)
         return
       }
       if (data.advanced) {
@@ -457,18 +464,17 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           setReviewPhase(nextPhase)
           setActiveReviewInfo({ phase: nextPhase, kind })
           setMessages(prev => [...prev, { role: 'assistant', content: '', divider: phaseLabel(nextPhase, kind) }])
-          if (autoDepth < AUTO_STEP_CAP) { await doReviewStepRef.current('', autoDepth + 1); return }
+          if (autoDepth < AUTO_STEP_CAP) await doReviewStepRef.current('', autoDepth + 1)
         }
       }
     } catch (e) {
       console.error(e)
-      setMessages(prev => {
-        const next = [...prev]
-        if (next[next.length - 1]?.streaming) { next[next.length - 1].content = 'Review hiccupped — try again.'; next[next.length - 1].streaming = false }
-        return next
-      })
+      setMessages(prev => prev.map(m =>
+        m.streamId === streamId ? { ...m, content: 'Review hiccupped — try again.', streaming: false } : m
+      ))
+    } finally {
+      if (autoDepth === 0) { isSteppingRef.current = false; setIsLoading(false) }
     }
-    setIsLoading(false)
   }
 
   const startReview = useCallback(async () => {
