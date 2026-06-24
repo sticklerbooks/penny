@@ -31,7 +31,8 @@ describe('decideStatusChange (FSM-gated writes)', () => {
 
 describe('computeChips (report from the DB, not the LLM)', () => {
   const snap = (over: Partial<ItemSnapshot>): ItemSnapshot => ({
-    id: 'x', name: 'thing', target: 'pa', paStatus: null, modalityStatus: null, visibility: true, ...over,
+    id: 'x', name: 'thing', target: 'pa', paStatus: null, modalityStatus: null, visibility: true,
+    type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, ...over,
   })
 
   it('reports a newly created visible item', () => {
@@ -57,6 +58,22 @@ describe('computeChips (report from the DB, not the LLM)', () => {
   it('shows NOTHING when nothing actually changed (the anti-hallucination guard)', () => {
     const items = [snap({ id: 'a', paStatus: 'pending' })]
     expect(computeChips(items, items)).toEqual([])
+  })
+
+  it('reports a field edit — the type change that went invisible in the smoke test', () => {
+    const before = [snap({ id: 'a', name: 'dentist', type: 'event' })]
+    const after = [snap({ id: 'a', name: 'dentist', type: 'ongoing' })]
+    expect(computeChips(before, after)).toEqual([
+      { kind: 'field', id: 'a', name: 'dentist', field: 'type', from: 'event', to: 'ongoing' },
+    ])
+  })
+
+  it('reports a priority bump (numbers stringified)', () => {
+    const before = [snap({ id: 'a', priority: 2 })]
+    const after = [snap({ id: 'a', priority: 4 })]
+    expect(computeChips(before, after)).toEqual([
+      { kind: 'field', id: 'a', name: 'thing', field: 'priority', from: '2', to: '4' },
+    ])
   })
 
   it('treats an archive (visibility true→false) as a deletion chip', () => {

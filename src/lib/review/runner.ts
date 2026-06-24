@@ -52,6 +52,11 @@ async function snapshot(profileId: string): Promise<ItemSnapshot[]> {
     paStatus: i.paStatus,
     modalityStatus: i.modalityStatus,
     visibility: i.visibility,
+    type: i.type,
+    priority: i.priority,
+    duration: i.duration,
+    dayTime: i.dayTime,
+    projectId: i.projectId,
   }))
 }
 
