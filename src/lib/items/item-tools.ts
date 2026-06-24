@@ -55,6 +55,7 @@ export const REVIEW_TOOL_SCHEMAS: Tool[] = [
         priority: { type: 'number', description: '0–5 (default 2).' },
         duration: { type: 'string', description: 'For events: "30 min", "1 hour".' },
         dayTime: { type: 'string', description: 'Timing/recurrence hint, if any.' },
+        dueDate: { type: 'string', description: 'A specific due date, YYYY-MM-DD (one-offs only).' },
         projectId: { type: 'string', description: 'Link to a project, if any.' },
       },
       required: ['name', 'description', 'type', 'target'],
@@ -73,6 +74,7 @@ export const REVIEW_TOOL_SCHEMAS: Tool[] = [
         priority: { type: 'number' },
         duration: { type: 'string' },
         dayTime: { type: 'string' },
+        dueDate: { type: 'string', description: 'A specific due date, YYYY-MM-DD. Pass "" to clear it.' },
         projectId: { type: 'string' },
       },
       required: ['id'],
@@ -113,9 +115,19 @@ export function reviewToolSchemas(names: string[]): Tool[] {
   return REVIEW_TOOL_SCHEMAS.filter((t) => set.has(t.name))
 }
 
+// undefined = leave unchanged; null = clear; Date = set. Empty/invalid string clears.
+function parseDueDate(v: unknown): Date | null | undefined {
+  if (v === undefined) return undefined
+  const s = String(v).trim()
+  if (!s) return null
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
 function fmtItem(i: ItemRow): string {
   const status = i.target === 'pa' ? `pa=${i.paStatus}` : `mod=${i.modalityStatus}`
-  return `[${i.id}] "${i.name}" (${i.type}, ${status}, p${i.priority}, →${i.target})`
+  const due = i.dueDate ? `, due ${new Date(i.dueDate).toISOString().slice(0, 10)}` : ''
+  return `[${i.id}] "${i.name}" (${i.type}, ${status}, p${i.priority}${due}, →${i.target})`
 }
 
 export async function executeReviewTool(
@@ -145,13 +157,16 @@ export async function executeReviewTool(
           priority: args.priority as number | undefined,
           duration: args.duration as string | undefined,
           dayTime: args.dayTime as string | undefined,
+          dueDate: parseDueDate(args.dueDate),
           projectId: args.projectId as string | undefined,
         })
         return { content: `created ${fmtItem(item)}` }
       }
       case 'update_item': {
-        const { id, ...rest } = args as Record<string, unknown>
-        const item = await updateItemFields(String(id), rest)
+        const { id, dueDate, ...rest } = args as Record<string, unknown>
+        const fields: Record<string, unknown> = { ...rest }
+        if (dueDate !== undefined) fields.dueDate = parseDueDate(dueDate)
+        const item = await updateItemFields(String(id), fields)
         return { content: `updated ${fmtItem(item)}` }
       }
       case 'set_item_status': {

@@ -101,21 +101,36 @@ export const PA_NOTES_ORDER: readonly PaStatus[] = ['pending', 'continuing', 'ne
 // Submodality notes-read: pending, then new, then acknowledge completed, then blocked.
 export const SUB_NOTESREAD_ORDER: readonly ModalityStatus[] = ['pending', 'new', 'completed', 'blocked']
 
+// A one-off with a specific due date further out than this is NOT surfaced for
+// triage yet — no point reviewing it now. (Ongoing items / projects have no single
+// due date, so they're never skipped by this.)
+export const SKIP_DUE_BEYOND_DAYS = 10
+
+export function isFarFutureDue(dueDate: Date | null | undefined, now: Date): boolean {
+  if (!dueDate) return false
+  return dueDate.getTime() > now.getTime() + SKIP_DUE_BEYOND_DAYS * DAY_MS
+}
+
 interface PaQueueItem {
   paStatus: PaStatus | null
+  dueDate?: Date | null
 }
 interface ModQueueItem {
   modalityStatus: ModalityStatus | null
+  dueDate?: Date | null
 }
 
-/** Items the PA notes phase triages, grouped and ordered per PA_NOTES_ORDER. */
-export function paNotesQueue<T extends PaQueueItem>(items: T[]): T[] {
-  return orderByStatus(items, PA_NOTES_ORDER, (it) => it.paStatus)
+/** Items the PA notes phase triages, ordered per PA_NOTES_ORDER, skipping dated
+ *  one-offs due more than SKIP_DUE_BEYOND_DAYS out. */
+export function paNotesQueue<T extends PaQueueItem>(items: T[], now: Date = new Date()): T[] {
+  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now))
+  return orderByStatus(due, PA_NOTES_ORDER, (it) => it.paStatus)
 }
 
-/** Items the submodality notes-read phase walks, ordered per SUB_NOTESREAD_ORDER. */
-export function subNotesReadQueue<T extends ModQueueItem>(items: T[]): T[] {
-  return orderByStatus(items, SUB_NOTESREAD_ORDER, (it) => it.modalityStatus)
+/** Items the submodality notes-read phase walks, ordered, same far-future skip. */
+export function subNotesReadQueue<T extends ModQueueItem>(items: T[], now: Date = new Date()): T[] {
+  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now))
+  return orderByStatus(due, SUB_NOTESREAD_ORDER, (it) => it.modalityStatus)
 }
 
 function orderByStatus<T, S extends string>(items: T[], order: readonly S[], pick: (it: T) => S | null): T[] {

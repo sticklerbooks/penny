@@ -32,7 +32,7 @@ describe('decideStatusChange (FSM-gated writes)', () => {
 describe('computeChips (report from the DB, not the LLM)', () => {
   const snap = (over: Partial<ItemSnapshot>): ItemSnapshot => ({
     id: 'x', name: 'thing', target: 'pa', paStatus: null, modalityStatus: null, visibility: true,
-    type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, ...over,
+    type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, dueDate: null, ...over,
   })
 
   it('reports a newly created visible item', () => {

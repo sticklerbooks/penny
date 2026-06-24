@@ -17,10 +17,11 @@ export interface ItemSnapshot {
   duration: string | null
   dayTime: string | null
   projectId: string | null
+  dueDate: string | null // ISO date (YYYY-MM-DD) so it compares by value, not ref
 }
 
 // The editable fields a `field` chip reports on (name + the update_item surface).
-const TRACKED_FIELDS = ['name', 'type', 'priority', 'duration', 'dayTime', 'projectId'] as const
+const TRACKED_FIELDS = ['name', 'type', 'priority', 'duration', 'dayTime', 'projectId', 'dueDate'] as const
 
 export type EngineChip =
   | { kind: 'created'; id: string; name: string; target: string; status: string }

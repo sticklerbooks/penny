@@ -57,6 +57,7 @@ async function snapshot(profileId: string): Promise<ItemSnapshot[]> {
     duration: i.duration,
     dayTime: i.dayTime,
     projectId: i.projectId,
+    dueDate: i.dueDate ? new Date(i.dueDate).toISOString().slice(0, 10) : null,
   }))
 }
 

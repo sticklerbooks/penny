@@ -24,26 +24,28 @@ describe('canonLabel — the label normalization the cutover relies on', () => {
 })
 
 describe('taskToItem', () => {
-  it('a submodality task → its own world (modalityStatus pending), ongoing, label normalized', () => {
-    const m = taskToItem({ id: 't1', name: 'File 941', description: 'quarterly', priority: 3, assignedModality: 'margot', projectId: 'p9', status: 'Started' })
+  it('a submodality task → its own world (modalityStatus pending), ongoing, label + due date carried', () => {
+    const due = new Date('2026-07-15')
+    const m = taskToItem({ id: 't1', name: 'File 941', description: 'quarterly', priority: 3, assignedModality: 'margot', projectId: 'p9', status: 'Started', dueDate: due })
     expect(m.sourceRef).toBe('task:t1')
     expect(m.input).toMatchObject({
       target: 'bookkeeping', createdBy: 'bookkeeping', type: 'ongoing',
-      projectId: 'p9', priority: 3, modalityStatus: 'pending', sourceRef: 'task:t1',
+      projectId: 'p9', priority: 3, modalityStatus: 'pending', sourceRef: 'task:t1', dueDate: due,
     })
     expect(m.input.paStatus).toBeUndefined()
   })
 
   it('a pa task → paStatus pending, not modalityStatus', () => {
-    const m = taskToItem({ id: 't2', name: 'x', description: null, priority: null, assignedModality: 'pa', projectId: null, status: null })
+    const m = taskToItem({ id: 't2', name: 'x', description: null, priority: null, assignedModality: 'pa', projectId: null, status: null, dueDate: null })
     expect(m.input.paStatus).toBe('pending')
     expect(m.input.modalityStatus).toBeUndefined()
     expect(m.input.priority).toBe(2) // default when null
     expect(m.input.description).toBe('x') // falls back to name
+    expect(m.input.dueDate).toBeNull()
   })
 
   it('clamps an out-of-range priority into 0–5', () => {
-    expect(taskToItem({ id: 't', name: 'n', description: 'd', priority: 9, assignedModality: 'pa', projectId: null, status: null }).input.priority).toBe(5)
+    expect(taskToItem({ id: 't', name: 'n', description: 'd', priority: 9, assignedModality: 'pa', projectId: null, status: null, dueDate: null }).input.priority).toBe(5)
   })
 })
 

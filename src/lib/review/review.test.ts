@@ -159,6 +159,17 @@ describe('triage ordering', () => {
     expect(paNotesQueue(items).map((i) => i.id)).toEqual(['p', 'c', 'n'])
   })
 
+  it('skips a dated one-off due more than 10 days out, keeps near/undated ones', () => {
+    const far = new Date(now.getTime() + 20 * 24 * 60 * 60 * 1000)
+    const near = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
+    const items = [
+      { id: 'far', paStatus: 'pending' as const, dueDate: far },
+      { id: 'near', paStatus: 'pending' as const, dueDate: near },
+      { id: 'undated', paStatus: 'new' as const, dueDate: null },
+    ]
+    expect(paNotesQueue(items, now).map((i) => i.id).sort()).toEqual(['near', 'undated'])
+  })
+
   it('submodality notes-read walks pending → new → completed → blocked', () => {
     const items = [
       { id: 'b', modalityStatus: 'blocked' as const },

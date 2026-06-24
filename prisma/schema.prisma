@@ -272,6 +272,8 @@ model Item {
   priority    Int      @default(2)  // 0–5
   duration    String?  // for events: "30 min", "1 hour"
   dayTime     String?  // timing/recurrence hint: "Tuesday mornings", "weekdays 9am"
+  dueDate     DateTime? // a specific due date (one-offs). Dated items due >10 days
+                        // out are skipped in the notes review (see selectors).
 
   // Lifecycle — written ONLY through the FSM. Nullable because an item may live in
   // PA's world, a submodality's world, or both.

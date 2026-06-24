@@ -32,6 +32,7 @@ export interface OldTask {
   assignedModality: string | null
   projectId: string | null
   status: string | null
+  dueDate: Date | null
 }
 
 export interface OldNote {
@@ -69,6 +70,7 @@ export function taskToItem(t: OldTask): Mapped {
       createdBy: target,
       projectId: t.projectId ?? null,
       priority: clamp(t.priority ?? 2, 0, 5),
+      dueDate: t.dueDate ?? null,
       sourceRef: `task:${t.id}`,
       ...sided(target, 'pending'),
     },

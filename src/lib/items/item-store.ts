@@ -27,6 +27,7 @@ export interface ItemRow {
   priority: number
   duration: string | null
   dayTime: string | null
+  dueDate: Date | null
   paStatus: string | null
   modalityStatus: string | null
   visibility: boolean
@@ -45,6 +46,7 @@ export interface CreateItemInput {
   priority?: number
   duration?: string | null
   dayTime?: string | null
+  dueDate?: Date | null
   /** Initial status on the relevant side. Defaults to 'new' on the side implied by
    *  `target` ('pa' → paStatus, otherwise modalityStatus). Validated as an entry. */
   paStatus?: PaStatus
@@ -73,6 +75,7 @@ export async function createItem(profileId: string, input: CreateItemInput): Pro
       priority: input.priority ?? 2,
       duration: input.duration ?? null,
       dayTime: input.dayTime ?? null,
+      dueDate: input.dueDate ?? null,
       paStatus: paStatus ?? null,
       modalityStatus: modalityStatus ?? null,
       sourceRef: input.sourceRef ?? null,
@@ -107,7 +110,7 @@ export async function setItemStatus(
 
 export async function updateItemFields(
   id: string,
-  fields: Partial<Pick<ItemRow, 'name' | 'description' | 'type' | 'priority' | 'duration' | 'dayTime' | 'projectId'>>
+  fields: Partial<Pick<ItemRow, 'name' | 'description' | 'type' | 'priority' | 'duration' | 'dayTime' | 'projectId' | 'dueDate'>>
 ): Promise<ItemRow> {
   return db().item.update({ where: { id }, data: fields })
 }
