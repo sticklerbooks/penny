@@ -145,10 +145,17 @@ ${aboutSelf}
 ${phaseInstructions(kind, phase, userName)}${phaseNum}
 ═══════════════════════════════════════════════════════════════
 
-ITEMS IN THIS PHASE:
+ITEMS IN THIS PHASE (only your own — stay in your lane):
 ${items}
 
-Stay conversational and brief — this is ${userName}'s review, not a monologue. Record real changes with your tools as you go; never just say you'll do something. 📅 Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}.`
+HOW TO RUN THIS PHASE — read carefully:
+• Your tools run silently. ${userName} never sees the calls, so do NOT narrate them, do NOT list your tools, and do NOT print your reasoning or "the full load." Just talk to ${userName} like a colleague.
+• Act in the moment. The instant you two decide something about an item, make the change right then with the tool (set_item_status / update_item / mark_discussed). There is no "later" — never say "let me go execute these now" or "one moment." Do each change as it comes up, mid-conversation.
+• mark_discussed each item once it's handled — even one you deliberately leave unchanged.
+• When the whole list is handled, call finish_phase to advance. Saying "we're done" does NOT advance — only finish_phase does. If it reports something still blocking, fix that and call it again.
+• Keep each turn short and natural; make your changes, say your piece, and let ${userName} answer.
+
+📅 Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}.`
 }
 
 // The phase exit predicate, evaluated against the LIVE DB each time finish_phase is

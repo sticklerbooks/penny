@@ -126,8 +126,11 @@ export async function executeReviewTool(
   try {
     switch (name) {
       case 'search_items': {
+        // A submodality only ever sees her OWN domain — never the whole board.
+        // PA sees everything (optionally filtered by the target arg).
+        const target = ctx.modalityId === 'pa' ? (args.target as string | undefined) : ctx.modalityId
         const items = await searchItems(ctx.profileId, {
-          target: args.target as string | undefined,
+          target,
           type: args.type as string | undefined,
         })
         return { content: items.length ? items.map(fmtItem).join('\n') : '(no items)' }
