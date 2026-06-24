@@ -6,6 +6,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ToolContext } from '@/lib/tool-executor'
+import { prisma } from '@/lib/db'
 import { ITEM_TYPES } from './fsm'
 import {
   createItem,
@@ -33,13 +34,28 @@ type Tool = Anthropic.Tool
 export const REVIEW_TOOL_SCHEMAS: Tool[] = [
   {
     name: 'search_items',
-    description: 'List the items in scope (optionally filtered). Use to check what already exists before creating, and to see a self\'s load.',
+    description: 'List the items in scope (optionally filtered). Use to check what already exists before creating, to see a self\'s load, and — with projectId — to see what\'s inside a project (its folder of items).',
     input_schema: {
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Filter to items aimed at this target (a modality id or "pa").' },
         type: { type: 'string', enum: ITEM_TYPES as unknown as string[], description: 'Filter to one item type.' },
+        projectId: { type: 'string', description: 'Filter to the items inside this project (its folder contents).' },
       },
+    },
+  },
+  {
+    name: 'update_project',
+    description: 'Update a project (the folder itself): its progress (0–10), description, or term. Use in the projects phase to nudge a project forward.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        progress: { type: 'number', description: '0–10 (10 = complete).' },
+        description: { type: 'string' },
+        termType: { type: 'string', enum: ['short', 'medium', 'long'] },
+      },
+      required: ['id'],
     },
   },
   {
@@ -144,8 +160,18 @@ export async function executeReviewTool(
         const items = await searchItems(ctx.profileId, {
           target,
           type: args.type as string | undefined,
+          projectId: args.projectId as string | undefined,
         })
         return { content: items.length ? items.map(fmtItem).join('\n') : '(no items)' }
+      }
+      case 'update_project': {
+        const data: Record<string, unknown> = {}
+        if (args.progress !== undefined) data.progress = Math.max(0, Math.min(10, Math.round(Number(args.progress))))
+        if (args.description !== undefined) data.description = String(args.description)
+        if (args.termType !== undefined) data.termType = String(args.termType)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = await (prisma as any).project.update({ where: { id: String(args.id) }, data })
+        return { content: `project updated: "${p.name}" — ${p.progress}/10` }
       }
       case 'create_item': {
         const item = await createItem(ctx.profileId, {
