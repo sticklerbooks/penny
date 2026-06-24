@@ -284,6 +284,8 @@ model Item {
 
   calendarEventId String?  // reserved: GCal event id once scheduled (Stage 4+)
   escalatedToId   String?  // when a modality item spawns a PA item, the new item's id
+  sourceRef       String?  // provenance for the Stage-3 cutover, e.g. "task:<id>" /
+                           // "note:<id>" — makes the migration idempotent + reversible
 
   @@index([profileId, target])
   @@index([profileId, projectId])

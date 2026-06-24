@@ -49,6 +49,8 @@ export interface CreateItemInput {
    *  `target` ('pa' → paStatus, otherwise modalityStatus). Validated as an entry. */
   paStatus?: PaStatus
   modalityStatus?: ModalityStatus
+  /** Provenance tag for migrated rows (e.g. "task:abc"). */
+  sourceRef?: string | null
 }
 
 export async function createItem(profileId: string, input: CreateItemInput): Promise<ItemRow> {
@@ -73,8 +75,15 @@ export async function createItem(profileId: string, input: CreateItemInput): Pro
       dayTime: input.dayTime ?? null,
       paStatus: paStatus ?? null,
       modalityStatus: modalityStatus ?? null,
+      sourceRef: input.sourceRef ?? null,
     },
   })
+}
+
+/** Has a row with this provenance tag already been migrated? (cutover idempotency) */
+export async function itemExistsBySourceRef(profileId: string, sourceRef: string): Promise<boolean> {
+  const row = await db().item.findFirst({ where: { profileId, sourceRef }, select: { id: true } })
+  return !!row
 }
 
 /** Apply a status change through the FSM. Returns the decision (ok/reason) so the
