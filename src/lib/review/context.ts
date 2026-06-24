@@ -45,7 +45,7 @@ const SUB_PHASE_TOOLS: Record<string, string[]> = {
   user: [REVIEW_TOOLS.search, REVIEW_TOOLS.create, REVIEW_TOOLS.finishPhase],
   // The engine pre-loads the notes-pass queue (sent-to-PA + this-session items);
   // the self decides each, the engine copies the chosen ones up to Penny.
-  'notes-pass': [REVIEW_TOOLS.search, REVIEW_TOOLS.setStatus, REVIEW_TOOLS.create, REVIEW_TOOLS.finishPhase],
+  'notes-pass': [REVIEW_TOOLS.search, REVIEW_TOOLS.setStatus, REVIEW_TOOLS.create, REVIEW_TOOLS.markDiscussed, REVIEW_TOOLS.finishPhase],
   'wrap-up': [REVIEW_TOOLS.finishPhase],
 }
 
@@ -68,7 +68,7 @@ export function phaseInstructions(kind: ReviewKind, phase: Phase, name: string):
     submodalities: `REVIEW · SUBMODALITIES. The engine has already booked any "talk to <self>" items that were due and flagged the selves needing attention (shown below). Walk them with ${name} so he knows what's coming. ${finish}`,
     user: `REVIEW · USER. Check in on ${name} himself — how he's doing, anything else on his mind. Capture anything that surfaces (${REVIEW_TOOLS.create}). ${finish}`,
     calendar: `REVIEW · CALENDAR. The items below are queued for scheduling. Confirm timing with ${name}; the engine writes the calendar and flips each schedule→scheduled. ${finish}`,
-    'notes-pass': `REVIEW · NOTES-PASS. The items below are everything that may need to go up to Penny — already-escalated ones plus anything you created this session. For each, decide with ${name} whether it goes up; mark it sent-to-PA (${REVIEW_TOOLS.setStatus}) if so. ${finish}`,
+    'notes-pass': `REVIEW · NOTES-PASS. The items below are everything that may need to go up to Penny — already-escalated ones plus anything you created this session. For each, decide with ${name}: if it goes up, mark it sent-to-PA (${REVIEW_TOOLS.setStatus}); if it stays in your world, call ${REVIEW_TOOLS.markDiscussed} on it. Every item must be settled one way or the other before the phase closes. ${finish}`,
     'wrap-up': `REVIEW · WRAP-UP. The engine handles the cleanup (deleting flagged items, saving memories, resetting state). Give ${name} a brief, honest sign-off on what got done. ${finish}`,
   }
   void kind
