@@ -111,10 +111,10 @@ export const REVIEW_TOOL_SCHEMAS: Tool[] = [
   },
   {
     name: 'mark_discussed',
-    description: 'Mark an item discussed in this review (so the phase knows it\'s been handled). Call after you and the user finish with it.',
+    description: 'Mark ANY reviewable thing — an item OR a project — as reviewed this session, by its id, so the phase can close. You usually don\'t need this: changing or creating something already marks it reviewed automatically. Use it for the one case that has no change to make: a thing you looked at with the user and deliberately left exactly as-is (e.g. a project you decided not to touch this week).',
     input_schema: {
       type: 'object',
-      properties: { id: { type: 'string' } },
+      properties: { id: { type: 'string', description: 'The item or project id.' } },
       required: ['id'],
     },
   },
@@ -171,6 +171,7 @@ export async function executeReviewTool(
         if (args.termType !== undefined) data.termType = String(args.termType)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const p = await (prisma as any).project.update({ where: { id: String(args.id) }, data })
+        await markDiscussed(ctx.reviewSessionId, String(args.id)) // acting on it = reviewed
         return { content: `project updated: "${p.name}" — ${p.progress}/10` }
       }
       case 'create_item': {
@@ -186,6 +187,8 @@ export async function executeReviewTool(
           dueDate: parseDueDate(args.dueDate),
           projectId: args.projectId as string | undefined,
         })
+        await markDiscussed(ctx.reviewSessionId, item.id)
+        if (item.projectId) await markDiscussed(ctx.reviewSessionId, item.projectId) // worked into a project = reviewed it
         return { content: `created ${fmtItem(item)}` }
       }
       case 'update_item': {
@@ -193,16 +196,18 @@ export async function executeReviewTool(
         const fields: Record<string, unknown> = { ...rest }
         if (dueDate !== undefined) fields.dueDate = parseDueDate(dueDate)
         const item = await updateItemFields(String(id), fields)
+        await markDiscussed(ctx.reviewSessionId, String(id))
         return { content: `updated ${fmtItem(item)}` }
       }
       case 'set_item_status': {
         const res = await setItemStatus(String(args.id), args.side as 'pa' | 'modality', String(args.to))
         if (!res.ok) return { content: `REJECTED: ${res.reason}`, is_error: true }
+        await markDiscussed(ctx.reviewSessionId, String(args.id))
         return { content: `status set → ${fmtItem(res.item!)}` }
       }
       case 'mark_discussed': {
         await markDiscussed(ctx.reviewSessionId, String(args.id))
-        return { content: `marked discussed: ${args.id}` }
+        return { content: `marked reviewed: ${args.id}` }
       }
       case 'finish_phase': {
         const violations = ctx.exitCheck ? await ctx.exitCheck() : []
