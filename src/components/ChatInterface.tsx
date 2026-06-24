@@ -4,6 +4,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import CallMode from './CallMode'
 import { MODALITIES, getModality } from '@/lib/modalities'
 import { SentenceSpeaker } from '@/lib/speak-client'
+import { PA_PHASES, SUB_PHASES, type ReviewKind } from '@/lib/review/phases'
+import { chipLabel, type EngineChip } from '@/lib/review/deltas'
 
 // ─── Base palette (non-modality colours) ─────────────────────────────────────
 const C = {
@@ -46,6 +48,13 @@ function stripStreamingMarkers(text: string): string {
   return result.replace(/\n{3,}/g, '\n\n').trim()
 }
 
+// "notes · 2/7" for a phase divider / progress label.
+function phaseLabel(phase: string, kind: ReviewKind): string {
+  const phases = (kind === 'pa' ? PA_PHASES : SUB_PHASES) as readonly string[]
+  const i = phases.indexOf(phase)
+  return i >= 0 ? `${phase} · ${i + 1}/${phases.length}` : phase
+}
+
 // ─── Web Speech API types (for dictate mode) ─────────────────────────────────
 interface DictSpeechResultAlt { transcript: string }
 interface DictSpeechResult { isFinal: boolean; 0: DictSpeechResultAlt }
@@ -74,6 +83,9 @@ interface Message {
   content: string
   streaming?: boolean
   artifact?: { filename: string; content: string } | null
+  // Review mode: engine chips shown under an assistant turn, and phase dividers.
+  chips?: string[]
+  divider?: string
 }
 
 interface ChatInterfaceProps {
@@ -92,6 +104,12 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   const [thinkingImgError, setThinkingImgError] = useState(false)
   const [activeModality, setActiveModality]   = useState('pa')
   const [showSwitcher, setShowSwitcher]       = useState(false)
+  // Review mode
+  const [reviewActive, setReviewActive]       = useState(false)
+  const [reviewKind, setReviewKind]           = useState<ReviewKind>('pa')
+  const [reviewPhase, setReviewPhase]         = useState<string | null>(null)
+  const [activeReviewInfo, setActiveReviewInfo] = useState<{ phase: string; kind: ReviewKind } | null>(null)
+  const reviewConvRef = useRef<{ role: 'user' | 'assistant'; content: string }[]>([])
   const [isDictating, setIsDictating]         = useState(false)
   const [isMobile, setIsMobile]               = useState(false)
   // Text-mode TTS: when speakReplies is on, each completed assistant reply (incl.
@@ -271,6 +289,12 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     if (!isAutoStart && !switchTo && !content) return
     if (isLoading) return
 
+    // In a review, the input box drives the review engine, not /api/chat.
+    if (reviewActiveRef.current) {
+      if (content) doReviewStepRef.current(content)
+      return
+    }
+
     // A new turn supersedes any reply currently being read aloud.
     speechRef.current?.stop()
     speechRef.current = null
@@ -379,6 +403,104 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     setIsLoading(false)
     textareaRef.current?.focus()
   }, [conversationId, isLoading, onIntakeComplete])
+
+  // ── Review mode ───────────────────────────────────────────────────────────────
+  const reviewActiveRef = useRef(false)
+  useEffect(() => { reviewActiveRef.current = reviewActive }, [reviewActive])
+
+  // One review step. userText empty = the engine just opens the current phase (the
+  // self speaks). After an advance, auto-opens the next phase (capped, so a chain of
+  // empty phases can't run away). Stored in a ref so it can recurse cleanly.
+  const AUTO_STEP_CAP = 8
+  const doReviewStepRef = useRef(async (_t: string, _depth = 0): Promise<void> => {})
+  doReviewStepRef.current = async (userText: string, autoDepth = 0): Promise<void> => {
+    if (userText) {
+      reviewConvRef.current = [...reviewConvRef.current, { role: 'user', content: userText }]
+      setMessages(prev => [...prev, { role: 'user', content: userText }])
+      setInput('')
+    }
+    setIsLoading(true)
+    setMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }])
+    try {
+      const res = await fetch('/api/review', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'step', messages: reviewConvRef.current }),
+      })
+      const data = await res.json()
+      const text: string = data.text || ''
+      const chips: string[] = Array.isArray(data.chips) ? data.chips.map((c: EngineChip) => chipLabel(c)) : []
+      reviewConvRef.current = [...reviewConvRef.current, { role: 'assistant', content: text }]
+      setMessages(prev => {
+        const next = [...prev]
+        const bubble: Message = { role: 'assistant', content: text || '…', streaming: false, chips }
+        if (next[next.length - 1]?.streaming) next[next.length - 1] = bubble
+        else next.push(bubble)
+        return next
+      })
+
+      const kind: ReviewKind = data.kind === 'submodality' ? 'submodality' : 'pa'
+      if (data.done) {
+        setReviewActive(false); setReviewPhase(null); setActiveReviewInfo(null)
+        reviewConvRef.current = []
+        setMessages(prev => [...prev, { role: 'assistant', content: '', divider: 'review complete' }])
+        setIsLoading(false)
+        return
+      }
+      if (data.advanced) {
+        const phases = (kind === 'pa' ? PA_PHASES : SUB_PHASES) as readonly string[]
+        const i = phases.indexOf(data.phase as string)
+        const nextPhase = i >= 0 && i + 1 < phases.length ? phases[i + 1] : null
+        reviewConvRef.current = []
+        if (nextPhase) {
+          setReviewPhase(nextPhase)
+          setActiveReviewInfo({ phase: nextPhase, kind })
+          setMessages(prev => [...prev, { role: 'assistant', content: '', divider: phaseLabel(nextPhase, kind) }])
+          if (autoDepth < AUTO_STEP_CAP) { await doReviewStepRef.current('', autoDepth + 1); return }
+        }
+      }
+    } catch (e) {
+      console.error(e)
+      setMessages(prev => {
+        const next = [...prev]
+        if (next[next.length - 1]?.streaming) { next[next.length - 1].content = 'Review hiccupped — try again.'; next[next.length - 1].streaming = false }
+        return next
+      })
+    }
+    setIsLoading(false)
+  }
+
+  const startReview = useCallback(async () => {
+    const kind: ReviewKind = activeModalityRef.current === 'pa' ? 'pa' : 'submodality'
+    try {
+      const res = await fetch('/api/review', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', kind, modalityId: activeModalityRef.current }),
+      })
+      const data = await res.json()
+      if (!data.session) return
+      const k: ReviewKind = data.session.kind === 'submodality' ? 'submodality' : 'pa'
+      setReviewKind(k); setReviewPhase(data.session.phase); setActiveReviewInfo({ phase: data.session.phase, kind: k })
+      setReviewActive(true); setMessages([]); reviewConvRef.current = []
+      await doReviewStepRef.current('')
+    } catch (e) { console.error(e) }
+  }, [])
+
+  const endReview = useCallback(async () => {
+    await fetch('/api/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'abandon' }),
+    }).catch(() => {})
+    setReviewActive(false); setReviewPhase(null); setActiveReviewInfo(null); reviewConvRef.current = []
+    setMessages(prev => [...prev, { role: 'assistant', content: '', divider: 'review paused' }])
+  }, [])
+
+  // On entering chat, surface any in-progress review so the button reads "Resume".
+  useEffect(() => {
+    if (type === 'intake') return
+    fetch('/api/review').then(r => r.json()).then(d => {
+      if (d.active) setActiveReviewInfo({ phase: d.active.phase, kind: d.active.kind === 'submodality' ? 'submodality' : 'pa' })
+    }).catch(() => {})
+  }, [type])
 
   // Initialize
   useEffect(() => {
@@ -576,12 +698,32 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             {speakReplies ? '🔊' : '🔇'}
           </button>
 
+          {/* Review mode toggle */}
+          {type !== 'intake' && (
+            reviewActive ? (
+              <button
+                onClick={endReview}
+                className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95"
+                style={{ background: accent + '20', borderColor: accent, color: accent }}
+                title="Pause the review — resume it later where you left off"
+              >⏸ Review</button>
+            ) : (
+              <button
+                onClick={startReview}
+                disabled={isLoading}
+                className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
+                style={{ background: accent + '12', borderColor: accentBorder, color: C.textMuted }}
+                title={activeReviewInfo ? 'Resume your in-progress review' : 'Start a structured review'}
+              >{activeReviewInfo ? '▶ Resume' : '▶ Review'}</button>
+            )
+          )}
+
           {/* Modality switcher */}
           {type !== 'intake' && (
             <div className="relative">
               <button
                 onClick={() => setShowSwitcher(s => !s)}
-                disabled={isLoading}
+                disabled={isLoading || reviewActive}
                 className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
                 style={{ background: accent + '20', borderColor: accentBorder, color: accent }}
                 title="Switch modality"
@@ -620,9 +762,35 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           )}
         </div>
 
+        {/* Review phase header + progress */}
+        {reviewActive && reviewPhase && (() => {
+          const phases = (reviewKind === 'pa' ? PA_PHASES : SUB_PHASES) as readonly string[]
+          const idx = phases.indexOf(reviewPhase)
+          return (
+            <div className="flex-shrink-0 px-5 py-2" style={{ background: C.panelLight, borderBottom: `1px solid ${accentBorder}` }}>
+              <div className="flex items-center justify-between text-xs mb-1.5" style={{ color: C.textMuted, letterSpacing: '0.05em' }}>
+                <span>📋 REVIEW · {reviewPhase.toUpperCase()}</span>
+                <span>{idx + 1}/{phases.length}</span>
+              </div>
+              <div className="flex gap-1">
+                {phases.map((p, i) => (
+                  <div key={p} style={{ height: 3, flex: 1, borderRadius: 2, background: i < idx ? C.textMuted : i === idx ? accent : accentBorder }} />
+                ))}
+              </div>
+            </div>
+          )
+        })()}
+
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-6 space-y-5">
           {messages.map((msg, i) => {
+            if (msg.divider) {
+              return (
+                <div key={i} className="flex justify-center my-1">
+                  <span style={{ fontSize: 11, color: C.textMuted, background: C.panelLight, border: `1px solid ${accentBorder}`, borderRadius: 999, padding: '3px 12px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{msg.divider}</span>
+                </div>
+              )
+            }
             const isAssistant = msg.role === 'assistant'
             return (
               <div key={i} className={`flex items-end gap-2 ${isAssistant ? 'justify-start' : 'justify-end'}`}>
@@ -669,6 +837,14 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                       <span>{msg.artifact.filename}</span>
                       <span style={{ opacity: 0.6 }}>↓</span>
                     </button>
+                  )}
+                  {/* Engine chips — the factual "what actually changed", straight from the DB. */}
+                  {msg.chips && msg.chips.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1 items-start">
+                      {msg.chips.map((c, ci) => (
+                        <span key={ci} style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', fontSize: 11, color: C.textMuted, background: C.base, border: `1px solid ${accentBorder}`, borderRadius: 6, padding: '3px 8px' }}>✓ engine · {c}</span>
+                      ))}
+                    </div>
                   )}
                   {/* Per-message replay — hear this one aloud (or stop it). */}
                   {isAssistant && msg.content && !msg.streaming && (
