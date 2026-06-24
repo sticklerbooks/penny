@@ -426,7 +426,9 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'step', messages: reviewConvRef.current }),
       })
-      const data = await res.json()
+      let data: { text?: string; chips?: EngineChip[]; kind?: string; phase?: string; advanced?: boolean; done?: boolean }
+      try { data = await res.json() }
+      catch { data = { text: 'Server error on that step — try again.', chips: [], advanced: false, done: false } }
       const text: string = data.text || ''
       const chips: string[] = Array.isArray(data.chips) ? data.chips.map((c: EngineChip) => chipLabel(c)) : []
       reviewConvRef.current = [...reviewConvRef.current, { role: 'assistant', content: text }]

@@ -49,8 +49,18 @@ export async function POST(req: NextRequest) {
     const messages: ChatMsg[] = Array.isArray(body.messages)
       ? body.messages.filter((m: ChatMsg) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
       : []
-    const result = await runReviewStep(profile.id, messages)
-    return NextResponse.json(result)
+    try {
+      const result = await runReviewStep(profile.id, messages)
+      return NextResponse.json(result)
+    } catch (e) {
+      console.error('[review/step] failed:', e)
+      // Always return JSON (never an HTML 500) so the client can't crash on parse.
+      return NextResponse.json({
+        phase: active.phase, kind: active.kind, modalityId: active.modalityId,
+        text: 'Something tripped on my end running that step — try sending again.',
+        chips: [], advanced: false, done: false, error: e instanceof Error ? e.message : String(e),
+      })
+    }
   }
 
   if (action === 'abandon') {

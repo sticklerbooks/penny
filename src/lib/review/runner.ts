@@ -228,7 +228,15 @@ async function runPhaseTurn(
     exitCheck: () => phaseViolations(profileId, kind, phase, session.modalityId, session.id, session.startedAt),
   }
 
-  const initial = messages.length ? messages : [{ role: 'user' as const, content: '(begin this phase)' }]
+  // Sanitize the conversation for the Anthropic API: drop empty-content turns (a
+  // near-empty "…" reply would be rejected), and guarantee it starts with a user
+  // message — an auto-opened phase puts the self's greeting first, which the API
+  // refuses as a leading assistant turn.
+  let conv = messages.filter((m) => m.content && m.content.trim())
+  if (conv.length && conv[0].role !== 'user') {
+    conv = [{ role: 'user', content: "(let's keep going)" }, ...conv]
+  }
+  const initial = conv.length ? conv : [{ role: 'user' as const, content: '(begin this phase)' }]
   const result = await runAgenticLoop({
     model: PENNY_MODEL,
     maxTokens: 1200,
