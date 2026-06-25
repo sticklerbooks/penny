@@ -29,7 +29,6 @@ const COMMON_TRIAGE = [
 ]
 
 const PA_PHASE_TOOLS: Record<string, string[]> = {
-  greeting: [REVIEW_TOOLS.search, REVIEW_TOOLS.create, REVIEW_TOOLS.appendNote, REVIEW_TOOLS.finishPhase],
   notes: COMMON_TRIAGE,
   projects: [REVIEW_TOOLS.search, REVIEW_TOOLS.create, REVIEW_TOOLS.update, REVIEW_TOOLS.appendNote, REVIEW_TOOLS.updateProject, REVIEW_TOOLS.createProject, REVIEW_TOOLS.setStatus, REVIEW_TOOLS.markDiscussed, REVIEW_TOOLS.finishPhase],
   // The engine books the "talk to X" items and bumps attention BEFORE this turn;
@@ -51,7 +50,6 @@ const PA_PHASE_TOOLS: Record<string, string[]> = {
 }
 
 const SUB_PHASE_TOOLS: Record<string, string[]> = {
-  greeting: [REVIEW_TOOLS.search, REVIEW_TOOLS.create, REVIEW_TOOLS.appendNote, REVIEW_TOOLS.finishPhase],
   'notes-read': COMMON_TRIAGE,
   projects: [REVIEW_TOOLS.search, REVIEW_TOOLS.create, REVIEW_TOOLS.update, REVIEW_TOOLS.appendNote, REVIEW_TOOLS.updateProject, REVIEW_TOOLS.createProject, REVIEW_TOOLS.setStatus, REVIEW_TOOLS.markDiscussed, REVIEW_TOOLS.finishPhase],
   // The engine pre-loads the notes-pass queue (sent-to-PA + this-session items);
@@ -73,10 +71,11 @@ export function phaseInstructions(kind: ReviewKind, phase: Phase, name: string):
 
   const noDupes = `If what ${name} just said is more about something ALREADY listed below — not a new thing — use ${REVIEW_TOOLS.appendNote} to add it to that item's notes. Do NOT call ${REVIEW_TOOLS.create} for an update to something that already exists; a new Item for the same thing is the #1 mistake to avoid.`
 
+  // This is the FIRST phase of each review (greeting was retired), so its block
+  // opens with a quick hello before getting to the items.
   const blocks: Record<string, string> = {
-    greeting: `REVIEW · GREETING. Say hello to ${name} and ask if anything is urgent. If something is, handle it now (capture it with ${REVIEW_TOOLS.create}) before moving on. ${finish}`,
-    notes: `REVIEW · NOTES. Walk the items below in order (pending, then contingent, then new). For each: decide with ${name} what it should be, fix its type/status with ${REVIEW_TOOLS.setStatus}/${REVIEW_TOOLS.update}, and call ${REVIEW_TOOLS.markDiscussed} once handled. Nothing may stay 'new'. A contingent item whose recheck date hasn't arrived yet won't even be listed — only act on the ones shown. If one of these looks like a recurring commitment rather than a one-off (you've seen it, or something like it, before), say so to ${name} — but don't convert it here; bring it up in the projects phase below, which has the right tools for that. ${noDupes} ${finish}`,
-    'notes-read': `REVIEW · NOTES-READ. Walk your domain's items below (pending, contingent, new, then completed). Resolve each with ${name}; mark it discussed. Nothing stays 'new'; try to move anything off 'contingent' once you have an answer. A contingent item whose recheck date hasn't arrived yet won't even be listed. If one of these looks like a recurring commitment rather than a one-off, say so — but save the actual conversion for the projects phase. ${noDupes} ${finish}`,
+    notes: `REVIEW · NOTES — the start of the review. Open with a warm one-line hello to ${name}, then get to work. Walk the items below in order (pending, then contingent, then new). For each: decide with ${name} what it should be, fix its type/status with ${REVIEW_TOOLS.setStatus}/${REVIEW_TOOLS.update}, and call ${REVIEW_TOOLS.markDiscussed} once handled. Nothing may stay 'new'. A contingent item whose recheck date hasn't arrived yet won't even be listed — only act on the ones shown. If one of these looks like a recurring commitment rather than a one-off (you've seen it, or something like it, before), say so to ${name} — but don't convert it here; bring it up in the projects phase below, which has the right tools for that. ${noDupes} ${finish}`,
+    'notes-read': `REVIEW · NOTES-READ — the start of the review. Open with a warm one-line hello to ${name}, then get to work. Walk your domain's items below (pending, contingent, new, then completed). Resolve each with ${name}; mark it discussed. Nothing stays 'new'; try to move anything off 'contingent' once you have an answer. A contingent item whose recheck date hasn't arrived yet won't even be listed. If one of these looks like a recurring commitment rather than a one-off, say so — but save the actual conversion for the projects phase. ${noDupes} ${finish}`,
     projects: `REVIEW · PROJECTS. The list below is your PROJECTS — each is a folder holding related items. Go through them one at a time with ${name}. For each project you can: look at what's inside it (${REVIEW_TOOLS.search} with that project's projectId), nudge its progress (${REVIEW_TOOLS.updateProject}), and — if ${name} wants to act on it — capture a concrete item inside it (${REVIEW_TOOLS.create} with projectId set to that project). Leaving a project untouched is fine. The moment you've talked a project through, call ${REVIEW_TOOLS.markDiscussed} with THAT PROJECT'S id — every project must be marked before the phase will close.
 
 ALSO: this is where a recurring item gets upgraded. If you flagged one earlier (or notice now, via ${REVIEW_TOOLS.search}) that's really a recurring commitment being recreated instance after instance rather than a true one-off — confirm with ${name}, then ${REVIEW_TOOLS.createProject} for it and mark the old duplicate item(s) completed or to-delete so they stop reappearing. From then on each occurrence is its own fresh item (${REVIEW_TOOLS.create}) carrying that project's id, made when it's actually due — not all at once. ${noDupes} ${finish}`,

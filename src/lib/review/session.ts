@@ -32,10 +32,15 @@ export async function activeReview(profileId: string): Promise<ReviewSessionRow 
 }
 
 /**
- * Resume the active review if there is one, otherwise start a fresh one at the
- * first phase. Reviews are exclusive: if an active review already exists (even for
- * a different target), it is returned as-is — the caller must abandon it before
- * starting a different one, so two reviews can't run at once.
+ * Resume YOUR OWN in-progress review if one is active, otherwise start fresh.
+ *
+ * Reviews are exclusive — at most one runs at a time. Two rules keep that honest:
+ *   • Same target (kind+modality) AND a still-valid phase → resume it, so you can
+ *     leave a review and come back to it.
+ *   • A review for a DIFFERENT target, or one parked on a phase that no longer
+ *     exists (e.g. an old 'greeting' session from before that phase was retired),
+ *     is auto-abandoned and replaced. Per design: starting a review for this self
+ *     now always wins — it never silently hands you back someone else's stuck one.
  */
 export async function startOrResumeReview(
   profileId: string,
@@ -43,7 +48,12 @@ export async function startOrResumeReview(
   modalityId: string
 ): Promise<{ session: ReviewSessionRow; resumed: boolean }> {
   const existing = await activeReview(profileId)
-  if (existing) return { session: existing, resumed: true }
+  if (existing) {
+    const sameTarget = existing.kind === kind && existing.modalityId === modalityId
+    const phaseStillValid = isValidPhase(existing.kind as ReviewKind, existing.phase)
+    if (sameTarget && phaseStillValid) return { session: existing, resumed: true }
+    await abandonReview(existing.id) // different target, or a dead phase → replace
+  }
   const session = await db().reviewSession.create({
     data: { profileId, kind, modalityId, phase: firstPhase(kind), startedAt: new Date() },
   })

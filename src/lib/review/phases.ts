@@ -8,9 +8,12 @@
 
 export type ReviewKind = 'pa' | 'submodality'
 
-// Penny's review — the anchor's full sweep across the whole picture.
+// Penny's review — the anchor's full sweep across the whole picture. Opens
+// straight on notes: there is no separate greeting phase. Greeting had no item
+// gate, so the self could linger in it forever without ever calling finish_phase
+// to advance; the first real phase carries the hello now (see the output rules
+// in runner.ts, which already let a phase open with a greeting).
 export const PA_PHASES = [
-  'greeting',
   'notes',
   'projects',
   'submodalities',
@@ -21,7 +24,6 @@ export type PaPhase = (typeof PA_PHASES)[number]
 
 // A submodality's review — narrower: her own domain, then hand work up to Penny.
 export const SUB_PHASES = [
-  'greeting',
   'notes-read',
   'projects',
   'notes-pass',

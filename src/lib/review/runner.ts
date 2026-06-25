@@ -224,7 +224,7 @@ async function phaseViolations(
     )
     return considerationViolations(queue.map((q) => ({ id: q.id, name: items.find((i) => i.id === q.id)?.name ?? q.id })), discussed)
   }
-  // greeting / user / submodalities / wrap-up: conversational — no item gate.
+  // submodalities / wrap-up: conversational — no item gate.
   return []
 }
 

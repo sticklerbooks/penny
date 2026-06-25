@@ -30,8 +30,9 @@ const startReview: Tool = {
   name: 'start_review',
   description:
     'Start (or resume) a structured Review session — a way to carefully work through pending notes and tasks. ' +
-    'Calling this tool activates a different script; you can call it whenever the user asks for it. ' +
-    "Don't narrate what's about to happen, just call it.",
+    'The MOMENT the user agrees to a review, your very next action is to call THIS TOOL — not a prose reply. ' +
+    'Saying "sure, let\'s review!" without calling the tool does nothing: the review only begins when this fires. ' +
+    "Calling it hands the conversation to a separate script, so don't narrate what's about to happen — just call it.",
   input_schema: { type: 'object', properties: {} },
 }
 

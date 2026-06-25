@@ -25,8 +25,8 @@ const daysAgo = (n: number) => new Date(now.getTime() - n * 24 * 60 * 60 * 1000)
 
 describe('phase sequencing', () => {
   it('PA and submodality have the spec phase walks', () => {
-    expect(PA_PHASES).toEqual(['greeting', 'notes', 'projects', 'submodalities', 'calendar', 'wrap-up'])
-    expect(SUB_PHASES).toEqual(['greeting', 'notes-read', 'projects', 'notes-pass', 'wrap-up'])
+    expect(PA_PHASES).toEqual(['notes', 'projects', 'submodalities', 'calendar', 'wrap-up'])
+    expect(SUB_PHASES).toEqual(['notes-read', 'projects', 'notes-pass', 'wrap-up'])
   })
 
   it('walks start → end then signals done with null', () => {
