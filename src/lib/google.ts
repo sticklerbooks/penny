@@ -80,14 +80,23 @@ async function fetchEventsAllCalendars(
   return perCalendar.flat().sort((a, b) => startOf(a).localeCompare(startOf(b)))
 }
 
+// Penny's own calendar — where events land by default when no calendar is named.
+// Override the name with PENNY_CALENDAR_NAME if the calendar is called something
+// else in the user's account.
+const PENNY_DEFAULT_CALENDAR = (process.env.PENNY_CALENDAR_NAME || 'Penny').toLowerCase()
+
 // Resolve a human calendar name (e.g. "Work", "Household") to its calendar id.
-// Omitted / "primary" / "household" all map to the primary calendar, which IS
-// the user's "Household" calendar. Unknown names fall back to primary.
+//   • Omitted → the "Penny" calendar (Penny's default home for events).
+//   • Explicit "primary" / "household" → the user's primary calendar.
+//   • Any other name → looked up by title.
+// Anything that doesn't resolve (incl. a missing "Penny" calendar) falls back to
+// primary, so a write never fails just because a calendar isn't found.
 async function resolveCalendarId(token: string, name?: string): Promise<string> {
   const n = (name ?? '').trim().toLowerCase()
-  if (!n || n === 'primary' || n === 'household') return 'primary'
+  if (n === 'primary' || n === 'household') return 'primary'
+  const target = n || PENNY_DEFAULT_CALENDAR
   const cals = await listCalendars(token)
-  const match = cals.find((c) => c.name.toLowerCase() === n)
+  const match = cals.find((c) => c.name.toLowerCase() === target)
   return match?.id ?? 'primary'
 }
 
