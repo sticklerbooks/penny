@@ -8,10 +8,12 @@ import { getModality } from '@/lib/modalities'
 import { getAnthropic, cachedSystem, PENNY_MODEL } from '@/lib/claude'
 import { runAgenticLoop } from '@/lib/agentic-loop'
 import { searchItems, type ItemRow } from '@/lib/items/item-store'
-import { reviewToolSchemas, executeReviewTool, type ReviewToolContext } from '@/lib/items/item-tools'
+import { reviewToolSchemas, executeReviewTool, REVIEW_OWN_TOOL_NAMES, type ReviewToolContext } from '@/lib/items/item-tools'
+import { executeTool } from '@/lib/tool-executor'
+import { getAllTools } from '@/lib/tools'
 import { computeChips, type ItemSnapshot, type EngineChip } from './deltas'
 import { toolsForPhase, phaseInstructions } from './context'
-import { paNotesQueue, subNotesReadQueue, notesPassQueue } from './selectors'
+import { paNotesQueue, subNotesReadQueue, notesPassQueue, isFutureContingency } from './selectors'
 import {
   notesExitViolations,
   notesReadExitViolations,
@@ -58,6 +60,9 @@ async function snapshot(profileId: string): Promise<ItemSnapshot[]> {
     dayTime: i.dayTime,
     projectId: i.projectId,
     dueDate: i.dueDate ? new Date(i.dueDate).toISOString().slice(0, 10) : null,
+    notes: i.notes,
+    contingency: i.contingency,
+    contingencyUntil: i.contingencyUntil ? new Date(i.contingencyUntil).toISOString().slice(0, 10) : null,
   }))
 }
 
@@ -66,7 +71,10 @@ function fmtItems(items: ItemRow[]): string {
   return items
     .map((i) => {
       const status = i.target === 'pa' ? `pa=${i.paStatus}` : `mod=${i.modalityStatus}`
-      return `  • [${i.id}] "${i.name}" — ${i.type}, ${status}, p${i.priority}${i.duration ? `, ${i.duration}` : ''}`
+      const until = i.contingencyUntil ? ` (recheck ${new Date(i.contingencyUntil).toISOString().slice(0, 10)})` : ''
+      const contingency = i.contingency ? `\n      contingent on: ${i.contingency}${until}` : ''
+      const notes = i.notes ? `\n      notes: ${i.notes.replace(/\n/g, ' / ')}` : ''
+      return `  • [${i.id}] "${i.name}" — ${i.type}, ${status}, p${i.priority}${i.duration ? `, ${i.duration}` : ''}${contingency}${notes}`
     })
     .join('\n')
 }
@@ -90,7 +98,7 @@ async function loadPhaseItems(
   if (kind === 'submodality' && phase === 'notes-pass') {
     const items = await searchItems(profileId, { target: modalityId })
     const queue = notesPassQueue(
-      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt })),
+      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt, contingencyUntil: i.contingencyUntil })),
       sessionStartedAt
     )
     const ids = new Set(queue.map((q) => q.id))
@@ -107,13 +115,18 @@ async function loadPhaseItems(
     return fmtItems(items)
   }
   if (phase === 'projects') {
-    const projects = await db().project.findMany({
+    const allProjects = await db().project.findMany({
       where: {
         profileId,
         ...(kind === 'pa' ? { progress: { gte: 3, lte: 9 } } : { assignedModality: modalityId }),
         visibility: true,
       },
     })
+    // A project contingent on a recheck date that hasn't arrived yet is skipped
+    // entirely — same rule as items, same reason (no point discussing it before
+    // the date she herself said to check back).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const projects = allProjects.filter((p: any) => !isFutureContingency(p.contingencyUntil, new Date()))
     if (!projects.length) return '  (none)'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return projects.map((p: any) => `  • [${p.id}] "${p.name}" — ${p.progress}/10`).join('\n')
@@ -189,20 +202,24 @@ async function phaseViolations(
     return calendarExitViolations(items.map(asGuard))
   }
   if (phase === 'projects') {
-    const projects = await db().project.findMany({
+    const allProjects = await db().project.findMany({
       where: {
         profileId,
         ...(kind === 'pa' ? { progress: { gte: 3, lte: 9 } } : { assignedModality: modalityId }),
         visibility: true,
       },
     })
+    // Same future-contingency skip as loadPhaseItems — a project never shown to
+    // the self this phase must not block finish_phase for going undiscussed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const projects = allProjects.filter((p: any) => !isFutureContingency(p.contingencyUntil, new Date()))
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return considerationViolations(projects.map((p: any) => ({ id: p.id, name: p.name })), discussed)
   }
   if (kind === 'submodality' && phase === 'notes-pass') {
     const items = await searchItems(profileId, { target: modalityId })
     const queue = notesPassQueue(
-      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt })),
+      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt, contingencyUntil: i.contingencyUntil })),
       sessionStartedAt
     )
     return considerationViolations(queue.map((q) => ({ id: q.id, name: items.find((i) => i.id === q.id)?.name ?? q.id })), discussed)
@@ -220,7 +237,16 @@ async function runPhaseTurn(
   userName: string
 ): Promise<{ text: string; finishRequested: boolean }> {
   const system = await buildReviewPrompt(profileId, kind, session.modalityId, phase, userName)
-  const tools = reviewToolSchemas(toolsForPhase(kind, phase))
+  const phaseToolNames = toolsForPhase(kind, phase)
+  // Item/Project/session-control tools come from the Review surface; anything
+  // else granted to a phase (e.g. the calendar tools) is the SAME tool the live
+  // chat uses — pulled straight from the live tool registry rather than
+  // duplicated here.
+  const liveTools = getAllTools()
+  const tools = [
+    ...reviewToolSchemas(phaseToolNames),
+    ...liveTools.filter((t) => phaseToolNames.includes(t.name) && !REVIEW_OWN_TOOL_NAMES.has(t.name)),
+  ]
   const ctx: ReviewToolContext = {
     profileId,
     modalityId: session.modalityId,
@@ -245,7 +271,8 @@ async function runPhaseTurn(
     tools,
     initialMessages: initial,
     ctx,
-    executeToolFn: (n, a, c) => executeReviewTool(n, a, c as ReviewToolContext),
+    executeToolFn: (n, a, c) =>
+      REVIEW_OWN_TOOL_NAMES.has(n) ? executeReviewTool(n, a, c as ReviewToolContext) : executeTool(n, a, c),
   })
   return { text: result.finalText, finishRequested: !!ctx.finishRequested }
 }

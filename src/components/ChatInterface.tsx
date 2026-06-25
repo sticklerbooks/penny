@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import CallMode from './CallMode'
 import { MODALITIES, getModality } from '@/lib/modalities'
 import { SentenceSpeaker } from '@/lib/speak-client'
@@ -96,10 +97,12 @@ interface ChatInterfaceProps {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceProps) {
+  const router = useRouter()
   const [messages, setMessages]               = useState<Message[]>([])
   const [input, setInput]                     = useState('')
   const [isLoading, setIsLoading]             = useState(false)
   const [conversationId, setConversationId]   = useState<string | null>(null)
+  const [endingChat, setEndingChat]           = useState(false)
   const [inCall, setInCall]                   = useState(false)
   const [avatarImgError, setAvatarImgError]   = useState(false)
   const [thinkingImgError, setThinkingImgError] = useState(false)
@@ -316,6 +319,10 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       : null
     speechRef.current = speaker
 
+    // Set when a start_review tool fired this turn — handled after the stream
+    // ends so it doesn't race the normal-chat completion below.
+    let pendingReviewStart: { kind: ReviewKind; phase: string } | null = null
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -373,6 +380,12 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
               })
               // No more text — flush the final sentence to TTS.
               speaker?.finish()
+              if (data.reviewStarted) {
+                pendingReviewStart = {
+                  kind: data.reviewStarted.kind === 'submodality' ? 'submodality' : 'pa',
+                  phase: data.reviewStarted.phase,
+                }
+              }
             }
             if (data.error) {
               speaker?.stop()
@@ -399,6 +412,22 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
         if (last?.streaming) { last.content = "I'm having a little trouble right now. Try again in a moment?"; last.streaming = false }
         return next
       })
+    }
+
+    // A self called start_review this turn — hand the conversation to the
+    // Review system. Unlike the manual ▶ Review button, this keeps the
+    // messages already on screen instead of clearing them.
+    if (pendingReviewStart) {
+      setReviewKind(pendingReviewStart.kind)
+      setReviewPhase(pendingReviewStart.phase)
+      setActiveReviewInfo({ phase: pendingReviewStart.phase, kind: pendingReviewStart.kind })
+      setReviewActive(true)
+      reviewConvRef.current = []
+      setMessages(prev => [...prev, { role: 'assistant', content: '', divider: phaseLabel(pendingReviewStart.phase, pendingReviewStart.kind) }])
+      setIsLoading(false)
+      await doReviewStepRef.current('')
+      textareaRef.current?.focus()
+      return
     }
 
     setIsLoading(false)
@@ -501,6 +530,27 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     setReviewActive(false); setReviewPhase(null); setActiveReviewInfo(null); reviewConvRef.current = []
     setMessages(prev => [...prev, { role: 'assistant', content: '', divider: 'review paused' }])
   }, [])
+
+  // Closes the conversation and returns to the dashboard. The memory pass for
+  // every modality that talked today runs server-side in the background (see
+  // /api/chat/end's use of `after()`) — this call returns as soon as the
+  // conversation is marked closed, not once those passes finish. Disabled
+  // mid-review: abandon/finish that first so its own state doesn't dangle.
+  const endChat = useCallback(async () => {
+    if (endingChat) return
+    setEndingChat(true)
+    try {
+      if (conversationId) {
+        await fetch('/api/chat/end', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId }),
+        }).catch(() => {})
+      }
+      router.push('/dashboard')
+    } finally {
+      setEndingChat(false)
+    }
+  }, [conversationId, endingChat, router])
 
   // On entering chat, surface any in-progress review so the button reads "Resume".
   useEffect(() => {
@@ -767,6 +817,19 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                 </>
               )}
             </div>
+          )}
+
+          {/* End chat — closes the conversation and returns to the dashboard */}
+          {type !== 'intake' && !reviewActive && (
+            <button
+              onClick={endChat}
+              disabled={endingChat}
+              className="text-sm px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 disabled:opacity-40"
+              style={{ background: 'transparent', borderColor: C.textMuted + '55', color: C.textMuted }}
+              title="End this chat, run the memory pass for everyone who talked today, and return to the dashboard"
+            >
+              {endingChat ? 'Wrapping up…' : 'End chat'}
+            </button>
           )}
         </div>
 

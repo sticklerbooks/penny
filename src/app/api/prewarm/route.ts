@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     if (!profile) return NextResponse.json({ ok: false, reason: 'no profile' })
 
     // (1) Warm the context bundle — this is the expensive serial part.
-    const { memories, tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents } =
+    const { memories, items, clients, scheduledMessages, weeklyBrief, projects } =
       await getContextBundle(profile.id)
 
     // (2) Warm the prompt cache for this self with a throwaway 1-token call.
@@ -45,10 +45,10 @@ export async function POST(req: NextRequest) {
     ])
 
     const system = buildSystemPrompt(
-      profile, memories, tasks, notes, clients,
+      profile, memories, items, clients,
       scheduledMessages, emailCalendarSummary,
       !profile.intakeComplete, id, weeklyBrief,
-      brief, projects, pendingEvents, identity
+      brief, projects, identity
     )
 
     await getAnthropic().messages

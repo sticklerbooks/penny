@@ -16,6 +16,7 @@ import { prisma } from '@/lib/db'
 import { getAnthropic, buildSystemPrompt, PENNY_MODEL } from '@/lib/claude'
 import { MODALITIES } from '@/lib/modalities'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
+import { searchItems } from '@/lib/items/item-store'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 min ceiling — the pipeline takes ~30–60 s
@@ -87,18 +88,14 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Load full context (mirrors chat/route.ts parallel load) ───────────────
-  const [memories, tasks, notes, clients, scheduledMessages, emailCalendarSummary] =
+  const [memories, items, clients, scheduledMessages, emailCalendarSummary] =
     await Promise.all([
       prisma.memory.findMany({
         where: { profileId: profile.id, archived: false },
         orderBy: { importance: 'desc' },
         take: 80,
       }),
-      prisma.task.findMany({ where: { profileId: profile.id } }),
-      prisma.note.findMany({
-        where: { profileId: profile.id, resolution: 'Open' },
-        orderBy: { createdAt: 'desc' },
-      }),
+      searchItems(profile.id, { visibleOnly: true }),
       prisma.client.findMany({
         where: { profileId: profile.id },
         orderBy: { updatedAt: 'desc' },
@@ -120,24 +117,14 @@ export async function POST(req: NextRequest) {
   // Items finished but not yet archived (most via Adam's dashboard "Done"). They're
   // hidden from each modality's live context, so surface them here so the
   // assessment CREDITS the work — then archive them below so they stop cluttering.
-  const [completedTasks, completedEvents] = await Promise.all([
-    prisma.task.findMany({
-      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
-    }),
-    prisma.pendingCalendarEvent.findMany({
-      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
-    }),
-  ])
+  const completedItems = await searchItems(profile.id, { visibleOnly: false }).then((all) =>
+    all.filter((i) => i.completedAt && i.visibility)
+  )
   const completedByModality = new Map<string, string[]>()
-  for (const t of completedTasks) {
-    const arr = completedByModality.get(t.assignedModality) ?? []
-    arr.push(t.name)
-    completedByModality.set(t.assignedModality, arr)
-  }
-  for (const e of completedEvents) {
-    const arr = completedByModality.get(e.assignedModality) ?? []
-    arr.push(e.name)
-    completedByModality.set(e.assignedModality, arr)
+  for (const i of completedItems) {
+    const arr = completedByModality.get(i.target) ?? []
+    arr.push(i.name)
+    completedByModality.set(i.target, arr)
   }
 
   // ── Domain assessments ─────────────────────────────────────────────────────
@@ -156,7 +143,7 @@ export async function POST(req: NextRequest) {
 
   for (const modality of assessable) {
     const systemPrompt = buildSystemPrompt(
-      profile, memories, tasks, notes, clients,
+      profile, memories, items, clients,
       scheduledMessages, emailCalendarSummary, false, modality.id, null
     )
 
@@ -210,7 +197,7 @@ export async function POST(req: NextRequest) {
 
   // ── Penny's synthesis ──────────────────────────────────────────────────────
   const pennySystemPrompt = buildSystemPrompt(
-    profile, memories, tasks, notes, clients,
+    profile, memories, items, clients,
     scheduledMessages, emailCalendarSummary, false, 'pa', null
   )
 
@@ -254,20 +241,14 @@ export async function POST(req: NextRequest) {
   console.log(`[weekly-reports] brief complete. flagged=${flagged}`)
 
   // ── Archive credited completions ───────────────────────────────────────────
-  // Now that the assessment has credited them, stamp archivedAt so they drop out
-  // of the dashboard's default view (done → invisible). Still fully searchable.
-  const archiveAt = new Date()
-  const [taskArch, eventArch] = await Promise.all([
-    prisma.task.updateMany({
-      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
-      data: { archivedAt: archiveAt },
-    }),
-    prisma.pendingCalendarEvent.updateMany({
-      where: { profileId: profile.id, completedAt: { not: null }, archivedAt: null },
-      data: { archivedAt: archiveAt },
-    }),
-  ])
-  console.log(`[weekly-reports] archived ${taskArch.count} tasks + ${eventArch.count} events`)
+  // Now that the assessment has credited them, drop visibility so they stop
+  // cluttering the default view (done → invisible). Still findable via search_items.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const itemArch = await (prisma as any).item.updateMany({
+    where: { profileId: profile.id, completedAt: { not: null }, visibility: true },
+    data: { visibility: false },
+  })
+  console.log(`[weekly-reports] archived ${itemArch.count} items`)
 
   return NextResponse.json({
     ok: true,
@@ -278,6 +259,6 @@ export async function POST(req: NextRequest) {
       adjective: r.reportText.split('\n').find((l) => l.trim())?.trim() ?? null,
     })),
     flagged,
-    archived: { tasks: taskArch.count, events: eventArch.count },
+    archived: { items: itemArch.count },
   })
 }

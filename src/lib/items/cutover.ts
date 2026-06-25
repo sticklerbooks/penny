@@ -18,7 +18,7 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, M
 
 // Place a migrated item on the correct lifecycle side: PA-owned items use paStatus,
 // a submodality's own items use modalityStatus.
-function sided(target: string, status: 'new' | 'pending' | 'continuing'): Partial<CreateItemInput> {
+function sided(target: string, status: 'new' | 'pending'): Partial<CreateItemInput> {
   return target === 'pa'
     ? { paStatus: status, modalityStatus: undefined }
     : { modalityStatus: status, paStatus: undefined }
@@ -56,16 +56,16 @@ export interface Mapped {
   sourceRef: string
 }
 
-// A task → an ongoing item, owned by its (normalized) modality, landing as pending
-// (active, known — not 'new', so the first review isn't 103 forced triages). The
-// review can reclassify type/status from there.
+// A task → a plain task item, owned by its (normalized) modality, landing as
+// pending (active, known — not 'new', so the first review isn't 103 forced
+// triages). The review can reclassify type/status from there.
 export function taskToItem(t: OldTask): Mapped {
   const target = canonLabel(t.assignedModality)
   return {
     input: {
       name: t.name,
       description: t.description || t.name,
-      type: 'ongoing',
+      type: 'task',
       target,
       createdBy: target,
       projectId: t.projectId ?? null,
@@ -97,20 +97,24 @@ export function noteToItem(n: OldNote): Mapped {
   }
 }
 
-// A routine → a continuing (recurring source) item in its modality's world.
+// A routine was inherently recurring, which is Project territory now (see the
+// 'projects' protocol) — but this mapper's contract is Item-shaped, and this
+// endpoint is effectively historical (no new Routine rows can be created since
+// Stage A). Lands as a plain task; if this ever actually runs again, manually
+// upgrade any genuinely-recurring result to a Project afterward.
 export function routineToItem(r: OldRoutine): Mapped {
   const target = canonLabel(r.assignedModality)
   return {
     input: {
       name: r.description.slice(0, 60),
       description: r.description,
-      type: 'ongoing',
+      type: 'task',
       target,
       createdBy: target,
       priority: clamp(r.priority ?? 2, 0, 5),
       dayTime: r.dayTime ?? null,
       sourceRef: `routine:${r.id}`,
-      ...sided(target, 'continuing'),
+      ...sided(target, 'pending'),
     },
     sourceRef: `routine:${r.id}`,
   }

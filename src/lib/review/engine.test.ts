@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { decideStatusChange } from '../items/status'
 import { computeChips, chipLabel, type ItemSnapshot } from './deltas'
 import { toolsForPhase } from './context'
+import { PA_PHASES, SUB_PHASES } from './phases'
 
 describe('decideStatusChange (FSM-gated writes)', () => {
   it('accepts a legal PA move and stamps timestamps', () => {
@@ -32,7 +33,8 @@ describe('decideStatusChange (FSM-gated writes)', () => {
 describe('computeChips (report from the DB, not the LLM)', () => {
   const snap = (over: Partial<ItemSnapshot>): ItemSnapshot => ({
     id: 'x', name: 'thing', target: 'pa', paStatus: null, modalityStatus: null, visibility: true,
-    type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, dueDate: null, ...over,
+    type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, dueDate: null, notes: '',
+    contingency: '', contingencyUntil: null, ...over,
   })
 
   it('reports a newly created visible item', () => {
@@ -96,10 +98,10 @@ describe('toolsForPhase (a phase cannot reach outside its job)', () => {
   })
 
   it('every phase can at least finish itself', () => {
-    for (const p of ['greeting', 'notes', 'projects', 'submodalities', 'user', 'calendar', 'wrap-up'] as const) {
+    for (const p of PA_PHASES) {
       expect(toolsForPhase('pa', p)).toContain('finish_phase')
     }
-    for (const p of ['greeting', 'notes-read', 'projects', 'user', 'notes-pass', 'wrap-up'] as const) {
+    for (const p of SUB_PHASES) {
       expect(toolsForPhase('submodality', p)).toContain('finish_phase')
     }
   })

@@ -7,14 +7,11 @@ import {
   cachedSystem,
   PENNY_MODEL,
 } from '@/lib/claude'
-import { extractAndSaveMemories } from '@/lib/memory'
 import { parseActions } from '@/lib/actions'
 import { getModality, resolveModality } from '@/lib/modalities'
 import { touchActive } from '@/lib/modality-state'
 import { executeTool, type ToolContext } from '@/lib/tool-executor'
 import { getToolsForModality } from '@/lib/tools'
-import { runAgenticLoop } from '@/lib/agentic-loop'
-import { closeSessionPrompt } from '@/lib/close-session'
 import { getContextBundle, getModalityBrief, getModalityIdentity } from '@/lib/context-cache'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
 
@@ -81,62 +78,13 @@ export async function POST(req: NextRequest) {
   // The heavy profile-scoped fan-out lives in an in-memory cache that any
   // mutating tool invalidates, so this is usually instant and never stale within
   // a conversation. See src/lib/context-cache.ts.
-  const { memories, tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes } =
+  const { memories, items, clients, scheduledMessages, weeklyBrief, projects } =
     await getContextBundle(profile.id)
 
-  const outgoingModality = getModality(outgoingModalityId)
-
-  // ── Close-out sweep (on switch) ────────────────────────────────────────────
-  // The outgoing self runs a full end-of-session pass with its own toolset:
-  // tidy its domain, leave a carry-note, refresh its brief (and, for the PA,
-  // the identity docs) if the session warrants it.
-  //
-  // Fire-and-forget (matches the mid-session sweep below) — NOT awaited. The
-  // context bundle for THIS request was already snapshotted above, before this
-  // runs, so nothing in the current response depends on the sweep finishing
-  // first. Awaiting it used to block the new modality's first reply behind up
-  // to 6 rounds of the outgoing self's own tool-calling — the dominant cost of
-  // "switching feels slow."
-  if (isSwitch && existingMessages.length > 0) {
-    const snapshotMessages = existingMessages
-    void (async () => {
-      try {
-        const outgoingBrief = await getModalityBrief(profile.id, outgoingModalityId)
-        const outgoingIdentity = await getModalityIdentity(profile.id, outgoingModalityId)
-
-        const closeSystem = buildSystemPrompt(
-          profile, memories, tasks, notes, clients,
-          scheduledMessages, null, false, outgoingModalityId, null,
-          outgoingBrief, projects, pendingEvents, outgoingIdentity, itemNotes
-        )
-        const closeCtx: ToolContext = {
-          profileId: profile.id,
-          modalityId: outgoingModalityId,
-          domain: outgoingModality.domain ?? undefined,
-        }
-
-        await runAgenticLoop({
-          model: PENNY_MODEL,
-          maxTokens: 1500,
-          system: cachedSystem(closeSystem),
-          tools: getToolsForModality(outgoingModalityId),
-          initialMessages: [
-            ...snapshotMessages.slice(-12).map((m) => ({
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-            })),
-            { role: 'user', content: closeSessionPrompt(outgoingModality, profile!.userName || 'Adam') },
-          ],
-          ctx: closeCtx,
-          maxRounds: 6,
-          onToolCall: (name, res) =>
-            console.log(`[switch close] ${outgoingModalityId} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
-        })
-      } catch (err) {
-        console.error('[switch] close-out sweep failed:', err)
-      }
-    })()
-  }
+  // (The old switch-triggered close-out sweep lived here — retired. It existed
+  // to catch uncaptured items/staleness from a tool surface that didn't prevent
+  // them; the Item tools are correct by construction, so there's nothing left
+  // for a prose broom pass to do. A real script-driven "end chat" replaces it.)
 
   // ── Close old convo and open fresh one ────────────────────────────────────
   if (isSwitch) {
@@ -180,10 +128,10 @@ export async function POST(req: NextRequest) {
 
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
-    profile, memories, tasks, notes, clients,
+    profile, memories, items, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief,
-    modalityBrief, projects, pendingEvents, modalityIdentity, itemNotes
+    modalityBrief, projects, modalityIdentity
   )
 
   const currentModality = getModality(activeModality)
@@ -314,6 +262,11 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         let finalized = finalizeBlocks(turn.blocks)
         loopMessages.push({ role: 'assistant', content: finalized })
 
+        // Set when a start_review tool call lands — reported in the final SSE
+        // event so the client can hand this conversation off to the Review UI
+        // without losing the messages already on screen.
+        let reviewStarted: { kind: string; modalityId: string; phase: string } | null = null
+
         while (turn.stopReason === 'tool_use' && round < MAX_ROUNDS) {
           round++
 
@@ -328,6 +281,12 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               block.input as Record<string, unknown>,
               ctx
             )
+            if (block.name === 'start_review' && !result.is_error) {
+              try {
+                const parsed = JSON.parse(result.content)
+                reviewStarted = { kind: parsed.kind, modalityId: parsed.modalityId, phase: parsed.phase }
+              } catch { /* malformed — just skip the handoff */ }
+            }
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
@@ -377,47 +336,12 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
           data: { conversationId: convoId!, role: 'assistant', content: workingText },
         })
 
-        // Background memory extraction
-        if (!isSilentTrigger) {
-          extractAndSaveMemories(profile!.id, message, workingText).catch(() => {})
-        }
+        // (Per-turn background memory extraction lived here — retired. Memory
+        // now runs once per modality at end_chat, over the full transcript;
+        // see src/lib/memory-pass.ts and the 'memory' protocol.)
 
-        // Mid-session hygiene: every 20 messages, run a background close sweep so
-        // important context is captured before the sliding window drops it.
-        // +2 for the user message + assistant response just saved (or +1 for silent).
-        const newMsgCount = existingMessages.length + (!isSilentTrigger && message?.trim() ? 2 : 1)
-        if (newMsgCount >= 20 && newMsgCount % 20 === 0) {
-          const midBrief = await getModalityBrief(profile!.id, activeModality)
-          const midCloseSystem = buildSystemPrompt(
-            profile!, memories, tasks, notes, clients,
-            scheduledMessages, emailCalendarSummary, false,
-            activeModality, null, midBrief, projects, pendingEvents, modalityIdentity, itemNotes
-          )
-          // (emailCalendarSummary above is the PA-only value from this turn — null
-          // for submodalities — which is correct for the hygiene sweep too.)
-          const midCtx: ToolContext = {
-            profileId: profile!.id,
-            modalityId: activeModality,
-            domain: currentModality.domain ?? undefined,
-          }
-          runAgenticLoop({
-            model: PENNY_MODEL,
-            maxTokens: 1500,
-            system: cachedSystem(midCloseSystem),
-            tools: getToolsForModality(activeModality),
-            initialMessages: [
-              ...existingMessages.slice(-12).map((m) => ({
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-              })),
-              { role: 'user', content: closeSessionPrompt(currentModality, profile!.userName || 'Adam') },
-            ],
-            ctx: midCtx,
-            maxRounds: 6,
-            onToolCall: (name, res) =>
-              console.log(`[mid-session close] ${activeModality} → ${name} [${res.is_error ? 'ERR' : 'OK'}]`),
-          }).catch((err) => console.error('[mid-session close] failed:', err))
-        }
+        // (The old mid-session 20-message hygiene sweep lived here — retired for
+        // the same reason as the switch sweep above.)
 
         controller.enqueue(
           encoder.encode(
@@ -428,6 +352,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               cleanText: workingText,
               activeModality,
               contextCleared,
+              reviewStarted,
               artifact: artifactAction
                 ? { filename: artifactAction.filename, content: artifactAction.content }
                 : null,

@@ -55,7 +55,7 @@ interface DashData {
   projects: ProjectItem[]
 }
 
-type ActionKind = 'done' | 'moved' | 'stale' | 'blocked' | 'note'
+type ActionKind = 'done' | 'moved' | 'stale' | 'contingent' | 'note'
 type Selected = (AgendaItem | ProjectItem) & { type: 'task' | 'event' | 'project' }
 
 const TYPE_GLYPH: Record<string, string> = { task: '✓', event: '📅', project: '📁' }
@@ -247,7 +247,7 @@ function ItemDrawer({
   const [date, setDate] = useState('')
 
   const isProject = item.type === 'project'
-  const needsBody = mode === 'blocked' || mode === 'note'
+  const needsBody = mode === 'contingent' || mode === 'note'
   const canSubmit =
     mode === 'done' ? true :
     mode === 'moved' ? !!date :
@@ -302,7 +302,7 @@ function ItemDrawer({
             <ActionChip label="✓ Done" active={mode === 'done'} onClick={() => setMode('done')} accent={accent} />
             {!isProject && <ActionChip label="→ Move" active={mode === 'moved'} onClick={() => setMode('moved')} accent={accent} />}
             <ActionChip label="⚑ Stale" active={mode === 'stale'} onClick={() => setMode('stale')} accent={accent} />
-            {!isProject && <ActionChip label="⛔ Blocked" active={mode === 'blocked'} onClick={() => setMode('blocked')} accent={accent} />}
+            {!isProject && <ActionChip label="⛔ Contingent" active={mode === 'contingent'} onClick={() => setMode('contingent')} accent={accent} />}
             <ActionChip label="✎ Note" active={mode === 'note'} onClick={() => setMode('note')} accent={accent} />
           </div>
         </div>
@@ -312,12 +312,12 @@ function ItemDrawer({
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
             style={inputStyle} />
         )}
-        {(mode === 'stale' || mode === 'blocked' || mode === 'note') && (
+        {(mode === 'stale' || mode === 'contingent' || mode === 'note') && (
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder={
-              mode === 'blocked' ? 'What is blocking it? (required)' :
+              mode === 'contingent' ? 'What is it contingent on? (required)' :
               mode === 'note' ? 'Your note to her (required)' :
               'Why is it stale? (optional)'
             }

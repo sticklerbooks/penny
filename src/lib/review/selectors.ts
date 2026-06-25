@@ -70,22 +70,24 @@ export function checkSubmodality(c: SubmodalityCheck, now: Date): SubmodalityVer
 const UNDECIDED_FOR_ESCALATION: ReadonlySet<ModalityStatus> = new Set([
   'new',
   'pending',
-  'continuing',
-  'blocked',
+  'contingent',
 ])
 
 export interface NotesPassItem {
   id: string
   modalityStatus: ModalityStatus | null
   createdAt: Date
+  contingencyUntil?: Date | null
 }
 
 /**
  * The set of items notes-pass should walk: anything sent-to-PA (whenever made),
- * plus anything minted this session that's still undecided about escalation.
+ * plus anything minted this session that's still undecided about escalation —
+ * skipping anything contingent on a recheck date that hasn't arrived yet.
  */
-export function notesPassQueue<T extends NotesPassItem>(items: T[], sessionStartedAt: Date): T[] {
+export function notesPassQueue<T extends NotesPassItem>(items: T[], sessionStartedAt: Date, now: Date = new Date()): T[] {
   return items.filter((it) => {
+    if (isFutureContingency(it.contingencyUntil, now)) return false
     if (it.modalityStatus === 'sent-to-PA') return true
     const madeThisSession = it.createdAt.getTime() >= sessionStartedAt.getTime()
     return madeThisSession && !!it.modalityStatus && UNDECIDED_FOR_ESCALATION.has(it.modalityStatus)
@@ -95,15 +97,16 @@ export function notesPassQueue<T extends NotesPassItem>(items: T[], sessionStart
 // ─── Triage ordering ────────────────────────────────────────────────────────────
 // The order each notes phase walks statuses, straight from the spec.
 
-// Penny's notes phase: pending first, then continuing, then new.
-export const PA_NOTES_ORDER: readonly PaStatus[] = ['pending', 'continuing', 'new']
+// Penny's notes phase: pending and contingent in the same pass, then new.
+export const PA_NOTES_ORDER: readonly PaStatus[] = ['pending', 'contingent', 'new']
 
-// Submodality notes-read: pending, then new, then acknowledge completed, then blocked.
-export const SUB_NOTESREAD_ORDER: readonly ModalityStatus[] = ['pending', 'new', 'completed', 'blocked']
+// Submodality notes-read: pending and contingent in the same pass, then new, then
+// acknowledge completed.
+export const SUB_NOTESREAD_ORDER: readonly ModalityStatus[] = ['pending', 'contingent', 'new', 'completed']
 
 // A one-off with a specific due date further out than this is NOT surfaced for
-// triage yet — no point reviewing it now. (Ongoing items / projects have no single
-// due date, so they're never skipped by this.)
+// triage yet — no point reviewing it now. (Projects have no single due date, so
+// they're never skipped by this.)
 export const SKIP_DUE_BEYOND_DAYS = 10
 
 export function isFarFutureDue(dueDate: Date | null | undefined, now: Date): boolean {
@@ -111,25 +114,37 @@ export function isFarFutureDue(dueDate: Date | null | undefined, now: Date): boo
   return dueDate.getTime() > now.getTime() + SKIP_DUE_BEYOND_DAYS * DAY_MS
 }
 
+// A contingent item with a REAL recheck date still in the future is skipped
+// ENTIRELY — not just deprioritized. There's nothing to ask about "did the IRS
+// get back to them" before the date she herself said to check back. A contingent
+// item with no contingencyUntil (or a past one) gets triaged as normal.
+export function isFutureContingency(contingencyUntil: Date | null | undefined, now: Date): boolean {
+  return !!contingencyUntil && contingencyUntil.getTime() > now.getTime()
+}
+
 interface PaQueueItem {
   paStatus: PaStatus | null
   dueDate?: Date | null
+  contingencyUntil?: Date | null
 }
 interface ModQueueItem {
   modalityStatus: ModalityStatus | null
   dueDate?: Date | null
+  contingencyUntil?: Date | null
 }
 
 /** Items the PA notes phase triages, ordered per PA_NOTES_ORDER, skipping dated
- *  one-offs due more than SKIP_DUE_BEYOND_DAYS out. */
+ *  one-offs due more than SKIP_DUE_BEYOND_DAYS out, and anything contingent on a
+ *  recheck date that hasn't arrived yet. */
 export function paNotesQueue<T extends PaQueueItem>(items: T[], now: Date = new Date()): T[] {
-  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now))
+  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now) && !isFutureContingency(it.contingencyUntil, now))
   return orderByStatus(due, PA_NOTES_ORDER, (it) => it.paStatus)
 }
 
-/** Items the submodality notes-read phase walks, ordered, same far-future skip. */
+/** Items the submodality notes-read phase walks, ordered, same far-future +
+ *  future-contingency skip. */
 export function subNotesReadQueue<T extends ModQueueItem>(items: T[], now: Date = new Date()): T[] {
-  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now))
+  const due = items.filter((it) => !isFarFutureDue(it.dueDate, now) && !isFutureContingency(it.contingencyUntil, now))
   return orderByStatus(due, SUB_NOTESREAD_ORDER, (it) => it.modalityStatus)
 }
 

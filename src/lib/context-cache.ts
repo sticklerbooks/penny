@@ -21,6 +21,7 @@
 import { prisma } from './db'
 import type { Memory } from '../generated/prisma/client'
 import type { WeeklyBriefSummary, ModalityIdentityLite } from './claude'
+import { searchItems } from './items/item-store'
 
 const TTL_MS = 60_000 // backstop; writes invalidate explicitly
 
@@ -34,15 +35,11 @@ async function fetchBundle(profileId: string) {
   // email/calendar summary is also not here: it's PA-only and fetched in the
   // chat route just for her (its own 30-min cache covers repeat turns), so the
   // six submodalities never pay the Google + Haiku cost.
-  const [tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes] =
+  const [items, clients, scheduledMessages, weeklyBrief, projects] =
     await Promise.all([
-      prisma.task.findMany({
-        where: { profileId, status: { not: 'Complete' }, archivedAt: null },
-      }),
-      prisma.note.findMany({
-        where: { profileId, resolution: 'Open' },
-        orderBy: { createdAt: 'desc' },
-      }),
+      // The unified Task/Note/PendingEvent/Routine surface — claude.ts lenses and
+      // renders this one set per-modality the same way it used to lens four tables.
+      searchItems(profileId, { visibleOnly: true }),
       prisma.client.findMany({
         where: { profileId },
         orderBy: { updatedAt: 'desc' },
@@ -58,22 +55,9 @@ async function fetchBundle(profileId: string) {
         where: { profileId, progress: { lt: 10 } },
         orderBy: { updatedAt: 'desc' },
       }).catch(() => []),
-      prisma.pendingCalendarEvent.findMany({
-        // `scheduled` = on GCal; `completedAt` = it actually happened. Both, plus
-        // archived, drop the event out of context so a past meeting stops nagging.
-        where: { profileId, scheduled: false, completedAt: null, archivedAt: null },
-        orderBy: { createdAt: 'desc' },
-      }).catch(() => []),
-      // Adam's open flags on individual items (Class B: stale/blocked/note). Class A
-      // notes are born acknowledged, so this only ever carries things she must act on.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (prisma as any).itemNote.findMany({
-        where: { profileId, acknowledged: false },
-        orderBy: { createdAt: 'desc' },
-      }).catch(() => []),
     ])
 
-  return { memories: [] as Memory[], tasks, notes, clients, scheduledMessages, weeklyBrief, projects, pendingEvents, itemNotes }
+  return { memories: [] as Memory[], items, clients, scheduledMessages, weeklyBrief, projects }
 }
 
 export type ContextBundle = Awaited<ReturnType<typeof fetchBundle>>

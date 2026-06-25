@@ -87,21 +87,21 @@ describe('PA-side review moves (from the spec)', () => {
 
   it('a new note must be triaged out of new', () => {
     // notes phase: none may be left as new — every entry status is reachable
-    for (const s of ['pending', 'schedule', 'continuing', 'completed', 'to-delete'] as PaStatus[]) {
+    for (const s of ['pending', 'schedule', 'contingent', 'completed', 'to-delete'] as PaStatus[]) {
       expect(canTransitionPa('new', s)).toBe(true)
     }
   })
 
-  it('pending → continuing (reclassify a pending event as an ongoing task)', () => {
-    expect(transitionPa('pending', 'continuing')).toEqual({ ok: true, from: 'pending', to: 'continuing' })
+  it('pending → contingent (stuck on something outside Penny\'s control)', () => {
+    expect(transitionPa('pending', 'contingent')).toEqual({ ok: true, from: 'pending', to: 'contingent' })
   })
 
   it('pending may stay pending', () => {
     expect(canTransitionPa('pending', 'pending')).toBe(true)
   })
 
-  it('continuing → pending (collapse an ongoing task to a single event)', () => {
-    expect(canTransitionPa('continuing', 'pending')).toBe(true)
+  it('contingent → pending (the condition cleared)', () => {
+    expect(canTransitionPa('contingent', 'pending')).toBe(true)
   })
 
   it('schedule → scheduled (calendar phase places it)', () => {
@@ -144,24 +144,17 @@ describe('modality-side review moves (from the spec)', () => {
     expect(canTransitionModality('sent-to-PA', 'pending')).toBe(true)
   })
 
-  it('a submodality can classify something as continuing (an ongoing source)', () => {
-    expect(canTransitionModality('new', 'continuing')).toBe(true)
-    expect(canTransitionModality('pending', 'continuing')).toBe(true)
-    expect(canTransitionModality(null, 'continuing')).toBe(true) // may be minted directly
+  it('a submodality can classify something as contingent (stuck on something outside her control)', () => {
+    expect(canTransitionModality('new', 'contingent')).toBe(true)
+    expect(canTransitionModality('pending', 'contingent')).toBe(true)
+    expect(canTransitionModality(null, 'contingent')).toBe(true) // may be minted directly
   })
 
-  it('continuing stays continuing while it recurs, or collapses / finishes', () => {
-    expect(canTransitionModality('continuing', 'continuing')).toBe(true)
-    expect(canTransitionModality('continuing', 'pending')).toBe(true)     // collapse to single
-    expect(canTransitionModality('continuing', 'sent-to-PA')).toBe(true)  // escalate the whole thing
-    expect(canTransitionModality('continuing', 'completed')).toBe(true)
-  })
-
-  it('blocked can be moved off blocked', () => {
+  it('contingent can be moved off contingent', () => {
     for (const s of ['pending', 'sent-to-PA', 'completed', 'to-delete'] as ModalityStatus[]) {
-      expect(canTransitionModality('blocked', s)).toBe(true)
+      expect(canTransitionModality('contingent', s)).toBe(true)
     }
-    expect(canTransitionModality('blocked', 'blocked')).toBe(false) // must actually move
+    expect(canTransitionModality('contingent', 'contingent')).toBe(false) // must actually move
   })
 
   it('illegal moves return ok:false with a reason', () => {

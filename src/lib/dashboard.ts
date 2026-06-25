@@ -8,7 +8,7 @@
 export const DASH_TZ = process.env.PENNY_TIMEZONE || 'America/New_York'
 
 export type ItemType = 'task' | 'event' | 'project'
-export type ItemKind = 'done' | 'moved' | 'stale' | 'blocked' | 'note' | 'scheduled'
+export type ItemKind = 'done' | 'moved' | 'stale' | 'contingent' | 'note' | 'scheduled'
 export type Bucket = 'overdue' | 'today' | 'week' | 'future' | 'undated'
 
 // Today's calendar date in the configured timezone, as YYYY-MM-DD (sortable).
@@ -65,4 +65,4 @@ export const BUCKET_LABEL: Record<Bucket, string> = {
 // Which kinds mutate the item directly (Class A, self-executing) vs. which are
 // flags the modality must reconcile (Class B). Used by the action route + UI.
 export const CLASS_A: ItemKind[] = ['done', 'moved', 'scheduled']
-export const CLASS_B: ItemKind[] = ['stale', 'blocked', 'note']
+export const CLASS_B: ItemKind[] = ['stale', 'contingent', 'note']

@@ -20,6 +20,7 @@ export interface ItemRow {
   profileId: string
   name: string
   description: string
+  notes: string
   type: string
   createdBy: string
   target: string
@@ -28,6 +29,8 @@ export interface ItemRow {
   duration: string | null
   dayTime: string | null
   dueDate: Date | null
+  contingency: string
+  contingencyUntil: Date | null
   paStatus: string | null
   modalityStatus: string | null
   visibility: boolean
@@ -39,6 +42,7 @@ export interface ItemRow {
 export interface CreateItemInput {
   name: string
   description: string
+  notes?: string
   type: string
   target: string
   createdBy: string
@@ -47,6 +51,8 @@ export interface CreateItemInput {
   duration?: string | null
   dayTime?: string | null
   dueDate?: Date | null
+  contingency?: string
+  contingencyUntil?: Date | null
   /** Initial status on the relevant side. Defaults to 'new' on the side implied by
    *  `target` ('pa' → paStatus, otherwise modalityStatus). Validated as an entry. */
   paStatus?: PaStatus
@@ -68,6 +74,7 @@ export async function createItem(profileId: string, input: CreateItemInput): Pro
       profileId,
       name: input.name,
       description: input.description,
+      notes: input.notes ?? '',
       type: input.type,
       createdBy: input.createdBy,
       target: input.target,
@@ -76,6 +83,8 @@ export async function createItem(profileId: string, input: CreateItemInput): Pro
       duration: input.duration ?? null,
       dayTime: input.dayTime ?? null,
       dueDate: input.dueDate ?? null,
+      contingency: input.contingency ?? '',
+      contingencyUntil: input.contingencyUntil ?? null,
       paStatus: paStatus ?? null,
       modalityStatus: modalityStatus ?? null,
       sourceRef: input.sourceRef ?? null,
@@ -110,9 +119,20 @@ export async function setItemStatus(
 
 export async function updateItemFields(
   id: string,
-  fields: Partial<Pick<ItemRow, 'name' | 'description' | 'type' | 'priority' | 'duration' | 'dayTime' | 'projectId' | 'dueDate'>>
+  fields: Partial<Pick<ItemRow, 'name' | 'description' | 'notes' | 'type' | 'priority' | 'duration' | 'dayTime' | 'projectId' | 'dueDate' | 'target' | 'contingency' | 'contingencyUntil'>>
 ): Promise<ItemRow> {
   return db().item.update({ where: { id }, data: fields })
+}
+
+/** Add a dated line to an item's notes without erasing what's already there — the
+ *  alternative to minting a duplicate Item every time more is learned about one. */
+export async function appendItemNote(id: string, text: string): Promise<ItemRow> {
+  const item: ItemRow | null = await db().item.findUnique({ where: { id } })
+  if (!item) throw new Error(`item ${id} not found`)
+  const stamp = new Date().toISOString().slice(0, 10)
+  const line = `[${stamp}] ${text}`
+  const notes = item.notes ? `${item.notes}\n${line}` : line
+  return db().item.update({ where: { id }, data: { notes } })
 }
 
 /** Hard delete — only the wrap-up phase calls this, for rows already at to-delete. */

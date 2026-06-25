@@ -14,7 +14,6 @@ export const PA_PHASES = [
   'notes',
   'projects',
   'submodalities',
-  'user',
   'calendar',
   'wrap-up',
 ] as const
@@ -25,7 +24,6 @@ export const SUB_PHASES = [
   'greeting',
   'notes-read',
   'projects',
-  'user',
   'notes-pass',
   'wrap-up',
 ] as const

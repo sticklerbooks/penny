@@ -82,6 +82,16 @@ they fail silently, so update them together:
   - `loadPromptTemplate` in `src/lib/claude.ts` picks the `.md` template per modality.
   - After changing the registry, reseed identities (above).
 
+## Item lifecycle: three layers of accountability
+
+Penny's design distributes pressure across three layers, each appropriate to its role (credit: Ada):
+
+- **Submodalities**: "This is pending, let's get it to Penny so it can be scheduled." → escalation, `modalityStatus: 'sent-to-PA'` (set live via `create_item(..., target='pa')`, or in Review's notes-pass phase — see `UNDECIDED_FOR_ESCALATION` in `src/lib/review/selectors.ts`).
+- **Penny**: "This needs to go on the calendar, here's when." → placement, `paStatus: 'schedule'` → her calendar phase (or `schedule_pending_events`) places the real event and flips it to `'scheduled'`.
+- **Dashboard**: "You said you'd do this at this time — are you doing it?" → accountability, out-of-band (`/api/dashboard/action`) so a status update doesn't require burning a modality turn. It writes through the SAME `item-store.ts` functions Review reads, so a dashboard action is automatically visible the next time that item comes up — no separate channel to keep in sync.
+
+Keep this distribution in mind before adding a new Item status or queue: each layer should only ever do its own job (recognize → place → confirm), not reach into another's.
+
 ## Off-limits directory
 
 `src/lib/private-penny/` is a private sandbox. Do not read, open, reference, or modify any file inside it.

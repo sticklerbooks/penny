@@ -9,14 +9,31 @@
 //   artifact, switch_modality, complete_session
 
 import type Anthropic from '@anthropic-ai/sdk'
-import { PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
+import { LIVE_PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
+import { reviewToolSchemas } from './items/item-tools'
 
 type Tool = Anthropic.Tool
+
+// The Item CRUD surface (search/create/update/append_note/set_item_status) — the
+// same tools Review uses, minus its two session-only control tools
+// (mark_discussed, finish_phase), which only make sense inside an active Review.
+const ITEM_TOOLS: Tool[] = reviewToolSchemas([
+  'search_items', 'create_item', 'update_item', 'append_note', 'set_item_status',
+])
 
 // ─── Protocol loader ──────────────────────────────────────────────────────────
 // Returns the detailed step-by-step text for a kind of work, on demand, instead
 // of carrying every protocol in the always-on system prompt. The enum below is
 // the always-visible menu; the walls of text live in protocols.ts.
+
+const startReview: Tool = {
+  name: 'start_review',
+  description:
+    'Start (or resume) a structured Review session — a way to carefully work through pending notes and tasks. ' +
+    'Calling this tool activates a different script; you can call it whenever the user asks for it. ' +
+    "Don't narrate what's about to happen, just call it.",
+  input_schema: { type: 'object', properties: {} },
+}
 
 const loadProtocol: Tool = {
   name: 'load_protocol',
@@ -25,140 +42,17 @@ const loadProtocol: Tool = {
     'out of your base context to stay lean and focused — call this the MOMENT you realize you are ' +
     'about to do one of these things, then follow exactly what it returns. Do not work from memory; ' +
     'load the protocol first.\n\nAvailable protocols:\n' +
-    PROTOCOL_NAMES.map((n) => `  • ${n} — ${PROTOCOL_INDEX[n]}`).join('\n'),
+    LIVE_PROTOCOL_NAMES.map((n) => `  • ${n} — ${PROTOCOL_INDEX[n]}`).join('\n'),
   input_schema: {
     type: 'object',
     properties: {
       which: {
         type: 'string',
-        enum: PROTOCOL_NAMES,
+        enum: LIVE_PROTOCOL_NAMES,
         description: 'Which protocol to load.',
       },
     },
     required: ['which'],
-  },
-}
-
-// ─── Task tools ───────────────────────────────────────────────────────────────
-
-const createTask: Tool = {
-  name: 'create_task',
-  description:
-    'Create a new task. Use for discrete action items that need to be tracked and completed. ' +
-    'Prefer over notes for anything with a clear owner, status, and completion criteria.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      name: {
-        type: 'string',
-        description: 'Short label — a few words at most.',
-      },
-      description: {
-        type: 'string',
-        description: 'Full description of what needs to be done.',
-      },
-      priority: {
-        type: 'integer',
-        description: '1–4. 1 = low, 2 = normal, 3 = high, 4 = urgent.',
-      },
-      assignedModality: {
-        type: 'string',
-        description: 'Modality ID that owns and is responsible for this task.',
-      },
-      projectId: {
-        type: 'string',
-        description: 'ID of the project this task belongs to, if any.',
-      },
-      clientId: {
-        type: 'string',
-        description: 'ID of the client this task is for (Margot / bookkeeping context).',
-      },
-      dueDate: {
-        type: 'string',
-        description: 'Due date as YYYY-MM-DD.',
-      },
-      dueTime: {
-        type: 'string',
-        description: 'Time constraint in natural language — "before noon", "end of week".',
-      },
-      contingentOn: {
-        type: 'string',
-        description:
-          'What this task is waiting for. Free text: another task ID, an external event, a decision pending.',
-      },
-      linkedCalendarEventId: {
-        type: 'string',
-        description: 'ID of a PendingCalendarEvent this task is tied to.',
-      },
-      status: {
-        type: 'string',
-        enum: ['Unstarted', 'Started', 'Waiting on Contingency', 'Mostly Complete', 'Complete'],
-        description: 'Defaults to Unstarted.',
-      },
-      notes: {
-        type: 'string',
-        description: 'Your observations about this task — blockers, context, caveats.',
-      },
-    },
-    required: ['name', 'description', 'priority', 'assignedModality'],
-  },
-}
-
-const updateTask: Tool = {
-  name: 'update_task',
-  description:
-    'Update any field on an existing task. Provide only the fields you want to change. ' +
-    'Set status=Complete when a task is done rather than deleting it.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'ID of the task to update.' },
-      name: { type: 'string' },
-      description: { type: 'string' },
-      priority: { type: 'integer', description: '1–4.' },
-      assignedModality: { type: 'string' },
-      projectId: { type: 'string' },
-      clientId: { type: 'string' },
-      dueDate: { type: 'string', description: 'YYYY-MM-DD.' },
-      dueTime: { type: 'string' },
-      contingentOn: { type: 'string' },
-      linkedCalendarEventId: { type: 'string' },
-      status: {
-        type: 'string',
-        enum: ['Unstarted', 'Started', 'Waiting on Contingency', 'Mostly Complete', 'Complete'],
-      },
-      notes: { type: 'string' },
-    },
-    required: ['id'],
-  },
-}
-
-const deleteTask: Tool = {
-  name: 'delete_task',
-  description:
-    'Permanently delete a task. Prefer update_task with status=Complete for finished work. ' +
-    'Use delete only for tasks created in error or true duplicates.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'ID of the task to delete.' },
-    },
-    required: ['id'],
-  },
-}
-
-const searchTasks: Tool = {
-  name: 'search_tasks',
-  description:
-    'Search all tasks including completed ones. Use to check history, find archived work, ' +
-    'or look up a task by name or description. Completed tasks are hidden from your default context ' +
-    'but fully searchable here.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Search terms.' },
-    },
-    required: ['query'],
   },
 }
 
@@ -168,8 +62,9 @@ const createProject: Tool = {
   name: 'create_project',
   description:
     'Create a new project. Projects group related tasks and have a defined scope, ' +
-    'expected duration, and progress tracked 0–10. Use for multi-step work with a clear goal. ' +
-    'Detailed notes are stored separately via write_deep_memory with key "project-{id}-notes".',
+    'expected duration, and progress tracked 0–10. Use for multi-step work with a clear goal, ' +
+    'AND for any RECURRING commitment ("every morning", "every week") — see the projects protocol. ' +
+    'Any ongoing task that will need regular specific instances is a Project. ',
   input_schema: {
     type: 'object',
     properties: {
@@ -193,7 +88,11 @@ const createProject: Tool = {
       contingencies: {
         type: 'string',
         description:
-          'Conditions or dependencies: "only workable in summer", "needs Jessica home", etc.',
+          'Why this can\'t move right now: "only workable in summer", "needs Jessica home", etc.',
+      },
+      contingencyUntil: {
+        type: 'string',
+        description: 'A real recheck date, YYYY-MM-DD, if known. While in the future, this project is skipped entirely in review.',
       },
     },
     required: ['name', 'description', 'expectedDuration', 'assignedModality'],
@@ -213,7 +112,8 @@ const updateProject: Tool = {
       expectedDuration: { type: 'string' },
       assignedModality: { type: 'string' },
       progress: { type: 'integer', description: '0–10.' },
-      contingencies: { type: 'string' },
+      contingencies: { type: 'string', description: 'Pass "" to clear.' },
+      contingencyUntil: { type: 'string', description: 'A real recheck date, YYYY-MM-DD. While in the future, this project is skipped entirely in review. Pass "" to clear.' },
     },
     required: ['id'],
   },
@@ -243,129 +143,6 @@ const deleteProject: Tool = {
     type: 'object',
     properties: {
       id: { type: 'string', description: 'ID of the project to delete.' },
-    },
-    required: ['id'],
-  },
-}
-
-// ─── Routine tools ────────────────────────────────────────────────────────────
-
-const createRoutine: Tool = {
-  name: 'create_routine',
-  description:
-    'Record a scheduling constraint or recurring pattern. Routines are not auto-loaded — ' +
-    'they are only consulted during the scheduling subroutine. Use for standing commitments, ' +
-    'recurring obligations, and time-of-week patterns that affect scheduling.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      description: {
-        type: 'string',
-        description: 'What this routine or constraint describes.',
-      },
-      frequency: {
-        type: 'string',
-        description: '"Weekly", "Tuesdays", "Most weekday evenings", "Occasionally", etc.',
-      },
-      priority: {
-        type: 'integer',
-        description: '1–4. 4 = absolutely obligatory.',
-      },
-      flexibility: {
-        type: 'integer',
-        description:
-          '1–4. 4 = must happen at this exact time, cannot be moved. 1 = anytime, very flexible.',
-      },
-      dayTime: {
-        type: 'string',
-        description: '"Thursday mornings", "Saturdays at 9am", "Weekday afternoons". Optional.',
-      },
-      assignedModality: {
-        type: 'string',
-        description: 'Modality that owns this routine.',
-      },
-    },
-    required: ['description', 'frequency', 'priority', 'flexibility', 'assignedModality'],
-  },
-}
-
-// ─── Pending calendar event tools ─────────────────────────────────────────────
-
-const createPendingEvent: Tool = {
-  name: 'create_pending_event',
-  description:
-    'Add an event to the scheduling queue. Pending events are not written to GCal until ' +
-    'PA runs the scheduling subroutine. Use when something needs to happen but timing is not yet confirmed. ' +
-    'Any modality can create pending events; PA schedules them.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      name: { type: 'string', description: 'Event name.' },
-      duration: {
-        type: 'string',
-        description: 'Required: "1 hour", "30–45 min", "half day", etc.',
-      },
-      priority: {
-        type: 'integer',
-        description: '1–4. 4 = must happen on time, cannot slip.',
-      },
-      projectId: {
-        type: 'string',
-        description: 'ID of a related project, if any.',
-      },
-      description: {
-        type: 'string',
-        description: 'What this event is for.',
-      },
-      date: {
-        type: 'string',
-        description:
-          '"2026-06-15" for a specific date, "By 2026-06-20" for a deadline, omit if fully flexible.',
-      },
-      startTime: {
-        type: 'string',
-        description: 'Time preferences in natural language: "morning", "after 3pm", "not before noon".',
-      },
-      location: { type: 'string' },
-      assignedModality: {
-        type: 'string',
-        description: 'Modality this event belongs to. Defaults to pa.',
-      },
-    },
-    required: ['name', 'duration', 'priority'],
-  },
-}
-
-const updatePendingEvent: Tool = {
-  name: 'update_pending_event',
-  description: 'Update a pending calendar event before it has been scheduled.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Pending event ID.' },
-      name: { type: 'string' },
-      duration: { type: 'string' },
-      priority: { type: 'integer' },
-      projectId: { type: 'string' },
-      description: { type: 'string' },
-      date: { type: 'string' },
-      startTime: { type: 'string' },
-      location: { type: 'string' },
-      assignedModality: { type: 'string' },
-    },
-    required: ['id'],
-  },
-}
-
-const deletePendingEvent: Tool = {
-  name: 'delete_pending_event',
-  description:
-    'Delete a pending calendar event from the queue. Use for events that are redundant, ' +
-    'duplicated, or no longer needed (not for ones that got scheduled — those resolve themselves).',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Pending event ID.' },
     },
     required: ['id'],
   },
@@ -495,85 +272,6 @@ const deferAction: Tool = {
       },
     },
     required: ['topic', 'runAt'],
-  },
-}
-
-// ─── Note tools ───────────────────────────────────────────────────────────────
-
-const createNote: Tool = {
-  name: 'create_note',
-  description:
-    'Create a note targeted at a specific modality, to be seen at the start of their next session. ' +
-    'Use for cross-modality communication or reminders that have a defined expiry. ' +
-    'Maximum expiry is 2 weeks from today.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      title: { type: 'string', description: 'Short title for the note.' },
-      content: { type: 'string', description: 'Full note content.' },
-      expiresAt: {
-        type: 'string',
-        description: 'Expiry date as YYYY-MM-DD. Maximum 2 weeks from today.',
-      },
-      modalityTarget: {
-        type: 'string',
-        description: 'Which modality should see this note.',
-      },
-    },
-    required: ['title', 'content', 'expiresAt', 'modalityTarget'],
-  },
-}
-
-const resolveNote: Tool = {
-  name: 'resolve_note',
-  description: 'Mark a note as Resolved — the issue has been addressed.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Note ID.' },
-    },
-    required: ['id'],
-  },
-}
-
-const ignoreNote: Tool = {
-  name: 'ignore_note',
-  description: 'Mark a note as Ignored — it is no longer relevant and can be dismissed.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Note ID.' },
-    },
-    required: ['id'],
-  },
-}
-
-const acknowledgeItemNote: Tool = {
-  name: 'acknowledge_item_note',
-  description:
-    "Acknowledge a flag Adam left on one of your items from his dashboard (the ⚑ ADAM marks). " +
-    "For a 'stale' or 'blocked' flag, resolution is REQUIRED and is checked — you cannot silently " +
-    "clear it without doing something:\n" +
-    "  • resolution='deleted' — you actually called delete_task / delete_project / delete_pending_event " +
-    "first. This is rejected if the item still exists.\n" +
-    "  • resolution='kept' (stale) or 'handled' (blocked) — you considered it and are NOT deleting/rerouting " +
-    "it. reason is REQUIRED and is written back as a visible note on the item, so Adam sees why, not silence.\n" +
-    "For a plain 'note' flag, just acknowledge once absorbed — no resolution needed.",
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'ItemNote ID — shown in the ⚑ mark.' },
-      resolution: {
-        type: 'string',
-        enum: ['deleted', 'kept', 'handled'],
-        description: "Required for 'stale' (deleted|kept) and 'blocked' (deleted|handled) flags.",
-      },
-      reason: {
-        type: 'string',
-        description: "Required when resolution is 'kept' or 'handled'. Shown back to Adam on the item.",
-      },
-    },
-    required: ['id'],
   },
 }
 
@@ -889,20 +587,6 @@ const rewriteBrief: Tool = {
   },
 }
 
-const searchMemory: Tool = {
-  name: 'search_memory',
-  description:
-    'Search the Memory table — facts and short notes accumulated across sessions. ' +
-    'Call before claiming you do not know something. Part of the SEARCH_MEMORY subroutine.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Search terms.' },
-    },
-    required: ['query'],
-  },
-}
-
 const searchDeepMemory: Tool = {
   name: 'search_deep_memory',
   description:
@@ -1059,27 +743,24 @@ const updateLockProfiles: Tool = {
 // Tools are composed into sets. getToolsForModality() combines them.
 
 /**
- * Core tools every modality gets.
- * Tasks, notes, calendar read, pending events, email/drive read, memory, defer_action.
- * Identity and write-action tools are added per-modality below.
+ * Core tools every modality gets, live in normal chat.
+ * Items (the unified task/note/event/routine surface), calendar read, email/drive
+ * read, defer_action. Identity and write-action tools are added per-modality below.
+ *
+ * Memory and identity tools are deliberately NOT here — "the chat just goes as
+ * normal... no one is making memories" mid-conversation anymore. They're granted
+ * only to the end_chat memory pass (MEMORY_PASS_TOOLS below), which runs once,
+ * outside live chat, over the full transcript since that modality's last pass.
+ * See src/lib/memory-pass.ts and the 'memory' protocol.
  */
 const CORE_TOOLS: Tool[] = [
   // Protocol loader — the on-demand "subroutine" index
   loadProtocol,
-  // Tasks
-  createTask,
-  updateTask,
-  deleteTask,
-  searchTasks,
-  // Notes
-  createNote,
-  resolveNote,
-  ignoreNote,
-  acknowledgeItemNote,
-  // Pending calendar events (any modality creates; PA schedules)
-  createPendingEvent,
-  updatePendingEvent,
-  deletePendingEvent,
+  // Hands the conversation to the Review system
+  startReview,
+  // Items — search/create/update/append_note/set_item_status (Task/Note/PendingEvent/
+  // Routine all unify into this one surface; see src/lib/items/item-tools.ts)
+  ...ITEM_TOOLS,
   // Calendar read (everyone reads; only PA writes via CALENDAR_WRITE_TOOLS)
   readCalendarDay,
   searchCalendar,
@@ -1092,22 +773,26 @@ const CORE_TOOLS: Tool[] = [
   createDriveFile,
   updateDriveFile,
   deleteDriveFile,
-  // Memory
+  // Deferred self-scheduling
+  deferAction,
+]
+
+/**
+ * The end_chat memory pass's toolset — deep memory, the log, identity, and the
+ * brief. Granted ONLY to that dedicated pass (src/lib/memory-pass.ts), never to
+ * live chat. search_memory and the flat Memory table are retired entirely — see
+ * the 'memory' protocol for why (identity now covers what flat Memory used to).
+ */
+export const MEMORY_PASS_TOOLS: Tool[] = [
   rewriteBrief,
-  searchMemory,
   searchDeepMemory,
   readDeepMemory,
   writeDeepMemory,
   logEntry,
   searchLog,
-  // Deferred self-scheduling
-  deferAction,
-  // Routines (all modalities can document their own)
-  createRoutine,
+  updateIdentityUser,
+  updateIdentitySelf,
 ]
-
-/** Public identity tools — all non-private, non-alt modalities. */
-const PUBLIC_IDENTITY_TOOLS: Tool[] = [updateIdentityUser, updateIdentitySelf]
 
 /** Project management — PA and submodalities that manage multi-step work. */
 const PROJECT_TOOLS: Tool[] = [createProject, updateProject, readProjectNotes, deleteProject]
@@ -1151,7 +836,6 @@ export function getToolsForModality(modalityId: string): Tool[] {
     case 'pa':
       return [
         ...CORE_TOOLS,
-        ...PUBLIC_IDENTITY_TOOLS,
         ...PROJECT_TOOLS,
         ...EMAIL_WRITE_TOOLS,
         ...NOTIFICATION_TOOLS,
@@ -1162,13 +846,12 @@ export function getToolsForModality(modalityId: string): Tool[] {
     case 'bookkeeping':
       return [
         ...CORE_TOOLS,
-        ...PUBLIC_IDENTITY_TOOLS,
         ...PROJECT_TOOLS,
         ...EMAIL_WRITE_TOOLS,
         ...CLIENT_TOOLS,
       ]
 
-    // ── Domain workers — same toolset: core + own identity + projects ───────
+    // ── Domain workers — same toolset: core + projects ──────────────────────
     // ── Household / June ────────────────────────────────────────────────────
     case 'household':
     // ── Relationships / Nora ────────────────────────────────────────────────
@@ -1183,13 +866,12 @@ export function getToolsForModality(modalityId: string): Tool[] {
     case 'friend':
       return [
         ...CORE_TOOLS,
-        ...PUBLIC_IDENTITY_TOOLS,
         ...PROJECT_TOOLS,
       ]
 
     // ── Unknown / fallback ──────────────────────────────────────────────────
     default:
-      return [...CORE_TOOLS, ...PUBLIC_IDENTITY_TOOLS]
+      return [...CORE_TOOLS]
   }
 }
 
@@ -1200,7 +882,7 @@ export function getToolsForModality(modalityId: string): Tool[] {
 export function getAllTools(): Tool[] {
   return [
     ...CORE_TOOLS,
-    ...PUBLIC_IDENTITY_TOOLS,
+    ...MEMORY_PASS_TOOLS,
     ...PROJECT_TOOLS,
     ...EMAIL_WRITE_TOOLS,
     ...NOTIFICATION_TOOLS,
@@ -1219,18 +901,10 @@ export const ALL_TOOL_NAMES = new Set(getAllTools().map((t) => t.name))
 // The executor imports by name so it can build its dispatch table.
 export {
   loadProtocol,
-  createTask,
-  updateTask,
-  deleteTask,
-  searchTasks,
   createProject,
   updateProject,
   readProjectNotes,
   deleteProject,
-  createRoutine,
-  createPendingEvent,
-  updatePendingEvent,
-  deletePendingEvent,
   readCalendarDay,
   searchCalendar,
   schedulePendingEvents,
@@ -1238,10 +912,6 @@ export {
   updateCalendarEvent,
   deleteCalendarEvent,
   deferAction,
-  createNote,
-  resolveNote,
-  ignoreNote,
-  acknowledgeItemNote,
   sendEmail,
   replyEmail,
   createDraft,
@@ -1260,7 +930,6 @@ export {
   updateIdentityUser,
   updateIdentitySelf,
   rewriteBrief,
-  searchMemory,
   searchDeepMemory,
   readDeepMemory,
   writeDeepMemory,

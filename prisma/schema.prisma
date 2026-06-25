@@ -183,6 +183,11 @@ model Project {
   // ── Redesign additions (additive; nullable/defaulted) ──
   termType   String?  // short | medium | long — the Short/Medium/Long-Term bucket
   visibility Boolean  @default(true)  // soft-delete / archive (hidden when false)
+  // A REAL date, not parsed from `contingencies`' free text. When set and still
+  // in the future, this project is skipped entirely in the projects review phase
+  // — not just discussed less. Null = no known recheck date; gets discussed as
+  // usual despite having a contingency note.
+  contingencyUntil DateTime?
 
   tasks Task[]
 }
@@ -265,7 +270,11 @@ model Item {
 
   name        String
   description String
-  type        String   // event | ongoing | memory | suggestion (see ItemType in fsm.ts)
+  notes       String   @default("") // free-write log a self appends to as she learns
+                                     // more about this item — NOT a reason to mint a
+                                     // new Item. append_note adds a line; update_item's
+                                     // notes param overwrites the whole field.
+  type        String   // event | memory | suggestion (see ItemType in fsm.ts)
   createdBy   String   // modality id that created it
   target      String   // modality id (or 'pa') this item is for
 
@@ -275,10 +284,18 @@ model Item {
   dueDate     DateTime? // a specific due date (one-offs). Dated items due >10 days
                         // out are skipped in the notes review (see selectors).
 
+  // Why this can't move right now, and when to stop ignoring it. contingency is
+  // the free-text reason ("waiting on the IRS"), shown inline instead of asking
+  // the obvious question again. contingencyUntil is a REAL date, not parsed from
+  // the text — when set and still in the future, the item is skipped entirely in
+  // triage (see selectors.ts), not just deprioritized.
+  contingency      String    @default("")
+  contingencyUntil DateTime?
+
   // Lifecycle — written ONLY through the FSM. Nullable because an item may live in
   // PA's world, a submodality's world, or both.
-  paStatus       String?  // new|pending|schedule|scheduled|continuing|completed|to-delete
-  modalityStatus String?  // new|pending|sent-to-PA|completed|blocked|to-delete
+  paStatus       String?  // new|pending|schedule|scheduled|contingent|completed|to-delete
+  modalityStatus String?  // new|pending|sent-to-PA|contingent|completed|to-delete
 
   visibility   Boolean   @default(true)  // soft-delete / archive (hidden when false)
   completedAt  DateTime?
@@ -428,6 +445,10 @@ model ModalityState {
   // Redesign: 0–5 "needs attention" dial. Nightly cleanup +1; the review wrap-up
   // resets it to 0. Drives the submodalities phase's "talk to <self>" generation.
   needsAttention Int       @default(0)
+  // Last time this modality's end_chat memory pass ran. Null = never — the pass
+  // then covers every message this modality has ever sent. Deliberately separate
+  // from lastCompletedAt (Review's "last contact" signal) — different lifecycles.
+  lastMemoryPassAt DateTime?
 
   @@unique([profileId, modalityId])
 }

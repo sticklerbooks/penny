@@ -1,14 +1,17 @@
 // POST /api/wrap-abandoned
 //
 // Fired (fire-and-forget) when Adam opens the dashboard. If he left a session
-// mid-stream — an unclosed conversation whose last message is stale — the owning
-// self runs its close-out sweep in the background, then the conversation is
-// closed. A quick reload of an *active* session (recent last message) is left
-// untouched, and this NEVER blocks the dashboard from loading.
+// mid-stream — an unclosed conversation whose last message is stale — it's closed
+// deterministically. A quick reload of an *active* session (recent last message)
+// is left untouched, and this NEVER blocks the dashboard from loading.
+//
+// Used to run a prose LLM hygiene pass first (capture/remember/cleanup/brief) —
+// retired along with the rest of the close-sweep system. The Item tools are
+// correct by construction (search-first creation, append_note instead of a new
+// item), so there's nothing left to comb the transcript for.
 
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { runCloseSweep } from '@/lib/close-sweep'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,19 +39,6 @@ export async function POST() {
     return NextResponse.json({ wrapped: false, reason: 'active' })
   }
 
-  const modalityId = convo.activeModality || 'pa'
-
-  try {
-    await runCloseSweep({
-      profileId: profile.id,
-      modalityId,
-      messages: convo.messages.map((m) => ({ role: m.role, content: m.content })),
-    })
-  } catch (err) {
-    console.error('[wrap-abandoned] sweep failed:', err)
-    // Still close it — a failed hygiene pass shouldn't leave the session dangling.
-  }
-
   await prisma.conversation.update({ where: { id: convo.id }, data: { closed: true } })
-  return NextResponse.json({ wrapped: true, modality: modalityId })
+  return NextResponse.json({ wrapped: true, modality: convo.activeModality || 'pa' })
 }

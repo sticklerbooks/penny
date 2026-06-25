@@ -37,10 +37,10 @@ describe('notes phase exit guard (PA)', () => {
 })
 
 describe('notes-read exit guard (submodality)', () => {
-  it("blocks on a 'new' modality status; blocked items may remain (just discussed)", () => {
-    const queue = [item({ id: 'a', modalityStatus: 'new' }), item({ id: 'b', modalityStatus: 'blocked' })]
+  it("blocks on a 'new' modality status; contingent items may remain (just discussed)", () => {
+    const queue = [item({ id: 'a', modalityStatus: 'new' }), item({ id: 'b', modalityStatus: 'contingent' })]
     const v = notesReadExitViolations(queue, new Set(['a', 'b']))
-    expect(v.map((x) => x.id)).toEqual(['a']) // blocked is allowed to stay; new is not
+    expect(v.map((x) => x.id)).toEqual(['a']) // contingent is allowed to stay; new is not
   })
 })
 

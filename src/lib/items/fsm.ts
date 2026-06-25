@@ -18,7 +18,13 @@
 
 // ─── Vocabularies ──────────────────────────────────────────────────────────────
 
-export const ITEM_TYPES = ['event', 'ongoing', 'memory', 'suggestion'] as const
+// 'ongoing' is retired — a recurring commitment is a Project now (it has the
+// progress/contingency/notes machinery a recurring thing actually needs), which
+// spawns concrete one-off Items as it comes time to schedule each instance. See
+// the 'projects' protocol and Review's projects-phase spawn ritual.
+// 'task' fills a gap 'ongoing' used to paper over: a plain one-off with no real
+// calendar slot ('event') and no special handling ('memory'/'suggestion').
+export const ITEM_TYPES = ['task', 'event', 'memory', 'suggestion'] as const
 export type ItemType = (typeof ITEM_TYPES)[number]
 
 // PA-side lifecycle. `completed` carries a completedAt date on the row; the status
@@ -29,7 +35,7 @@ export const PA_STATUSES = [
   'pending',
   'schedule',
   'scheduled',
-  'continuing',
+  'contingent',
   'completed',
   'to-delete',
 ] as const
@@ -37,16 +43,13 @@ export type PaStatus = (typeof PA_STATUSES)[number]
 
 // Submodality-side lifecycle. `sent-to-PA` means "escalate me": the notes-pass
 // phase spawns a fresh PA-targeted item from this one, then drops this one back to
-// `pending` (so the original keeps living in the modality's world). `continuing`
-// mirrors the PA side: an ongoing task a submodality keeps as a source, spawning
-// fresh concrete items off it (the spawn is a NEW row, not a move of this one).
+// `pending` (so the original keeps living in the modality's world).
 export const MODALITY_STATUSES = [
   'new',
   'pending',
-  'continuing',
   'sent-to-PA',
+  'contingent',
   'completed',
-  'blocked',
   'to-delete',
 ] as const
 export type ModalityStatus = (typeof MODALITY_STATUSES)[number]
@@ -57,20 +60,20 @@ export type ModalityStatus = (typeof MODALITY_STATUSES)[number]
 
 export const PA_TRANSITIONS: Record<PaStatus, readonly PaStatus[]> = {
   // A `new` note must be triaged out of `new` during the notes phase.
-  new: ['pending', 'schedule', 'continuing', 'completed', 'to-delete'],
-  // A pending event may stay pending, or be reclassified as an ongoing task
-  // (→ continuing), queued for the calendar (→ schedule), finished, or dropped.
-  pending: ['pending', 'continuing', 'schedule', 'completed', 'to-delete'],
-  // An ongoing task stays continuing while it recurs. Scheduling a concrete
-  // instance spawns a SEPARATE schedule item (engine), so that is not a move of
-  // this row; but the row itself may be collapsed to a single event (→ pending),
-  // queued directly, finished, or dropped.
-  continuing: ['continuing', 'pending', 'schedule', 'completed', 'to-delete'],
+  new: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
+  // A pending event may stay pending, go contingent on something else, get queued
+  // for the calendar (→ schedule), finished, or dropped.
+  pending: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
+  // Stuck on something outside Penny's control (see Item.contingency /
+  // contingencyUntil). The notes phase tries to move it off contingent once the
+  // condition clears; skipped entirely while contingencyUntil is still future.
+  contingent: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
   // Queued for the calendar. The calendar phase places it and marks it scheduled,
-  // or it can be pulled back to pending / dropped.
-  schedule: ['scheduled', 'pending', 'to-delete'],
-  // On the calendar. It later completes, gets re-queued, or is dropped.
-  scheduled: ['completed', 'schedule', 'to-delete'],
+  // or it can be pulled back to pending / contingent / dropped.
+  schedule: ['scheduled', 'pending', 'contingent', 'to-delete'],
+  // On the calendar. It later completes, gets re-queued, goes contingent (plans
+  // changed before it happened), or is dropped.
+  scheduled: ['completed', 'schedule', 'contingent', 'to-delete'],
   // Done. Near-terminal: the weekly brief hides it via visibility, not a status
   // change. The only move left is an explicit deletion request.
   completed: ['to-delete'],
@@ -80,20 +83,16 @@ export const PA_TRANSITIONS: Record<PaStatus, readonly PaStatus[]> = {
 
 export const MODALITY_TRANSITIONS: Record<ModalityStatus, readonly ModalityStatus[]> = {
   // A `new` note must be triaged out of `new` during notes-read.
-  new: ['pending', 'continuing', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
-  // May stay pending, be reclassified as an ongoing task (→ continuing), escalated
-  // to Penny, finished, blocked, or dropped.
-  pending: ['pending', 'continuing', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
-  // An ongoing task the submodality keeps as a source. Stays continuing while it
-  // recurs (spawning concrete items is a SEPARATE new row, not a move of this one);
-  // or collapse to a single item (→ pending), escalate the whole thing, finish,
-  // block, or drop.
-  continuing: ['continuing', 'pending', 'sent-to-PA', 'completed', 'blocked', 'to-delete'],
+  new: ['pending', 'sent-to-PA', 'contingent', 'completed', 'to-delete'],
+  // May stay pending, be escalated to Penny, go contingent, finished, or dropped.
+  pending: ['pending', 'sent-to-PA', 'contingent', 'completed', 'to-delete'],
   // Escalation in flight. notes-pass copies it to a PA item, then returns this
   // one to pending. Can also simply be dropped.
   'sent-to-PA': ['pending', 'to-delete'],
-  // Stuck. The notes-read phase tries to move it off blocked.
-  blocked: ['pending', 'continuing', 'sent-to-PA', 'completed', 'to-delete'],
+  // Stuck on something outside this self's control (see Item.contingency /
+  // contingencyUntil). notes-read tries to move it off contingent once the
+  // condition clears; skipped entirely while contingencyUntil is still future.
+  contingent: ['pending', 'sent-to-PA', 'completed', 'to-delete'],
   // Done (acknowledged in notes-read). Only an explicit deletion remains.
   completed: ['to-delete'],
   // True sink.
@@ -102,10 +101,10 @@ export const MODALITY_TRANSITIONS: Record<ModalityStatus, readonly ModalityStatu
 
 // States an item may take when it FIRST enters a world (from a null status).
 // Penny may mint an item straight as `schedule`; a submodality may mint one
-// `blocked`. Terminal/derived states (scheduled, completed, to-delete, sent-to-PA)
-// are never valid first states — they imply a prior lifecycle.
-export const PA_ENTRY_STATES: readonly PaStatus[] = ['new', 'pending', 'schedule', 'continuing']
-export const MODALITY_ENTRY_STATES: readonly ModalityStatus[] = ['new', 'pending', 'blocked', 'continuing']
+// `contingent`. Terminal/derived states (scheduled, completed, to-delete,
+// sent-to-PA) are never valid first states — they imply a prior lifecycle.
+export const PA_ENTRY_STATES: readonly PaStatus[] = ['new', 'pending', 'schedule', 'contingent']
+export const MODALITY_ENTRY_STATES: readonly ModalityStatus[] = ['new', 'pending', 'contingent']
 
 // ─── Type guards ───────────────────────────────────────────────────────────────
 

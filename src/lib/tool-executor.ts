@@ -30,15 +30,25 @@ import {
 } from './google'
 import { ALL_TOOL_NAMES } from './tools'
 import { getModality, resolveModality } from './modalities'
-import { getProtocol, PROTOCOL_NAMES, type ProtocolName } from './protocols'
+import { getProtocol, LIVE_PROTOCOL_NAMES, type ProtocolName } from './protocols'
 import { invalidateContext } from './context-cache'
+import { executeReviewTool, type ReviewToolContext } from './items/item-tools'
+import { searchItems } from './items/item-store'
+import { startOrResumeReview } from './review/session'
+import type { ReviewKind } from './review/phases'
+
+// Item tools (Task/Note/PendingEvent/Routine unify into these) delegate straight
+// to the same executor Review uses — one Item-world implementation, not two.
+const ITEM_TOOL_NAMES = new Set([
+  'search_items', 'create_item', 'update_item', 'append_note', 'set_item_status',
+])
 
 // Read-only tools — these never change anything the system-prompt context cache
 // holds, so they leave it intact. Everything else invalidates the cache after it
 // runs so the next turn rebuilds context from fresh data (see context-cache.ts).
 const READ_ONLY_TOOLS = new Set<string>([
   'load_protocol',
-  'search_tasks',
+  'search_items',
   'read_project_notes',
   'read_calendar_day',
   'search_calendar',
@@ -47,7 +57,6 @@ const READ_ONLY_TOOLS = new Set<string>([
   'read_email',
   'search_drive',
   'read_drive_file',
-  'search_memory',
   'search_deep_memory',
   'read_deep_memory',
   'search_log',
@@ -119,6 +128,16 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback
 }
 
+// "" clears the field (null); undefined leaves it untouched; anything else
+// parses as a real date — never guessed from free text.
+function parseContingencyUntil(v: unknown): Date | null | undefined {
+  if (v === undefined) return undefined
+  const s = String(v).trim()
+  if (!s) return null
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
 // Canonicalize an assignedModality value to a stable modality ID. The model often
 // passes a display name ("margot", "june") instead of the id ("bookkeeping",
 // "household"); resolveModality maps either to the id. Falls back to the creating
@@ -133,20 +152,6 @@ function canonModality(raw: unknown, fallback: string): string {
 // SQLite doesn't have FTS enabled by default; upgrade to fts5 when Turso confirms it.
 function keywordFilter(query: string): string {
   return `%${query.trim()}%`
-}
-
-// Format a list of task records for the model.
-function formatTasks(tasks: Array<{
-  id: string; name: string; description: string; status: string;
-  priority: number; dueDate?: Date | null; assignedModality: string;
-  notes?: string | null
-}>): string {
-  if (!tasks.length) return '(no tasks found)'
-  return tasks.map((t) => {
-    const due = t.dueDate ? ` due=${t.dueDate.toISOString().slice(0, 10)}` : ''
-    const notes = t.notes ? ` notes="${t.notes}"` : ''
-    return `[${t.id}] ${t.name} | status=${t.status} priority=${t.priority}${due} modality=${t.assignedModality}${notes}\n  ${t.description}`
-  }).join('\n\n')
 }
 
 // ─── Main executor ────────────────────────────────────────────────────────────
@@ -167,6 +172,10 @@ export async function executeTool(
   // loaded its context before any tool ran; the cache is next read next turn.
   if (!READ_ONLY_TOOLS.has(name)) invalidateContext(profileId)
 
+  if (ITEM_TOOL_NAMES.has(name)) {
+    return executeReviewTool(name, args, ctx as ReviewToolContext) // no reviewSessionId outside Review — see item-tools.ts
+  }
+
   try {
     switch (name) {
 
@@ -174,9 +183,9 @@ export async function executeTool(
 
       case 'load_protocol': {
         const which = str(args.which) as ProtocolName
-        if (!PROTOCOL_NAMES.includes(which)) {
+        if (!LIVE_PROTOCOL_NAMES.includes(which)) {
           return {
-            content: `Unknown protocol "${which}". Available: ${PROTOCOL_NAMES.join(', ')}`,
+            content: `Unknown protocol "${which}". Available: ${LIVE_PROTOCOL_NAMES.join(', ')}`,
             is_error: true,
           }
         }
@@ -189,70 +198,19 @@ export async function executeTool(
         return { content: text }
       }
 
-      // ── Tasks ─────────────────────────────────────────────────────────────
+      // ── Review handoff ────────────────────────────────────────────────────
 
-      case 'create_task': {
-        const task = await prisma.task.create({
-          data: {
-            profileId,
-            name: str(args.name),
-            description: str(args.description),
-            priority: num(args.priority, 2),
-            assignedModality: canonModality(args.assignedModality, modalityId),
-            projectId: str(args.projectId) || null,
-            clientId: str(args.clientId) || null,
-            dueDate: args.dueDate ? new Date(str(args.dueDate)) : null,
-            dueTime: str(args.dueTime) || null,
-            contingentOn: str(args.contingentOn) || null,
-            linkedCalendarEventId: str(args.linkedCalendarEventId) || null,
-            status: str(args.status, 'Unstarted'),
-            notes: str(args.notes) || null,
-          },
-        })
-        return { content: `Task created: "${task.name}" (id=${task.id})` }
-      }
-
-      case 'update_task': {
-        const id = str(args.id)
-        const data: Record<string, unknown> = {}
-        if (args.name !== undefined) data.name = str(args.name)
-        if (args.description !== undefined) data.description = str(args.description)
-        if (args.priority !== undefined) data.priority = num(args.priority, 2)
-        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
-        if (args.projectId !== undefined) data.projectId = str(args.projectId) || null
-        if (args.clientId !== undefined) data.clientId = str(args.clientId) || null
-        if (args.dueDate !== undefined) data.dueDate = args.dueDate ? new Date(str(args.dueDate)) : null
-        if (args.dueTime !== undefined) data.dueTime = str(args.dueTime) || null
-        if (args.contingentOn !== undefined) data.contingentOn = str(args.contingentOn) || null
-        if (args.linkedCalendarEventId !== undefined) data.linkedCalendarEventId = str(args.linkedCalendarEventId) || null
-        if (args.status !== undefined) data.status = str(args.status)
-        if (args.notes !== undefined) data.notes = str(args.notes) || null
-        if (Object.keys(data).length === 0) return { content: 'update_task: no fields to update' }
-        await prisma.task.update({ where: { id }, data })
-        return { content: `Task ${id} updated.` }
-      }
-
-      case 'delete_task': {
-        const id = str(args.id)
-        await prisma.task.delete({ where: { id } })
-        return { content: `Task ${id} deleted.` }
-      }
-
-      case 'search_tasks': {
-        const q = keywordFilter(str(args.query))
-        const tasks = await prisma.task.findMany({
-          where: {
-            profileId,
-            OR: [
-              { name: { contains: q } },
-              { description: { contains: q } },
-              { notes: { contains: q } },
-            ],
-          },
-          orderBy: { updatedAt: 'desc' },
-          take: 20,
-        })
-        return { content: formatTasks(tasks) }
+      case 'start_review': {
+        const kind: ReviewKind = modalityId === 'pa' ? 'pa' : 'submodality'
+        const { session, resumed } = await startOrResumeReview(profileId, kind, modalityId)
+        // Structured so the chat route can detect this and flip the UI into
+        // Review mode — see the reviewStarted handling in app/api/chat/route.ts.
+        return {
+          content: JSON.stringify({
+            started: true, resumed,
+            kind: session.kind, modalityId: session.modalityId, phase: session.phase,
+          }),
+        }
       }
 
       // ── Projects ──────────────────────────────────────────────────────────
@@ -267,6 +225,7 @@ export async function executeTool(
             assignedModality: canonModality(args.assignedModality, modalityId),
             progress: num(args.progress, 0),
             contingencies: str(args.contingencies) || null,
+            contingencyUntil: parseContingencyUntil(args.contingencyUntil),
           },
         })
         return { content: `Project created: "${project.name}" (id=${project.id})` }
@@ -281,6 +240,7 @@ export async function executeTool(
         if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
         if (args.progress !== undefined) data.progress = num(args.progress, 0)
         if (args.contingencies !== undefined) data.contingencies = str(args.contingencies) || null
+        if (args.contingencyUntil !== undefined) data.contingencyUntil = parseContingencyUntil(args.contingencyUntil)
         if (Object.keys(data).length === 0) return { content: 'update_project: no fields to update' }
         await prisma.project.update({ where: { id }, data })
         return { content: `Project ${id} updated.` }
@@ -298,76 +258,12 @@ export async function executeTool(
 
       case 'delete_project': {
         const id = str(args.id)
-        // Unlink rather than cascade-delete tasks that pointed at this project.
-        await prisma.task.updateMany({ where: { projectId: id }, data: { projectId: null } })
+        // Unlink rather than cascade-delete items that pointed at this project.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (prisma as any).item.updateMany({ where: { projectId: id }, data: { projectId: null } })
         await prisma.deepMemory.deleteMany({ where: { profileId, name: `project-${id}-notes` } }).catch(() => {})
         await prisma.project.delete({ where: { id } })
-        return { content: `Project ${id} deleted (linked tasks kept, unlinked).` }
-      }
-
-      // ── Routines ──────────────────────────────────────────────────────────
-
-      case 'create_routine': {
-        const routine = await prisma.routine.create({
-          data: {
-            profileId,
-            description: str(args.description),
-            frequency: str(args.frequency),
-            priority: num(args.priority, 2),
-            flexibility: num(args.flexibility, 2),
-            dayTime: str(args.dayTime) || null,
-            assignedModality: canonModality(args.assignedModality, modalityId),
-          },
-        })
-        return { content: `Routine created (id=${routine.id}): "${routine.description}"` }
-      }
-
-      // ── Pending calendar events ───────────────────────────────────────────
-
-      case 'create_pending_event': {
-        const event = await prisma.pendingCalendarEvent.create({
-          data: {
-            profileId,
-            name: str(args.name),
-            duration: str(args.duration),
-            priority: num(args.priority, 2),
-            projectId: str(args.projectId) || null,
-            description: str(args.description) || null,
-            date: str(args.date) || null,
-            startTime: str(args.startTime) || null,
-            location: str(args.location) || null,
-            assignedModality: canonModality(args.assignedModality, modalityId),
-          },
-        })
-        return { content: `Pending event created: "${event.name}" (id=${event.id})` }
-      }
-
-      case 'update_pending_event': {
-        const id = str(args.id)
-        const data: Record<string, unknown> = {}
-        if (args.name !== undefined) data.name = str(args.name)
-        if (args.duration !== undefined) data.duration = str(args.duration)
-        if (args.priority !== undefined) data.priority = num(args.priority, 2)
-        if (args.projectId !== undefined) data.projectId = str(args.projectId) || null
-        if (args.description !== undefined) data.description = str(args.description) || null
-        if (args.date !== undefined) data.date = str(args.date) || null
-        if (args.startTime !== undefined) data.startTime = str(args.startTime) || null
-        if (args.location !== undefined) data.location = str(args.location) || null
-        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
-        // Mark as scheduled — call this after creating the calendar event
-        if (args.scheduled === true || args.scheduled === 'true') {
-          data.scheduled = true
-          data.scheduledAt = new Date()
-        }
-        if (Object.keys(data).length === 0) return { content: 'update_pending_event: no fields to update' }
-        await prisma.pendingCalendarEvent.update({ where: { id }, data })
-        return { content: `Pending event ${id} updated.` }
-      }
-
-      case 'delete_pending_event': {
-        const id = str(args.id)
-        await prisma.pendingCalendarEvent.delete({ where: { id } })
-        return { content: `Pending event ${id} deleted.` }
+        return { content: `Project ${id} deleted (linked items kept, unlinked).` }
       }
 
       // ── Calendar (read) ───────────────────────────────────────────────────
@@ -387,20 +283,13 @@ export async function executeTool(
       // ── Calendar (write — PA only) ────────────────────────────────────────
 
       case 'schedule_pending_events': {
-        // Load the pending event queue and routines, read two weeks of calendar,
-        // then return a full briefing so the model can place events with
-        // create_calendar_event + update_pending_event(scheduled=true).
+        // Load the pending event queue (Items, target=pa, paStatus=schedule), read
+        // two weeks of calendar, then return a full briefing so the model can place
+        // events with create_calendar_event + set_item_status(side='pa', to='scheduled').
 
-        const [pending, routines] = await Promise.all([
-          prisma.pendingCalendarEvent.findMany({
-            where: { profileId, scheduled: false },
-            orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-          }).catch(() => []),
-          prisma.routine.findMany({
-            where: { profileId },
-            orderBy: { priority: 'desc' },
-          }).catch(() => []),
-        ])
+        const paItems = await searchItems(profileId, { target: 'pa' })
+        const pending = paItems.filter((i) => i.paStatus === 'schedule')
+          .sort((a, b) => b.priority - a.priority)
 
         if (pending.length === 0) {
           return { content: 'Pending event queue is empty — nothing to schedule.' }
@@ -417,37 +306,23 @@ export async function executeTool(
         ]
 
         for (const evt of pending) {
-          const dateHint = evt.date ? ` | target date: ${evt.date}` : ' | date flexible'
-          const timeHint = evt.startTime ? ` @ ${evt.startTime}` : ' | time flexible'
-          const loc = evt.location ? ` | location: ${evt.location}` : ''
+          const dateHint = evt.dueDate ? ` | target date: ${evt.dueDate.toISOString().slice(0, 10)}` : ' | date flexible'
+          const timeHint = evt.dayTime ? ` @ ${evt.dayTime}` : ' | time flexible'
           lines.push(
-            `• [id=${evt.id} p${evt.priority}] "${evt.name}" — duration: ${evt.duration}${dateHint}${timeHint}${loc}` +
+            `• [id=${evt.id} p${evt.priority}] "${evt.name}" — duration: ${evt.duration ?? 'unspecified'}${dateHint}${timeHint}` +
             (evt.description ? `\n  Notes: ${evt.description}` : '')
           )
-        }
-
-        if (routines.length) {
-          lines.push(`\nROUTINES (protected time — work around these):\n`)
-          for (const r of routines) {
-            const flex = r.flexibility <= 2 ? '⚠️ LOW flex' : r.flexibility >= 4 ? 'high flex' : 'medium flex'
-            lines.push(
-              `• [p${r.priority}] ${r.description} — ${r.frequency}` +
-              (r.dayTime ? ` | usual time: ${r.dayTime}` : '') +
-              ` | ${flex}`
-            )
-          }
         }
 
         lines.push(`\nCALENDAR — next 14 days:\n${calendarText}`)
 
         lines.push(
           `\nINSTRUCTIONS:\n` +
-          `For each pending event above, pick an appropriate slot (respecting routines and existing events), ` +
-          `then:\n` +
+          `For each pending event above, pick an appropriate slot (respecting existing events), then:\n` +
           `  1. create_calendar_event(title, start="YYYY-MM-DD HH:MM", end="...", ...)\n` +
-          `  2. update_pending_event(id=..., scheduled=true)\n\n` +
+          `  2. set_item_status(id=..., side='pa', to='scheduled')\n\n` +
           `Work through them highest priority first. If a date was specified, use it. ` +
-          `If time is flexible, choose a time that doesn't conflict with routines or existing events. ` +
+          `If time is flexible, choose a time that doesn't conflict with existing events. ` +
           `Prefer morning slots for high-priority work, afternoons for lower-priority or social events.`
         )
 
@@ -503,104 +378,6 @@ export async function executeTool(
           data: { profileId, topic: str(args.topic), runAt },
         })
         return { content: `Deferred action scheduled for ${runAt.toISOString()} (id=${task.id})` }
-      }
-
-      // ── Notes ─────────────────────────────────────────────────────────────
-
-      case 'create_note': {
-        const expiresAt = new Date(str(args.expiresAt))
-        if (isNaN(expiresAt.getTime())) {
-          return { content: `create_note: invalid expiresAt "${args.expiresAt}"`, is_error: true }
-        }
-        // Enforce 2-week max
-        const twoWeeks = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
-        const clampedExpiry = expiresAt > twoWeeks ? twoWeeks : expiresAt
-        const note = await prisma.note.create({
-          data: {
-            profileId,
-            title: str(args.title),
-            content: str(args.content),
-            expiresAt: clampedExpiry,
-            modalityTarget: str(args.modalityTarget),
-            source: modalityId,
-          },
-        })
-        return { content: `Note created: "${note.title}" (id=${note.id}), expires ${clampedExpiry.toISOString().slice(0, 10)}` }
-      }
-
-      case 'resolve_note': {
-        const id = str(args.id)
-        await prisma.note.update({ where: { id }, data: { resolution: 'Resolved' } })
-        return { content: `Note ${id} marked Resolved.` }
-      }
-
-      case 'ignore_note': {
-        const id = str(args.id)
-        await prisma.note.update({ where: { id }, data: { resolution: 'Ignored' } })
-        return { content: `Note ${id} marked Ignored.` }
-      }
-
-      case 'acknowledge_item_note': {
-        const id = str(args.id)
-        const resolution = str(args.resolution) || undefined
-        const reason = str(args.reason) || undefined
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const db = prisma as any
-        const note = await db.itemNote.findUnique({ where: { id } })
-        if (!note) return { content: `ItemNote ${id} not found.`, is_error: true }
-
-        // 'stale' and 'blocked' are live requests — acknowledging requires an actual
-        // resolution, mechanically checked. This closes the loophole where a flag was
-        // cleared with nothing done about it (the original bug Adam hit: 143 stale
-        // flags acknowledged with the underlying item untouched, partly because no
-        // delete_project tool even existed).
-        if (note.kind === 'stale' || note.kind === 'blocked') {
-          const valid = note.kind === 'stale' ? ['deleted', 'kept'] : ['deleted', 'handled']
-          if (!resolution || !valid.includes(resolution)) {
-            return {
-              content: `acknowledge_item_note: a '${note.kind}' flag requires resolution (${valid.join(' or ')}) — take the action first (or decide to keep it with a reason), then call this again with resolution set.`,
-              is_error: true,
-            }
-          }
-
-          if (resolution === 'deleted') {
-            const stillExists = note.itemType === 'task'
-              ? await prisma.task.findUnique({ where: { id: note.itemId } })
-              : note.itemType === 'project'
-              ? await prisma.project.findUnique({ where: { id: note.itemId } })
-              : await prisma.pendingCalendarEvent.findUnique({ where: { id: note.itemId } })
-            if (stillExists) {
-              return {
-                content: `acknowledge_item_note: you said resolution='deleted' but ${note.itemType} ${note.itemId} still exists. Delete it first (delete_task / delete_project / delete_pending_event), then acknowledge.`,
-                is_error: true,
-              }
-            }
-          } else {
-            // 'kept' or 'handled' — a reason is mandatory and gets written back as a
-            // visible note on the item, so Adam sees WHY instead of the flag just
-            // vanishing with no trace.
-            if (!reason?.trim()) {
-              return {
-                content: `acknowledge_item_note: resolution='${resolution}' requires a reason — that's what shows up on the item for Adam.`,
-                is_error: true,
-              }
-            }
-            await db.itemNote.create({
-              data: {
-                profileId, itemType: note.itemType, itemId: note.itemId, kind: 'note',
-                body: `${resolution === 'kept' ? 'Kept' : 'Addressed'} — ${reason.trim()}`,
-                acknowledged: true, acknowledgedAt: new Date(),
-              },
-            })
-          }
-        }
-
-        await db.itemNote.update({
-          where: { id },
-          data: { acknowledged: true, acknowledgedAt: new Date() },
-        })
-        return { content: `Adam's flag ${id} acknowledged — it will stop appearing in your context.` }
       }
 
       // ── Communication ─────────────────────────────────────────────────────
@@ -809,25 +586,6 @@ export async function executeTool(
           update: { content: str(args.content) },
         })
         return { content: `Brief for ${modalityId} updated.` }
-      }
-
-      case 'search_memory': {
-        const q = keywordFilter(str(args.query))
-        const memories = await prisma.memory.findMany({
-          where: {
-            profileId,
-            archived: false,
-            content: { contains: q },
-          },
-          orderBy: { importance: 'desc' },
-          take: 15,
-        })
-        if (!memories.length) return { content: '(no matching memories found)' }
-        return {
-          content: memories.map((m) =>
-            `[${m.id}] (${m.category}) ${m.content}`
-          ).join('\n'),
-        }
       }
 
       case 'search_deep_memory': {

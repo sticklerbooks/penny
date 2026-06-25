@@ -18,10 +18,13 @@ export interface ItemSnapshot {
   dayTime: string | null
   projectId: string | null
   dueDate: string | null // ISO date (YYYY-MM-DD) so it compares by value, not ref
+  notes: string
+  contingency: string
+  contingencyUntil: string | null // ISO date, same reasoning as dueDate
 }
 
 // The editable fields a `field` chip reports on (name + the update_item surface).
-const TRACKED_FIELDS = ['name', 'type', 'priority', 'duration', 'dayTime', 'projectId', 'dueDate'] as const
+const TRACKED_FIELDS = ['name', 'type', 'priority', 'duration', 'dayTime', 'projectId', 'dueDate', 'notes', 'contingency', 'contingencyUntil'] as const
 
 export type EngineChip =
   | { kind: 'created'; id: string; name: string; target: string; status: string }
@@ -88,7 +91,10 @@ export function chipLabel(c: EngineChip): string {
     case 'status':
       return `"${c.name}" · ${c.side}Status ${c.from ?? '∅'} → ${c.to}`
     case 'field':
-      return `"${c.name}" · ${c.field} ${c.from ?? '∅'} → ${c.to ?? '∅'}`
+      // notes can be long free text — show that it changed, not the full diff.
+      return c.field === 'notes'
+        ? `"${c.name}" · notes updated`
+        : `"${c.name}" · ${c.field} ${c.from ?? '∅'} → ${c.to ?? '∅'}`
     case 'deleted':
       return `deleted · "${c.name}"`
   }

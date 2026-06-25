@@ -24,12 +24,12 @@ describe('canonLabel — the label normalization the cutover relies on', () => {
 })
 
 describe('taskToItem', () => {
-  it('a submodality task → its own world (modalityStatus pending), ongoing, label + due date carried', () => {
+  it('a submodality task → its own world (modalityStatus pending), plain task, label + due date carried', () => {
     const due = new Date('2026-07-15')
     const m = taskToItem({ id: 't1', name: 'File 941', description: 'quarterly', priority: 3, assignedModality: 'margot', projectId: 'p9', status: 'Started', dueDate: due })
     expect(m.sourceRef).toBe('task:t1')
     expect(m.input).toMatchObject({
-      target: 'bookkeeping', createdBy: 'bookkeeping', type: 'ongoing',
+      target: 'bookkeeping', createdBy: 'bookkeeping', type: 'task',
       projectId: 'p9', priority: 3, modalityStatus: 'pending', sourceRef: 'task:t1', dueDate: due,
     })
     expect(m.input.paStatus).toBeUndefined()
@@ -64,9 +64,9 @@ describe('noteToItem', () => {
 })
 
 describe('routineToItem', () => {
-  it('becomes a continuing (recurring source) item in its modality', () => {
+  it('becomes a plain pending task in its modality (recurring → Project is a manual follow-up if this ever re-runs)', () => {
     const m = routineToItem({ id: 'r1', description: 'Sunday meal prep', priority: 2, assignedModality: 'remy', dayTime: 'Sunday afternoons' })
     expect(m.sourceRef).toBe('routine:r1')
-    expect(m.input).toMatchObject({ target: 'health', type: 'ongoing', modalityStatus: 'continuing', dayTime: 'Sunday afternoons' })
+    expect(m.input).toMatchObject({ target: 'health', type: 'task', modalityStatus: 'pending', dayTime: 'Sunday afternoons' })
   })
 })

@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import type { Profile, Memory, Task, Note, Client, ScheduledMessage, Project, PendingCalendarEvent } from '../generated/prisma/client'
+import type { Profile, Memory, Client, ScheduledMessage, Project } from '../generated/prisma/client'
+import type { ItemRow } from './items/item-store'
 import { Modality, getModality } from './modalities'
+import { isFutureContingency } from './review/selectors'
 
 // Load a prose prompt template (.md). The PA has her own; an `independent` self
 // (Eve) has her own; every other submodality shares modality.md, differentiated
@@ -39,20 +41,25 @@ export const PENNY_SEARCH_MODEL = process.env.PENNY_SEARCH_MODEL || PENNY_MODEL
 export const PENNY_FAST_MODEL = process.env.PENNY_FAST_MODEL || 'claude-3-5-haiku-20241022'
 
 // Split the system prompt into a cacheable stable block + an uncacheable
-// trailing block, with the breakpoint placed right before the per-minute
-// timestamp line ("📅 Today is …"). Everything above is cached; only the tiny
-// timestamp tail is reprocessed each turn. The server resends this whole prompt
-// every message, so caching the large stable prefix is the biggest cost win.
-const TIMESTAMP_MARKER = '📅 Today is '
+// trailing block. The breakpoint sits right before the working set (Projects +
+// Items), NOT before the timestamp — identity/brief change rarely, but the
+// working set changes on nearly every turn (any item edit), and Anthropic's
+// prompt cache is an exact-prefix match: ANY change anywhere in the cached
+// portion busts the whole thing. Caching the timestamp-only tail (the old
+// behavior) meant a single item update invalidated the entire large prefix,
+// including identity/brief, defeating the point of caching. Splitting here
+// keeps the big, stable prefix warm across item churn; only the smaller,
+// volatile suffix (working set + ground rules + timestamp) gets resent in full.
+const CACHE_BOUNDARY_MARKER = '⟦WORKING-SET⟧'
 export function cachedSystem(prompt: string): Anthropic.TextBlockParam[] {
-  const i = prompt.lastIndexOf(TIMESTAMP_MARKER)
+  const i = prompt.indexOf(CACHE_BOUNDARY_MARKER)
   // ttl: '1h' keeps each modality's large system prefix warm for an hour instead
   // of the default 5 minutes — so coming back to a self (or switching away and
   // back) usually hits a warm cache instead of reprocessing the whole prompt.
-  if (i <= 0) return [{ type: 'text', text: prompt }]
+  if (i <= 0) return [{ type: 'text', text: prompt.replace(CACHE_BOUNDARY_MARKER, '') }]
   return [
     { type: 'text', text: prompt.slice(0, i), cache_control: { type: 'ephemeral', ttl: '1h' } },
-    { type: 'text', text: prompt.slice(i) },
+    { type: 'text', text: prompt.slice(i + CACHE_BOUNDARY_MARKER.length) },
   ]
 }
 
@@ -62,15 +69,6 @@ export interface WeeklyBriefSummary {
   briefText: string
   weekOf: Date | string
   flagged: boolean
-}
-
-// Adam's note/flag on a specific item, from the dashboard (lightweight type).
-export interface ItemNoteLite {
-  id: string
-  itemType: string   // 'task' | 'event' | 'project'
-  itemId: string
-  kind: string       // stale | blocked | note (Class A is born acknowledged, never here)
-  body: string | null
 }
 
 // Per-modality identity row (lightweight — avoids importing generated prisma).
@@ -84,8 +82,7 @@ export interface ModalityIdentityLite {
 export function buildSystemPrompt(
   profile: Profile | null,
   memories: Memory[],
-  tasks: Task[],
-  notes: Note[],
+  items: ItemRow[],
   clients: Client[],
   scheduledMessages: ScheduledMessage[],
   emailCalendarSummary: string | null,
@@ -95,11 +92,7 @@ export function buildSystemPrompt(
   // Running brief maintained by the modality via rewrite_brief tool.
   modalityBrief: string | null = null,
   projects: Project[] = [],
-  pendingEvents: PendingCalendarEvent[] = [],
-  identity: ModalityIdentityLite | null = null,
-  // Adam's open flags on individual items, left from the dashboard. Class B only
-  // (stale/blocked/note) — things he needs this self to act on and acknowledge.
-  itemNotes: ItemNoteLite[] = []
+  identity: ModalityIdentityLite | null = null
 ): string {
   // Unused-but-reserved params kept for call-site compatibility while the prompt
   // layout is migrating to the .md templates: memories, emailCalendarSummary,
@@ -114,38 +107,37 @@ export function buildSystemPrompt(
   const isPA = modality.domain === null
 
   // ── Lenses: scope context to this modality's domain ────────────────────────
-  // PA (anchor) sees everything; submodalities see only their own slice.
-  const activeTasks = tasks.filter((t) => t.status !== 'Complete')
-  const lensTasks = isPA ? activeTasks : activeTasks.filter((t) => t.assignedModality === modalityId)
+  // PA (anchor) sees everything; submodalities see only their own slice. Item
+  // unifies what used to be Task/Note/PendingCalendarEvent/Routine — one lens,
+  // one set of counts, instead of four renderers.
+  //
+  // The always-on view is deliberately the thinnest useful signal: project
+  // NAMES (so she knows they exist — read_project_notes or the projects
+  // protocol gets the detail) and ITEM COUNTS (so she and {name} can decide
+  // whether a Review is worth doing right now). No content is dumped by
+  // default; that's what Review and search_items are for. A future-contingent
+  // item/project is hidden from these counts too, same as in Review — there's
+  // no point surfacing something neither side can act on yet.
+  const isActive = (i: ItemRow) => {
+    const status = i.target === 'pa' ? i.paStatus : i.modalityStatus
+    return status !== 'completed' && status !== 'to-delete'
+  }
+  const lensItems = items
+    .filter(isActive)
+    .filter((i) => isPA || i.target === modalityId)
+    .filter((i) => !isFutureContingency(i.contingencyUntil, new Date()))
 
   // PA sees projects with meaningful progress (≥3); submodalities see all of theirs.
-  const lensProjects = isPA
+  const lensProjects = (isPA
     ? projects.filter((p) => p.progress >= 3)
     : projects.filter((p) => p.assignedModality === modalityId)
-
-  // Pending calendar events still in the queue (not yet scheduled).
-  const lensPending = (pendingEvents || []).filter((e) => {
-    if (e.scheduled) return false
-    return isPA || e.assignedModality === modalityId
-  })
-
-  // Notes: PA sees all Open notes; submodalities see their own + ones aimed at them.
-  const activeNotes = notes.filter((n: Note) => {
-    if (n.resolution !== 'Open') return false
-    // Defensive: hide any legacy backstage notes left over from the retired
-    // Showrunner channel (target 'showrunner') so they never surface in chat.
-    if (n.modalityTarget === 'showrunner') return false
-    if (isPA) return true
-    return n.source === modalityId || n.modalityTarget === modalityId
-  })
+  ).filter((p) => !isFutureContingency(p.contingencyUntil, new Date()))
 
   const showClients = modality.capabilities.includes('clients')
 
   // ── Date helpers ───────────────────────────────────────────────────────────
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  const weekOut = new Date(today)
-  weekOut.setDate(weekOut.getDate() + 7)
 
   const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
   const now = new Date()
@@ -156,91 +148,31 @@ export function buildSystemPrompt(
     hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz,
   })
 
-  // ── Adam's dashboard flags ─────────────────────────────────────────────────
-  // Class-B notes Adam left on specific items. Rendered inline under the matching
-  // task/project/event with a loud marker so this self acts on them, not re-asks.
-  const flagsByItem = new Map<string, ItemNoteLite[]>()
-  for (const n of itemNotes) {
-    const key = `${n.itemType}:${n.itemId}`
-    const arr = flagsByItem.get(key) ?? []
-    arr.push(n)
-    flagsByItem.set(key, arr)
-  }
-  const KIND_VERB: Record<string, string> = {
-    stale: 'flagged this STALE — DELETE it now if you agree (delete_task / delete_project / delete_pending_event), or keep it and tell him why',
-    blocked: 'flagged this BLOCKED — fix/reroute it, or tell him why it stays blocked',
-    note: 'note',
-  }
-  const renderFlags = (type: string, id: string): string =>
-    (flagsByItem.get(`${type}:${id}`) ?? [])
-      .map((n) => `\n     ⚑ ADAM ${KIND_VERB[n.kind] ?? n.kind}${n.body ? ` — "${n.body}"` : ''} (then acknowledge_item_note id=${n.id} — 'stale'/'blocked' REQUIRE resolution, see tool description)`)
-      .join('')
-
   // ── Renderers ──────────────────────────────────────────────────────────────
-  const tasksText =
-    lensTasks.length > 0
-      ? lensTasks
-          .sort((a, b) => {
-            const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity
-            const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity
-            if (aDue !== bDue) return aDue - bDue
-            return b.priority - a.priority
-          })
-          .map((t) => {
-            const dueDate = t.dueDate ? new Date(t.dueDate) : null
-            let dueStr = ''
-            let dueFlag = ''
-            if (dueDate) {
-              dueStr = ` (due ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })})`
-              if (dueDate < today) dueFlag = ' ⚠️OVERDUE'
-              else if (dueDate.toDateString() === today.toDateString()) dueFlag = ' 📌TODAY'
-              else if (dueDate <= weekOut) dueFlag = ' 📅THIS WEEK'
-            } else {
-              dueStr = ' (no due date)'
-            }
-            const pri = ` p${t.priority}`
-            const status = t.status !== 'Unstarted' ? ` <${t.status}>` : ''
-            const clientTag = t.clientId ? ` @client=${t.clientId}` : ''
-            const projTag = t.projectId ? ` @project=${t.projectId}` : ''
-            const modTag = isPA ? ` [${t.assignedModality}]` : ''
-            const taskNotes = t.notes ? `\n     ↳ ${t.notes}` : ''
-            return `  • id=${t.id}${pri}${clientTag}${projTag}${modTag} — ${t.name}${dueStr}${dueFlag}${status}${taskNotes}${renderFlags('task', t.id)}`
-          })
-          .join('\n')
-      : '  (nothing tracked yet)'
+  // Counts only, not content — "is there anything worth going into Review
+  // for" rather than the backlog itself. search_items (live counts every
+  // status, every domain you're allowed to see) is one call away for detail.
+  const statusOf = (i: ItemRow) => (i.target === 'pa' ? i.paStatus : i.modalityStatus)
+  const newCount = lensItems.filter((i) => statusOf(i) === 'new').length
+  const pendingCount = lensItems.filter((i) => statusOf(i) === 'pending').length
+  const contingentCount = lensItems.filter((i) => statusOf(i) === 'contingent').length
+  const urgentCount = lensItems.filter((i) => i.priority === 5).length
+  const overdueCount = lensItems.filter((i) => {
+    if (!i.dueDate) return false
+    const dd = new Date(i.dueDate)
+    dd.setHours(0, 0, 0, 0)
+    return dd < today
+  }).length
+  const itemsText = lensItems.length > 0
+    ? `${newCount} new · ${pendingCount} pending · ${urgentCount} urgent (p5) · ${overdueCount} overdue — search_items for detail, or start_review to work through them with ${userName}.`
+    : '  (nothing tracked yet)'
 
-  const progressBar = (n: number) => '█'.repeat(n) + '░'.repeat(10 - n)
   const projectsText =
     lensProjects.length > 0
       ? lensProjects
           .map((p) => {
-            const bar = `[${progressBar(p.progress)} ${p.progress}/10]`
             const mod = isPA ? ` [${p.assignedModality}]` : ''
-            const contingency = p.contingencies ? `\n     ↳ constraint: ${p.contingencies}` : ''
-            return `  • id=${p.id}${mod} ${bar} "${p.name}" — ${p.expectedDuration}${contingency}${renderFlags('project', p.id)}`
-          })
-          .join('\n')
-      : '  (none)'
-
-  const pendingText =
-    lensPending.length > 0
-      ? lensPending
-          .map((e) => {
-            const when = e.date ? ` ${e.date}${e.startTime ? ` @ ${e.startTime}` : ''}` : ' (timing flexible)'
-            const mod = isPA ? ` [${e.assignedModality}]` : ''
-            const proj = e.projectId ? ` @project=${e.projectId}` : ''
-            return `  • id=${e.id}${mod}${proj} — "${e.name}" (${e.duration}) p${e.priority}${when}${renderFlags('event', e.id)}`
-          })
-          .join('\n')
-      : '  (none queued)'
-
-  const notesText =
-    activeNotes.length > 0
-      ? activeNotes
-          .map((n: Note) => {
-            const from = n.source && n.source !== modalityId ? ` (from ${n.source})` : ''
-            const expires = ` expires ${new Date(n.expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-            return `  • id=${n.id} — ${n.title}: ${n.content}${from}${expires}`
+            return `  • id=${p.id}${mod} "${p.name}"`
           })
           .join('\n')
       : '  (none)'
@@ -378,44 +310,19 @@ ${briefText}${weeklyBriefSection}`
     ? `\n\n📨 EMAIL & CALENDAR (recent snapshot — search the live tools for detail):\n${emailCalendarSummary.trim()}`
     : ''
 
-  // Banner for Adam's dashboard flags: a count up top + a safety net listing any
-  // flag whose item isn't in the active set below (so it can't go unhandled).
-  const renderedIds = new Set<string>([
-    ...lensTasks.map((t) => `task:${t.id}`),
-    ...lensProjects.map((p) => `project:${p.id}`),
-    ...lensPending.map((e) => `event:${e.id}`),
-  ])
-  const orphanFlags = itemNotes.filter((n) => !renderedIds.has(`${n.itemType}:${n.itemId}`))
-  const flagsBanner = itemNotes.length > 0
-    ? `⚑ ADAM LEFT ${itemNotes.length} FLAG(S) ON YOUR ITEMS from his dashboard — find the ⚑ marks below, act on each, then call acknowledge_item_note. These are his direct instructions; do NOT re-ask him about them.${
-        orphanFlags.length
-          ? `\nFlags on items no longer in your active list:${orphanFlags
-              .map((n) => `\n  ⚑ ${n.kind} on ${n.itemType} ${n.itemId}${n.body ? `: "${n.body}"` : ''} (acknowledge_item_note id=${n.id})`)
-              .join('')}`
-          : ''
-      }\n\n`
-    : ''
-
-  const workingSet = `${flagsBanner}📁 PROJECTS:
+  const workingSet = `📁 PROJECTS:
 ${projectsText}
 
-✅ TASKS:
-${tasksText}
-
-📅 PENDING CALENDAR EVENTS (queued for Penny to schedule):
-${pendingText}
-
-📌 NOTES:
-${notesText}${clientsSection}${notificationsSection}${emailCalendarSection}`
+📋 ITEMS:
+${itemsText}${clientsSection}${notificationsSection}${emailCalendarSection}`
 
   // ── Ground rules — mechanical guardrails the prose doesn't carry ───────────
   const groundRules = `═══════════════════════════════════════════════════════════════════════
 GROUND RULES
 ═══════════════════════════════════════════════════════════════════════
-Your tools run silently — ${userName} never sees the calls. Use them; don't ask permission to keep your own records.
-Before doing any category of work (calendar, email, drive, projects, tasks, notes, memory…), call load_protocol(which) FIRST and follow it. Never work from memory.
-⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any row, search for an existing one (search_tasks / search_deep_memory / search_memory, and scan what's already in your context). A match → UPDATE it. No match → create it. Never make a second record for the same thing.
-⚑ ADAM'S FLAGS — when you see a ⚑ ADAM mark on an item, that is ${userName} speaking directly to you from his dashboard. Take a real action on it — delete it if it's stale/redundant, fix or reroute a blocker, absorb a note — THEN call acknowledge_item_note. For 'stale'/'blocked' flags this is enforced: the tool requires resolution, and rejects resolution='deleted' if the item still exists. If you genuinely disagree and want to keep it, that's allowed — pass resolution='kept' (or 'handled') with a reason, which gets written back as a note ${userName} can see on the item. What you must never do is acknowledge a flag and leave the item exactly as it was with no explanation — that's the bug that broke his trust in this system once already.`
+Your tools run silently — ${userName} never sees the calls. Use them; don't ask permission, these are to help you do things right.
+Before doing any category of work (calendar, email, drive, projects, items…), call load_protocol(which) FIRST and follow it. Never work from memory.
+⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any item or project, use search_items. If the item or project already exists, even if it's worded a little differently, do not make a duplicate (or near duplicate) one. If there is a match, or a close match, add to or edit what's already there. Only create a new item or project if it is genuinely novel.`
 
   // ── Assemble from the .md template ─────────────────────────────────────────
   const template = loadPromptTemplate(modality)
@@ -426,7 +333,7 @@ Before doing any category of work (calendar, email, drive, projects, tasks, note
     // (seeded from the old persona text), rendered in {{IDENTITY_AND_BRIEF}}.
     .replace('{{PERSONA}}', '')
     .replace('{{IDENTITY_AND_BRIEF}}', identityAndBrief)
-    .replace('{{WORKING_SET}}', workingSet)
+    .replace('{{WORKING_SET}}', CACHE_BOUNDARY_MARKER + workingSet)
 
   prompt += `\n\n${groundRules}`
   if (intakeSection) prompt += `\n${intakeSection}`

@@ -13,6 +13,7 @@ import {
   notesPassQueue,
   paNotesQueue,
   subNotesReadQueue,
+  isFutureContingency,
   OVERDUE_DAYS,
   ATTENTION_THRESHOLD,
   ITEM_COUNT_TOO_MANY,
@@ -24,8 +25,8 @@ const daysAgo = (n: number) => new Date(now.getTime() - n * 24 * 60 * 60 * 1000)
 
 describe('phase sequencing', () => {
   it('PA and submodality have the spec phase walks', () => {
-    expect(PA_PHASES).toEqual(['greeting', 'notes', 'projects', 'submodalities', 'user', 'calendar', 'wrap-up'])
-    expect(SUB_PHASES).toEqual(['greeting', 'notes-read', 'projects', 'user', 'notes-pass', 'wrap-up'])
+    expect(PA_PHASES).toEqual(['greeting', 'notes', 'projects', 'submodalities', 'calendar', 'wrap-up'])
+    expect(SUB_PHASES).toEqual(['greeting', 'notes-read', 'projects', 'notes-pass', 'wrap-up'])
   })
 
   it('walks start → end then signals done with null', () => {
@@ -149,11 +150,11 @@ describe('notes-pass queue (Note 2 — sweeps items made this session)', () => {
 })
 
 describe('triage ordering', () => {
-  it('PA notes phase walks pending → continuing → new, dropping other statuses', () => {
+  it('PA notes phase walks pending → contingent → new, dropping other statuses', () => {
     const items = [
       { id: 'n', paStatus: 'new' as const },
       { id: 'sch', paStatus: 'scheduled' as const }, // not triaged in notes phase
-      { id: 'c', paStatus: 'continuing' as const },
+      { id: 'c', paStatus: 'contingent' as const },
       { id: 'p', paStatus: 'pending' as const },
     ]
     expect(paNotesQueue(items).map((i) => i.id)).toEqual(['p', 'c', 'n'])
@@ -170,14 +171,34 @@ describe('triage ordering', () => {
     expect(paNotesQueue(items, now).map((i) => i.id).sort()).toEqual(['near', 'undated'])
   })
 
-  it('submodality notes-read walks pending → new → completed → blocked', () => {
+  it('submodality notes-read walks pending → contingent → new → completed', () => {
     const items = [
-      { id: 'b', modalityStatus: 'blocked' as const },
+      { id: 'c', modalityStatus: 'contingent' as const },
       { id: 'd', modalityStatus: 'completed' as const },
       { id: 'n', modalityStatus: 'new' as const },
       { id: 'p', modalityStatus: 'pending' as const },
       { id: 's', modalityStatus: 'sent-to-PA' as const }, // not in notes-read order
     ]
-    expect(subNotesReadQueue(items).map((i) => i.id)).toEqual(['p', 'n', 'd', 'b'])
+    expect(subNotesReadQueue(items).map((i) => i.id)).toEqual(['p', 'c', 'n', 'd'])
+  })
+
+  it('isFutureContingency: only a real, still-future recheck date counts', () => {
+    const future = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000)
+    const past = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000)
+    expect(isFutureContingency(future, now)).toBe(true)
+    expect(isFutureContingency(past, now)).toBe(false)
+    expect(isFutureContingency(null, now)).toBe(false)
+    expect(isFutureContingency(undefined, now)).toBe(false)
+  })
+
+  it('a contingent item with a future recheck date is skipped entirely, not just deprioritized', () => {
+    const future = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000)
+    const past = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000)
+    const items = [
+      { id: 'waiting', paStatus: 'contingent' as const, contingencyUntil: future },
+      { id: 'cleared', paStatus: 'contingent' as const, contingencyUntil: past },
+      { id: 'undated', paStatus: 'contingent' as const, contingencyUntil: null },
+    ]
+    expect(paNotesQueue(items, now).map((i) => i.id).sort()).toEqual(['cleared', 'undated'])
   })
 })
