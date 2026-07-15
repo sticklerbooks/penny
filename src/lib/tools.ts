@@ -14,12 +14,10 @@ import { reviewToolSchemas } from './items/item-tools'
 
 type Tool = Anthropic.Tool
 
-// The Item CRUD surface (search/create/update/append_note/set_item_status) — the
-// same tools Review uses, minus its two session-only control tools
+// The table surface (query_table/write_table, covering both Item and Project) —
+// the same tools Review uses, minus its two session-only control tools
 // (mark_discussed, finish_phase), which only make sense inside an active Review.
-const ITEM_TOOLS: Tool[] = reviewToolSchemas([
-  'search_items', 'create_item', 'update_item', 'append_note', 'set_item_status',
-])
+const TABLE_TOOLS: Tool[] = reviewToolSchemas(['query_table', 'write_table'])
 
 // ─── Protocol loader ──────────────────────────────────────────────────────────
 // Returns the detailed step-by-step text for a kind of work, on demand, instead
@@ -58,73 +56,21 @@ const loadProtocol: Tool = {
 }
 
 // ─── Project tools ────────────────────────────────────────────────────────────
-
-const createProject: Tool = {
-  name: 'create_project',
-  description:
-    'Create a new project. Projects group related tasks and have a defined scope, ' +
-    'expected duration, and progress tracked 0–10. Use for multi-step work with a clear goal, ' +
-    'AND for any RECURRING commitment ("every morning", "every week") — see the projects protocol. ' +
-    'Any ongoing task that will need regular specific instances is a Project. ',
-  input_schema: {
-    type: 'object',
-    properties: {
-      name: { type: 'string', description: 'Project name.' },
-      description: {
-        type: 'string',
-        description: 'What this project is and what it accomplishes.',
-      },
-      expectedDuration: {
-        type: 'string',
-        description: '"next few weeks", "sometime this year", "ongoing", etc.',
-      },
-      assignedModality: {
-        type: 'string',
-        description: 'Modality responsible for this project.',
-      },
-      progress: {
-        type: 'integer',
-        description: '0–10. 0 = not started, 10 = complete. Defaults to 0.',
-      },
-      contingencies: {
-        type: 'string',
-        description:
-          'Why this can\'t move right now: "only workable in summer", "needs Jessica home", etc.',
-      },
-      contingencyUntil: {
-        type: 'string',
-        description: 'A real recheck date, YYYY-MM-DD, if known. While in the future, this project is skipped entirely in review.',
-      },
-    },
-    required: ['name', 'description', 'expectedDuration', 'assignedModality'],
-  },
-}
-
-const updateProject: Tool = {
-  name: 'update_project',
-  description:
-    'Update any field on an existing project including progress. Provide only the fields to change.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Project ID.' },
-      name: { type: 'string' },
-      description: { type: 'string' },
-      expectedDuration: { type: 'string' },
-      assignedModality: { type: 'string' },
-      progress: { type: 'integer', description: '0–10.' },
-      contingencies: { type: 'string', description: 'Pass "" to clear.' },
-      contingencyUntil: { type: 'string', description: 'A real recheck date, YYYY-MM-DD. While in the future, this project is skipped entirely in review. Pass "" to clear.' },
-    },
-    required: ['id'],
-  },
-}
+// Project rows are read/written through query_table/write_table (table='project')
+// — see TABLE_TOOLS above. A project's detailed notes are a single cell in a
+// DIFFERENT table (DeepMemory, keyed by name "project-{id}-notes"), kept out of
+// the main project row to save context — read_project_notes is a narrow,
+// read-only accessor for that one cell, not a duplicate verb over the project
+// table. (write_deep_memory/search_deep_memory, the rest of that table's surface,
+// stay reserved for the end-of-chat memory pass — see MEMORY_PASS_TOOLS — this is
+// the one sanctioned live exception, same as before the table tools were
+// unified.) delete_project also stays its own tool — a cascading delete
+// (unlinking child items, removing the notes doc) is real logic, not a cell write.
 
 const readProjectNotes: Tool = {
   name: 'read_project_notes',
   description:
-    'Fetch the detailed notes for a project. These are stored in DeepMemory as ' +
-    '"project-{id}-notes" and are not auto-loaded. Call when you need full project context.',
+    'Fetch the detailed notes for a project — a single DeepMemory cell ("project-{id}-notes"), not part of the project row itself. Call when you need full project context.',
   input_schema: {
     type: 'object',
     properties: {
@@ -759,9 +705,9 @@ const CORE_TOOLS: Tool[] = [
   loadProtocol,
   // Hands the conversation to the Review system
   startReview,
-  // Items — search/create/update/append_note/set_item_status (Task/Note/PendingEvent/
-  // Routine all unify into this one surface; see src/lib/items/item-tools.ts)
-  ...ITEM_TOOLS,
+  // The item/project table surface (Task/Note/PendingEvent/Routine all unify into
+  // the Item table; see src/lib/items/item-tools.ts)
+  ...TABLE_TOOLS,
   // Calendar read (everyone reads; only PA writes via CALENDAR_WRITE_TOOLS)
   readCalendarDay,
   searchCalendar,
@@ -795,8 +741,10 @@ export const MEMORY_PASS_TOOLS: Tool[] = [
   updateIdentitySelf,
 ]
 
-/** Project management — PA and submodalities that manage multi-step work. */
-const PROJECT_TOOLS: Tool[] = [createProject, updateProject, readProjectNotes, deleteProject]
+/** Project management beyond the table tools — reading a project's detailed notes
+ *  (a DeepMemory cell) and the cascading delete. Create/update go through
+ *  write_table (table='project'), already in CORE_TOOLS. */
+const PROJECT_TOOLS: Tool[] = [readProjectNotes, deleteProject]
 
 /** Email write access (send / reply / draft). PA + bookkeeping. */
 const EMAIL_WRITE_TOOLS: Tool[] = [sendEmail, replyEmail, createDraft]
@@ -902,8 +850,6 @@ export const ALL_TOOL_NAMES = new Set(getAllTools().map((t) => t.name))
 // The executor imports by name so it can build its dispatch table.
 export {
   loadProtocol,
-  createProject,
-  updateProject,
   readProjectNotes,
   deleteProject,
   readCalendarDay,

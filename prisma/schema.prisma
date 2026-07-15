@@ -174,7 +174,9 @@ model Project {
 
   name              String
   description       String
-  progress          Int      @default(0)  // 0–10; 10 = complete (the "completion level")
+  progress          Int      @default(0)  // 0–10; STALE for kind='goal' — see `kind` below.
+                                           // Kept only as a rollback safety net; the dashboard
+                                           // computes goal-kind progress live from child Items.
   expectedDuration  String   // "sometime this year", "next few weeks", etc.
   contingencies     String?  // "can only be worked on in summer", "needs Jessica home", etc.
   assignedModality  String
@@ -183,6 +185,12 @@ model Project {
   // ── Redesign additions (additive; nullable/defaulted) ──
   termType   String?  // short | medium | long — the Short/Medium/Long-Term bucket
   visibility Boolean  @default(true)  // soft-delete / archive (hidden when false)
+  // 'goal': has a real end-state — progress is computed live as the fraction of
+  // its non-cancelled child Items at stage='done'. 'ongoing': a recurring
+  // commitment that never hits 100% by design (e.g. "stay in touch with
+  // friends") — shown as active-item-count + last-touched instead of a bar.
+  // Distinct from termType, which is a duration bucket, not a completion shape.
+  kind String @default("goal") // goal | ongoing
   // A REAL date, not parsed from `contingencies`' free text. When set and still
   // in the future, this project is skipped entirely in the projects review phase
   // — not just discussed less. Null = no known recheck date; gets discussed as
@@ -292,17 +300,32 @@ model Item {
   contingency      String    @default("")
   contingencyUntil DateTime?
 
-  // Lifecycle — written ONLY through the FSM. Nullable because an item may live in
-  // PA's world, a submodality's world, or both.
+  // Lifecycle — written ONLY through the FSM (src/lib/items/fsm.ts), never inline.
+  // STALE — superseded by `stage` below. Kept (unused, unwritten) as a rollback
+  // safety net until a separate, explicitly-confirmed cleanup migration drops them.
   paStatus       String?  // new|pending|schedule|scheduled|contingent|completed|to-delete
   modalityStatus String?  // new|pending|sent-to-PA|contingent|completed|to-delete
+
+  // Status belongs to the task, not to whoever's looking at it: ONE stage shared
+  // by every viewer (PA queries across all `target`s; a submodality filters to
+  // her own). `contingency`/`contingencyUntil` above are the reason + recheck
+  // date that accompany stage='blocked' — not a separate system.
+  stage          String?   // backlog|planned|scheduled|blocked|done|cancelled
+  // Stamped by the FSM chokepoint on every stage change — distinct from
+  // `createdAt` (how old the item is) and `updatedAt` (any field touched).
+  // Answers "how long has this sat in its current stage," which is what
+  // staleness detection actually needs.
+  stageEnteredAt DateTime?
 
   visibility   Boolean   @default(true)  // soft-delete / archive (hidden when false)
   completedAt  DateTime?
   scheduledAt  DateTime?
 
   calendarEventId String?  // reserved: GCal event id once scheduled (Stage 4+)
-  escalatedToId   String?  // when a modality item spawns a PA item, the new item's id
+  // STALE — the escalation-copy flow this backed is retired (no more spawning a
+  // second Item to hand work to Penny; she queries stage='planned' across every
+  // target directly). Left unused, unwritten, as a rollback safety net.
+  escalatedToId   String?
   sourceRef       String?  // provenance for the Stage-3 cutover, e.g. "task:<id>" /
                            // "note:<id>" — makes the migration idempotent + reversible
 

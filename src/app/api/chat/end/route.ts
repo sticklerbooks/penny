@@ -8,8 +8,8 @@
 // brief — see src/lib/memory-pass.ts and the 'memory' protocol). Switching
 // modalities mid-day does NOT run this; only this button does.
 //
-// The Item tools are correct by construction (search-first creation, append_note
-// instead of a new item), so there's no duplicate/stale Item cleanup left to do —
+// The Item tools are correct by construction (search-first creation, appending
+// to an existing row instead of minting a new item), so there's no duplicate/stale Item cleanup left to do —
 // just the memory pass.
 //
 // The memory-pass fan-out runs in `after()`, NOT before the response: it can be

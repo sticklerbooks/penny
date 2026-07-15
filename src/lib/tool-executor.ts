@@ -29,7 +29,7 @@ import {
   type EventTime,
 } from './google'
 import { ALL_TOOL_NAMES } from './tools'
-import { getModality, resolveModality } from './modalities'
+import { getModality } from './modalities'
 import { getProtocol, LIVE_PROTOCOL_NAMES, type ProtocolName } from './protocols'
 import { invalidateContext } from './context-cache'
 import { executeReviewTool, type ReviewToolContext } from './items/item-tools'
@@ -37,18 +37,17 @@ import { searchItems } from './items/item-store'
 import { startOrResumeReview } from './review/session'
 import type { ReviewKind } from './review/phases'
 
-// Item tools (Task/Note/PendingEvent/Routine unify into these) delegate straight
-// to the same executor Review uses — one Item-world implementation, not two.
-const ITEM_TOOL_NAMES = new Set([
-  'search_items', 'create_item', 'update_item', 'append_note', 'set_item_status',
-])
+// Table tools (Item AND Project both — Task/Note/PendingEvent/Routine all unify
+// into the Item table) delegate straight to the same executor Review uses — one
+// table-world implementation, not two.
+const TABLE_TOOL_NAMES = new Set(['query_table', 'write_table'])
 
 // Read-only tools — these never change anything the system-prompt context cache
 // holds, so they leave it intact. Everything else invalidates the cache after it
 // runs so the next turn rebuilds context from fresh data (see context-cache.ts).
 const READ_ONLY_TOOLS = new Set<string>([
   'load_protocol',
-  'search_items',
+  'query_table',
   'read_project_notes',
   'read_calendar_day',
   'search_calendar',
@@ -128,26 +127,6 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback
 }
 
-// "" clears the field (null); undefined leaves it untouched; anything else
-// parses as a real date — never guessed from free text.
-function parseContingencyUntil(v: unknown): Date | null | undefined {
-  if (v === undefined) return undefined
-  const s = String(v).trim()
-  if (!s) return null
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? null : d
-}
-
-// Canonicalize an assignedModality value to a stable modality ID. The model often
-// passes a display name ("margot", "june") instead of the id ("bookkeeping",
-// "household"); resolveModality maps either to the id. Falls back to the creating
-// modality, then 'pa'. This keeps the data tagged by ID so the domain lens (which
-// filters by id) actually matches — the bug that left submodalities' agendas empty.
-function canonModality(raw: unknown, fallback: string): string {
-  const resolved = typeof raw === 'string' && raw.trim() ? resolveModality(raw)?.id : undefined
-  return resolved ?? (resolveModality(fallback)?.id ?? fallback)
-}
-
 // Simple keyword search helper — splits on whitespace, does case-insensitive LIKE queries.
 // SQLite doesn't have FTS enabled by default; upgrade to fts5 when Turso confirms it.
 function keywordFilter(query: string): string {
@@ -172,7 +151,7 @@ export async function executeTool(
   // loaded its context before any tool ran; the cache is next read next turn.
   if (!READ_ONLY_TOOLS.has(name)) invalidateContext(profileId)
 
-  if (ITEM_TOOL_NAMES.has(name)) {
+  if (TABLE_TOOL_NAMES.has(name)) {
     return executeReviewTool(name, args, ctx as ReviewToolContext) // no reviewSessionId outside Review — see item-tools.ts
   }
 
@@ -214,37 +193,10 @@ export async function executeTool(
       }
 
       // ── Projects ──────────────────────────────────────────────────────────
-
-      case 'create_project': {
-        const project = await prisma.project.create({
-          data: {
-            profileId,
-            name: str(args.name),
-            description: str(args.description),
-            expectedDuration: str(args.expectedDuration),
-            assignedModality: canonModality(args.assignedModality, modalityId),
-            progress: num(args.progress, 0),
-            contingencies: str(args.contingencies) || null,
-            contingencyUntil: parseContingencyUntil(args.contingencyUntil),
-          },
-        })
-        return { content: `Project created: "${project.name}" (id=${project.id})` }
-      }
-
-      case 'update_project': {
-        const id = str(args.id)
-        const data: Record<string, unknown> = {}
-        if (args.name !== undefined) data.name = str(args.name)
-        if (args.description !== undefined) data.description = str(args.description)
-        if (args.expectedDuration !== undefined) data.expectedDuration = str(args.expectedDuration)
-        if (args.assignedModality !== undefined) data.assignedModality = canonModality(args.assignedModality, modalityId)
-        if (args.progress !== undefined) data.progress = num(args.progress, 0)
-        if (args.contingencies !== undefined) data.contingencies = str(args.contingencies) || null
-        if (args.contingencyUntil !== undefined) data.contingencyUntil = parseContingencyUntil(args.contingencyUntil)
-        if (Object.keys(data).length === 0) return { content: 'update_project: no fields to update' }
-        await prisma.project.update({ where: { id }, data })
-        return { content: `Project ${id} updated.` }
-      }
+      // Create/update go through query_table/write_table (table='project'),
+      // dispatched above via TABLE_TOOL_NAMES. What's left here is the one cell
+      // that lives in a different table (the DeepMemory notes doc) and the
+      // cascading delete — neither is a plain project-row write.
 
       case 'read_project_notes': {
         const id = str(args.id)
@@ -283,12 +235,16 @@ export async function executeTool(
       // ── Calendar (write — PA only) ────────────────────────────────────────
 
       case 'schedule_pending_events': {
-        // Load the pending event queue (Items, target=pa, paStatus=schedule), read
-        // two weeks of calendar, then return a full briefing so the model can place
-        // events with create_calendar_event + set_item_status(side='pa', to='scheduled').
+        // Load the pending event queue — every Item at stage='planned', from ANY
+        // target. There's no separate "escalated to Penny" hand-off anymore: a
+        // submodality committing to something (moving it to 'planned') IS what
+        // puts it in Penny's queue, since she's the only one who places things on
+        // the calendar. Read two weeks of calendar, then return a full briefing so
+        // the model can place events with create_calendar_event +
+        // write_table(stage='scheduled').
 
-        const paItems = await searchItems(profileId, { target: 'pa' })
-        const pending = paItems.filter((i) => i.paStatus === 'schedule')
+        const allItems = await searchItems(profileId, {})
+        const pending = allItems.filter((i) => i.stage === 'planned')
           .sort((a, b) => b.priority - a.priority)
 
         if (pending.length === 0) {
@@ -320,7 +276,7 @@ export async function executeTool(
           `\nINSTRUCTIONS:\n` +
           `For each pending event above, pick an appropriate slot (respecting existing events), then:\n` +
           `  1. create_calendar_event(title, start="YYYY-MM-DD HH:MM", end="...", ...)\n` +
-          `  2. set_item_status(id=..., side='pa', to='scheduled')\n\n` +
+          `  2. write_table(table='item', id=..., fields={ stage: 'scheduled' })\n\n` +
           `Work through them highest priority first. If a date was specified, use it. ` +
           `If time is flexible, choose a time that doesn't conflict with existing events. ` +
           `Prefer morning slots for high-priority work, afternoons for lower-priority or social events.`

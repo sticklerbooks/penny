@@ -7,8 +7,8 @@
 //
 // Used to run a prose LLM hygiene pass first (capture/remember/cleanup/brief) —
 // retired along with the rest of the close-sweep system. The Item tools are
-// correct by construction (search-first creation, append_note instead of a new
-// item), so there's nothing left to comb the transcript for.
+// correct by construction (search-first creation, appending to an existing row
+// instead of minting a new item), so there's nothing left to comb the transcript for.
 
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'

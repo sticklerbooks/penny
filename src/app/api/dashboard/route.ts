@@ -53,19 +53,30 @@ export async function GET(req: NextRequest) {
 
   const mineProject = isPA ? {} : { assignedModality: modalityId }
 
-  const [allItems, projects] = await Promise.all([
+  const [allItems, allProjects] = await Promise.all([
+    // Unfiltered by stage — we need DONE/cancelled children too, to compute a
+    // goal-kind project's progress live (see projectProgress below).
     searchItems(profile.id, { visibleOnly: true, target: isPA ? undefined : modalityId }),
     prisma.project.findMany({
-      where: { profileId: profile.id, progress: { lt: 10 }, ...mineProject },
+      where: { profileId: profile.id, visibility: true, ...mineProject },
       orderBy: { updatedAt: 'desc' },
     }),
   ])
 
-  const isActive = (i: { paStatus: string | null; modalityStatus: string | null; target: string }) => {
-    const status = i.target === 'pa' ? i.paStatus : i.modalityStatus
-    return status !== 'completed' && status !== 'to-delete'
-  }
+  const isActive = (i: { stage: string | null }) => i.stage !== 'done' && i.stage !== 'cancelled'
   const items = allItems.filter(isActive)
+
+  // A goal-kind project's progress is computed live from its children — never
+  // hand-set, so it can't drift the way the old manual 0–10 number did. An
+  // ongoing-kind project has no end-state, so it keeps whatever manual value
+  // (if any) a modality chose to track activity with, and is never hidden by it.
+  const projectProgress = (projectId: string): number => {
+    const children = allItems.filter((i) => i.projectId === projectId && i.stage !== 'cancelled')
+    if (children.length === 0) return 0
+    const done = children.filter((i) => i.stage === 'done').length
+    return Math.round((done / children.length) * 10)
+  }
+  const projects = allProjects.filter((p) => p.kind === 'ongoing' || projectProgress(p.id) < 10)
 
   const today = todayInTz()
   const weekEnd = addDays(today, 6)
@@ -80,13 +91,12 @@ export async function GET(req: NextRequest) {
   const dashItems: DashItem[] = items.map((i) => {
     const date = dateOnly(i.dueDate)
     const bucket = bucketFor(date, today, weekEnd)
-    const status = i.target === 'pa' ? i.paStatus : i.modalityStatus
     return {
       id: i.id, type: i.type === 'event' ? 'event' : 'task',
       title: i.name, description: i.description,
       date, dateRaw: i.dueDate ? new Date(i.dueDate).toISOString() : null, dueTime: i.dayTime,
       bucket, overdue: bucket === 'overdue',
-      status, priority: i.priority, projectId: i.projectId,
+      status: i.stage, priority: i.priority, projectId: i.projectId,
       ...notesFor(i.notes),
     }
   })
@@ -94,7 +104,8 @@ export async function GET(req: NextRequest) {
   // Projects are containers, not time-bucketed — returned as their own band.
   const projectItems = projects.map((p) => ({
     id: p.id, type: 'project' as const, title: p.name, description: p.description,
-    progress: p.progress, expectedDuration: p.expectedDuration, contingencies: p.contingencies,
+    kind: p.kind, progress: p.kind === 'ongoing' ? p.progress : projectProgress(p.id),
+    expectedDuration: p.expectedDuration, contingencies: p.contingencies,
     priority: null as number | null,
     ...notesFor(''),
   }))

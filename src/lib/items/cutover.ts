@@ -16,13 +16,11 @@ export function canonLabel(raw: string | null | undefined): string {
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(n)))
 
-// Place a migrated item on the correct lifecycle side: PA-owned items use paStatus,
-// a submodality's own items use modalityStatus.
-function sided(target: string, status: 'new' | 'pending'): Partial<CreateItemInput> {
-  return target === 'pa'
-    ? { paStatus: status, modalityStatus: undefined }
-    : { modalityStatus: status, paStatus: undefined }
-}
+// Under the unified stage model both old statuses ('new' and 'pending') land in
+// the same place — not yet committed to — so there's nothing left to branch on
+// by target. Kept as a named export anyway since the call sites read better
+// with a name than a bare literal.
+const BACKLOG = { stage: 'backlog' as const }
 
 export interface OldTask {
   id: string
@@ -72,7 +70,7 @@ export function taskToItem(t: OldTask): Mapped {
       priority: clamp(t.priority ?? 2, 0, 5),
       dueDate: t.dueDate ?? null,
       sourceRef: `task:${t.id}`,
-      ...sided(target, 'pending'),
+      ...BACKLOG,
     },
     sourceRef: `task:${t.id}`,
   }
@@ -91,7 +89,7 @@ export function noteToItem(n: OldNote): Mapped {
       createdBy: canonLabel(n.source),
       priority: 2,
       sourceRef: `note:${n.id}`,
-      ...sided(target, 'new'),
+      ...BACKLOG,
     },
     sourceRef: `note:${n.id}`,
   }
@@ -114,7 +112,7 @@ export function routineToItem(r: OldRoutine): Mapped {
       priority: clamp(r.priority ?? 2, 0, 5),
       dayTime: r.dayTime ?? null,
       sourceRef: `routine:${r.id}`,
-      ...sided(target, 'pending'),
+      ...BACKLOG,
     },
     sourceRef: `routine:${r.id}`,
   }

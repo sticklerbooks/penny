@@ -66,7 +66,7 @@ async function runCutover(dry: boolean) {
       relabeled.push({ from: origLabel, to: canonLabel(origLabel), name: m.input.name })
     }
     if (samples.length < 15) {
-      samples.push({ kind, name: m.input.name, target: m.input.target, status: m.input.paStatus ?? m.input.modalityStatus, type: m.input.type })
+      samples.push({ kind, name: m.input.name, target: m.input.target, stage: m.input.stage, type: m.input.type })
     }
     if (!dry) await createItem(pid, m.input)
     summary[kind].migrated++

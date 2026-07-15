@@ -13,19 +13,17 @@ import { executeTool } from '@/lib/tool-executor'
 import { getAllTools } from '@/lib/tools'
 import { computeChips, type ItemSnapshot, type EngineChip } from './deltas'
 import { toolsForPhase, phaseInstructions } from './context'
-import { paNotesQueue, subNotesReadQueue, notesPassQueue, isFutureContingency } from './selectors'
+import { notesQueue, isFutureContingency } from './selectors'
 import {
-  notesExitViolations,
-  notesReadExitViolations,
   calendarExitViolations,
   considerationViolations,
   type GuardViolation,
   type GuardItem,
 } from './guards'
 import { activeReview, advanceReview, discussedIds, type ReviewSessionRow } from './session'
-import { runSubmodalitiesPrep, runNotesPassCopyUp, runWrapUp } from './scripted'
+import { runSubmodalitiesPrep, runWrapUp } from './scripted'
 import type { ReviewKind, Phase } from './phases'
-import type { PaStatus, ModalityStatus } from '@/lib/items/fsm'
+import type { Stage } from '@/lib/items/fsm'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => prisma as any
@@ -51,8 +49,7 @@ async function snapshot(profileId: string): Promise<ItemSnapshot[]> {
     id: i.id,
     name: i.name,
     target: i.target,
-    paStatus: i.paStatus,
-    modalityStatus: i.modalityStatus,
+    stage: i.stage,
     visibility: i.visibility,
     type: i.type,
     priority: i.priority,
@@ -70,7 +67,7 @@ function fmtItems(items: ItemRow[]): string {
   if (!items.length) return '  (none)'
   return items
     .map((i) => {
-      const status = i.target === 'pa' ? `pa=${i.paStatus}` : `mod=${i.modalityStatus}`
+      const status = `stage=${i.stage}`
       const until = i.contingencyUntil ? ` (recheck ${new Date(i.contingencyUntil).toISOString().slice(0, 10)})` : ''
       const contingency = i.contingency ? `\n      contingent on: ${i.contingency}${until}` : ''
       const notes = i.notes ? `\n      notes: ${i.notes.replace(/\n/g, ' / ')}` : ''
@@ -84,33 +81,25 @@ async function loadPhaseItems(
   profileId: string,
   kind: ReviewKind,
   modalityId: string,
-  phase: Phase,
-  sessionStartedAt: Date
+  phase: Phase
 ): Promise<string> {
   if (kind === 'pa' && phase === 'notes') {
     const items = await searchItems(profileId, { target: 'pa' })
-    return fmtItems(paNotesQueue(items.map((i) => ({ ...i, paStatus: i.paStatus as PaStatus | null }))) as ItemRow[])
+    return fmtItems(notesQueue(items.map((i) => ({ ...i, stage: i.stage as Stage | null }))) as ItemRow[])
   }
   if (kind === 'submodality' && phase === 'notes-read') {
     const items = await searchItems(profileId, { target: modalityId })
-    return fmtItems(subNotesReadQueue(items.map((i) => ({ ...i, modalityStatus: i.modalityStatus as ModalityStatus | null }))) as ItemRow[])
-  }
-  if (kind === 'submodality' && phase === 'notes-pass') {
-    const items = await searchItems(profileId, { target: modalityId })
-    const queue = notesPassQueue(
-      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt, contingencyUntil: i.contingencyUntil })),
-      sessionStartedAt
-    )
-    const ids = new Set(queue.map((q) => q.id))
-    return fmtItems(items.filter((i) => ids.has(i.id)))
+    return fmtItems(notesQueue(items.map((i) => ({ ...i, stage: i.stage as Stage | null }))) as ItemRow[])
   }
   if (kind === 'pa' && phase === 'calendar') {
-    const items = (await searchItems(profileId, { target: 'pa' })).filter((i) => i.paStatus === 'schedule')
+    // Every planned item, any target — committing to something IS what puts it
+    // in Penny's calendar queue now; there's no separate escalation hand-off.
+    const items = (await searchItems(profileId, {})).filter((i) => i.stage === 'planned')
     return fmtItems(items)
   }
   if (kind === 'pa' && phase === 'submodalities') {
     const items = (await searchItems(profileId, { target: 'pa' })).filter(
-      (i) => i.name.startsWith('Talk to ') && i.paStatus === 'schedule'
+      (i) => i.name.startsWith('Talk to ') && i.stage === 'planned'
     )
     return fmtItems(items)
   }
@@ -129,7 +118,7 @@ async function loadPhaseItems(
     const projects = allProjects.filter((p: any) => !isFutureContingency(p.contingencyUntil, new Date()))
     if (!projects.length) return '  (none)'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return projects.map((p: any) => `  • [${p.id}] "${p.name}" — ${p.progress}/10`).join('\n')
+    return projects.map((p: any) => `  • [${p.id}] "${p.name}" — ${p.kind}`).join('\n')
   }
   return '  (none)'
 }
@@ -148,7 +137,7 @@ async function buildReviewPrompt(
   const aboutSelf: string =
     identity?.aboutSelf ?? modality.seedAboutSelf?.replace(/\{name\}/g, userName) ?? `You are ${modality.displayName}.`
 
-  const items = await loadPhaseItems(profileId, kind, modalityId, phase, new Date(0))
+  const items = await loadPhaseItems(profileId, kind, modalityId, phase)
   const phaseNum = '' // header is rendered client-side from the persisted pointer
 
   void phaseNum
@@ -180,25 +169,22 @@ async function phaseViolations(
   kind: ReviewKind,
   phase: Phase,
   modalityId: string,
-  sessionId: string,
-  sessionStartedAt: Date
+  sessionId: string
 ): Promise<GuardViolation[]> {
   const sess: ReviewSessionRow = await db().reviewSession.findUnique({ where: { id: sessionId } })
   const discussed = new Set(discussedIds(sess))
-  const asGuard = (i: ItemRow): GuardItem => ({ id: i.id, name: i.name, paStatus: i.paStatus, modalityStatus: i.modalityStatus })
+  const asGuard = (i: ItemRow): GuardItem => ({ id: i.id, name: i.name, stage: i.stage })
 
-  if (kind === 'pa' && phase === 'notes') {
-    const items = await searchItems(profileId, { target: 'pa' })
-    const queue = paNotesQueue(items.map((i) => ({ ...i, paStatus: i.paStatus as PaStatus | null }))) as ItemRow[]
-    return notesExitViolations(queue.map(asGuard), discussed)
-  }
-  if (kind === 'submodality' && phase === 'notes-read') {
-    const items = await searchItems(profileId, { target: modalityId })
-    const queue = subNotesReadQueue(items.map((i) => ({ ...i, modalityStatus: i.modalityStatus as ModalityStatus | null }))) as ItemRow[]
-    return notesReadExitViolations(queue.map(asGuard), discussed)
+  if ((kind === 'pa' && phase === 'notes') || (kind === 'submodality' && phase === 'notes-read')) {
+    const target = kind === 'pa' ? 'pa' : modalityId
+    const items = await searchItems(profileId, { target })
+    const queue = notesQueue(items.map((i) => ({ ...i, stage: i.stage as Stage | null }))) as ItemRow[]
+    return considerationViolations(queue.map(asGuard), discussed)
   }
   if (kind === 'pa' && phase === 'calendar') {
-    const items = await searchItems(profileId, { target: 'pa' })
+    // Same cross-target scope as loadPhaseItems — nothing 'planned' anywhere may
+    // survive this phase, not just items originally targeted at 'pa'.
+    const items = await searchItems(profileId, {})
     return calendarExitViolations(items.map(asGuard))
   }
   if (phase === 'projects') {
@@ -215,14 +201,6 @@ async function phaseViolations(
     const projects = allProjects.filter((p: any) => !isFutureContingency(p.contingencyUntil, new Date()))
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return considerationViolations(projects.map((p: any) => ({ id: p.id, name: p.name })), discussed)
-  }
-  if (kind === 'submodality' && phase === 'notes-pass') {
-    const items = await searchItems(profileId, { target: modalityId })
-    const queue = notesPassQueue(
-      items.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt, contingencyUntil: i.contingencyUntil })),
-      sessionStartedAt
-    )
-    return considerationViolations(queue.map((q) => ({ id: q.id, name: items.find((i) => i.id === q.id)?.name ?? q.id })), discussed)
   }
   // submodalities / wrap-up: conversational — no item gate.
   return []
@@ -252,7 +230,7 @@ async function runPhaseTurn(
     modalityId: session.modalityId,
     domain: getModality(session.modalityId).domain ?? undefined,
     reviewSessionId: session.id,
-    exitCheck: () => phaseViolations(profileId, kind, phase, session.modalityId, session.id, session.startedAt),
+    exitCheck: () => phaseViolations(profileId, kind, phase, session.modalityId, session.id),
   }
 
   // Sanitize the conversation for the Anthropic API: drop empty-content turns (a
@@ -299,9 +277,8 @@ export async function runReviewStep(profileId: string, messages: ChatMsg[]): Pro
   // advancing, regardless of how finishRequested got set. There is no path past here
   // while any item still blocks the phase.
   if (finishRequested) {
-    const blocking = await phaseViolations(profileId, kind, phase, session.modalityId, session.id, session.startedAt)
+    const blocking = await phaseViolations(profileId, kind, phase, session.modalityId, session.id)
     if (blocking.length === 0) {
-      if (kind === 'submodality' && phase === 'notes-pass') await runNotesPassCopyUp(profileId, session.startedAt)
       if (phase === 'wrap-up') await runWrapUp(profileId, session.modalityId)
       const adv = await advanceReview(session.id)
       return { phase, kind, modalityId: session.modalityId, text, chips, advanced: true, done: adv.done }

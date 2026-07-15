@@ -242,7 +242,7 @@ export async function POST(req: NextRequest) {
 
   // ── Archive credited completions ───────────────────────────────────────────
   // Now that the assessment has credited them, drop visibility so they stop
-  // cluttering the default view (done → invisible). Still findable via search_items.
+  // cluttering the default view (done → invisible). Still findable via query_table.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const itemArch = await (prisma as any).item.updateMany({
     where: { profileId: profile.id, completedAt: { not: null }, visibility: true },

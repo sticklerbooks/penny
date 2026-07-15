@@ -5,50 +5,51 @@ import { toolsForPhase } from './context'
 import { PA_PHASES, SUB_PHASES } from './phases'
 
 describe('decideStatusChange (FSM-gated writes)', () => {
-  it('accepts a legal PA move and stamps timestamps', () => {
-    const d = decideStatusChange('pa', { paStatus: 'schedule', modalityStatus: null }, 'scheduled', new Date('2026-06-23'))
+  it('accepts a legal move and stamps timestamps', () => {
+    const d = decideStatusChange({ stage: 'planned' }, 'scheduled', new Date('2026-06-23'))
     expect(d.ok).toBe(true)
-    expect(d.patch?.paStatus).toBe('scheduled')
+    expect(d.patch?.stage).toBe('scheduled')
     expect(d.patch?.scheduledAt).toBeInstanceOf(Date)
+    expect(d.patch?.stageEnteredAt).toBeInstanceOf(Date)
   })
 
-  it('stamps completedAt on completion (either side)', () => {
-    expect(decideStatusChange('pa', { paStatus: 'scheduled', modalityStatus: null }, 'completed').patch?.completedAt).toBeInstanceOf(Date)
-    expect(decideStatusChange('modality', { paStatus: null, modalityStatus: 'pending' }, 'completed').patch?.completedAt).toBeInstanceOf(Date)
+  it('stamps completedAt on entering done', () => {
+    expect(decideStatusChange({ stage: 'scheduled' }, 'done').patch?.completedAt).toBeInstanceOf(Date)
+    expect(decideStatusChange({ stage: 'backlog' }, 'done').patch?.completedAt).toBeInstanceOf(Date)
   })
 
   it('rejects an illegal move with a reason and no patch', () => {
-    const d = decideStatusChange('pa', { paStatus: 'completed', modalityStatus: null }, 'scheduled')
+    const d = decideStatusChange({ stage: 'done' }, 'scheduled')
     expect(d.ok).toBe(false)
     expect(d.patch).toBeUndefined()
-    expect(d.reason).toMatch(/cannot move completed/)
+    expect(d.reason).toMatch(/cannot move done/)
   })
 
-  it('a submodality escalation is legal; reopening a completed item is not', () => {
-    expect(decideStatusChange('modality', { paStatus: null, modalityStatus: 'pending' }, 'sent-to-PA').ok).toBe(true)
-    expect(decideStatusChange('modality', { paStatus: null, modalityStatus: 'completed' }, 'pending').ok).toBe(false)
+  it('a blocked item can resolve back into any live stage; reopening done cannot', () => {
+    expect(decideStatusChange({ stage: 'blocked' }, 'planned').ok).toBe(true)
+    expect(decideStatusChange({ stage: 'done' }, 'backlog').ok).toBe(false)
   })
 })
 
 describe('computeChips (report from the DB, not the LLM)', () => {
   const snap = (over: Partial<ItemSnapshot>): ItemSnapshot => ({
-    id: 'x', name: 'thing', target: 'pa', paStatus: null, modalityStatus: null, visibility: true,
+    id: 'x', name: 'thing', target: 'pa', stage: null, visibility: true,
     type: 'event', priority: 2, duration: null, dayTime: null, projectId: null, dueDate: null, notes: '',
     contingency: '', contingencyUntil: null, ...over,
   })
 
   it('reports a newly created visible item', () => {
     const before: ItemSnapshot[] = []
-    const after = [snap({ id: 'a', name: 'dentist', paStatus: 'schedule' })]
+    const after = [snap({ id: 'a', name: 'dentist', stage: 'planned' })]
     const chips = computeChips(before, after)
-    expect(chips).toEqual([{ kind: 'created', id: 'a', name: 'dentist', target: 'pa', status: 'schedule' }])
+    expect(chips).toEqual([{ kind: 'created', id: 'a', name: 'dentist', target: 'pa', status: 'planned' }])
   })
 
-  it('reports a status change on the side that moved', () => {
-    const before = [snap({ id: 'a', name: 'dentist', paStatus: 'pending' })]
-    const after = [snap({ id: 'a', name: 'dentist', paStatus: 'continuing' })]
+  it('reports a stage change', () => {
+    const before = [snap({ id: 'a', name: 'dentist', stage: 'backlog' })]
+    const after = [snap({ id: 'a', name: 'dentist', stage: 'planned' })]
     const chips = computeChips(before, after)
-    expect(chips).toEqual([{ kind: 'status', id: 'a', name: 'dentist', side: 'pa', from: 'pending', to: 'continuing' }])
+    expect(chips).toEqual([{ kind: 'status', id: 'a', name: 'dentist', from: 'backlog', to: 'planned' }])
   })
 
   it('reports a deletion when a visible item vanishes', () => {
@@ -58,15 +59,15 @@ describe('computeChips (report from the DB, not the LLM)', () => {
   })
 
   it('shows NOTHING when nothing actually changed (the anti-hallucination guard)', () => {
-    const items = [snap({ id: 'a', paStatus: 'pending' })]
+    const items = [snap({ id: 'a', stage: 'backlog' })]
     expect(computeChips(items, items)).toEqual([])
   })
 
   it('reports a field edit — the type change that went invisible in the smoke test', () => {
     const before = [snap({ id: 'a', name: 'dentist', type: 'event' })]
-    const after = [snap({ id: 'a', name: 'dentist', type: 'ongoing' })]
+    const after = [snap({ id: 'a', name: 'dentist', type: 'task' })]
     expect(computeChips(before, after)).toEqual([
-      { kind: 'field', id: 'a', name: 'dentist', field: 'type', from: 'event', to: 'ongoing' },
+      { kind: 'field', id: 'a', name: 'dentist', field: 'type', from: 'event', to: 'task' },
     ])
   })
 
@@ -85,16 +86,16 @@ describe('computeChips (report from the DB, not the LLM)', () => {
   })
 
   it('chipLabel renders readable text', () => {
-    expect(chipLabel({ kind: 'status', id: 'a', name: 'dentist', side: 'pa', from: 'pending', to: 'continuing' }))
-      .toBe('"dentist" · paStatus pending → continuing')
+    expect(chipLabel({ kind: 'status', id: 'a', name: 'dentist', from: 'backlog', to: 'planned' }))
+      .toBe('"dentist" · stage backlog → planned')
   })
 })
 
 describe('toolsForPhase (a phase cannot reach outside its job)', () => {
   it('grants triage tools in notes, but withholds them in the scripted submodalities phase', () => {
-    expect(toolsForPhase('pa', 'notes')).toContain('set_item_status')
+    expect(toolsForPhase('pa', 'notes')).toContain('write_table')
     expect(toolsForPhase('pa', 'notes')).toContain('mark_discussed')
-    expect(toolsForPhase('pa', 'submodalities')).not.toContain('set_item_status')
+    expect(toolsForPhase('pa', 'submodalities')).not.toContain('write_table')
   })
 
   it('every phase can at least finish itself', () => {

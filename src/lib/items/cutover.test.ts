@@ -24,21 +24,19 @@ describe('canonLabel — the label normalization the cutover relies on', () => {
 })
 
 describe('taskToItem', () => {
-  it('a submodality task → its own world (modalityStatus pending), plain task, label + due date carried', () => {
+  it('lands in the backlog stage, plain task, label + due date carried', () => {
     const due = new Date('2026-07-15')
     const m = taskToItem({ id: 't1', name: 'File 941', description: 'quarterly', priority: 3, assignedModality: 'margot', projectId: 'p9', status: 'Started', dueDate: due })
     expect(m.sourceRef).toBe('task:t1')
     expect(m.input).toMatchObject({
       target: 'bookkeeping', createdBy: 'bookkeeping', type: 'task',
-      projectId: 'p9', priority: 3, modalityStatus: 'pending', sourceRef: 'task:t1', dueDate: due,
+      projectId: 'p9', priority: 3, stage: 'backlog', sourceRef: 'task:t1', dueDate: due,
     })
-    expect(m.input.paStatus).toBeUndefined()
   })
 
-  it('a pa task → paStatus pending, not modalityStatus', () => {
+  it('a pa task also lands in backlog — same stage regardless of target', () => {
     const m = taskToItem({ id: 't2', name: 'x', description: null, priority: null, assignedModality: 'pa', projectId: null, status: null, dueDate: null })
-    expect(m.input.paStatus).toBe('pending')
-    expect(m.input.modalityStatus).toBeUndefined()
+    expect(m.input.stage).toBe('backlog')
     expect(m.input.priority).toBe(2) // default when null
     expect(m.input.description).toBe('x') // falls back to name
     expect(m.input.dueDate).toBeNull()
@@ -50,23 +48,23 @@ describe('taskToItem', () => {
 })
 
 describe('noteToItem', () => {
-  it('lands as a suggestion at the normalized target, status new (forces a review)', () => {
+  it('lands as a suggestion at the normalized target, backlog stage', () => {
     const m = noteToItem({ id: 'n1', title: 'call mom', content: 'birthday soon', modalityTarget: 'nora', source: 'pa' })
     expect(m.sourceRef).toBe('note:n1')
-    expect(m.input).toMatchObject({ target: 'relationships', type: 'suggestion', modalityStatus: 'new', createdBy: 'pa' })
+    expect(m.input).toMatchObject({ target: 'relationships', type: 'suggestion', stage: 'backlog', createdBy: 'pa' })
   })
 
-  it('a pa-targeted note uses paStatus new', () => {
+  it('a pa-targeted note also lands in backlog', () => {
     const m = noteToItem({ id: 'n2', title: 't', content: null, modalityTarget: 'pa', source: 'margot' })
-    expect(m.input.paStatus).toBe('new')
+    expect(m.input.stage).toBe('backlog')
     expect(m.input.createdBy).toBe('bookkeeping') // source normalized too
   })
 })
 
 describe('routineToItem', () => {
-  it('becomes a plain pending task in its modality (recurring → Project is a manual follow-up if this ever re-runs)', () => {
+  it('becomes a plain backlog task in its modality (recurring → Project is a manual follow-up if this ever re-runs)', () => {
     const m = routineToItem({ id: 'r1', description: 'Sunday meal prep', priority: 2, assignedModality: 'remy', dayTime: 'Sunday afternoons' })
     expect(m.sourceRef).toBe('routine:r1')
-    expect(m.input).toMatchObject({ target: 'health', type: 'task', modalityStatus: 'pending', dayTime: 'Sunday afternoons' })
+    expect(m.input).toMatchObject({ target: 'health', type: 'task', stage: 'backlog', dayTime: 'Sunday afternoons' })
   })
 })

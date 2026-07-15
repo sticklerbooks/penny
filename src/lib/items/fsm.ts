@@ -1,187 +1,119 @@
-// The Item lifecycle state machines — the single source of truth for how an Item
-// moves through Penny's review and the submodality reviews.
+// The Item lifecycle state machine — the single source of truth for how an Item
+// moves through review (PA and submodality alike).
 //
-// An Item carries TWO independent status fields:
-//   • paStatus       — its lifecycle in Penny's (PA) world. Drives her notes and
-//                      calendar phases. Set when target = 'pa', or once a
-//                      submodality escalates the item up to her.
-//   • modalityStatus — its lifecycle inside the owning submodality's world.
-//                      Drives that self's notes-read / notes-pass phases.
-// Which one is "live" depends on the item's target; either may be null when the
-// item has never entered that world.
+// Status belongs to the TASK, not to whoever's looking at it. One `stage`,
+// shared by every viewer: PA's queries span every `target`, a submodality's
+// queries filter to her own — same field, different filter, not a second
+// status vocabulary. (Until 2026-06-25 this was two parallel fields,
+// `paStatus`/`modalityStatus`, with an escalation-copy dance between them —
+// retired in favor of this.)
 //
 // THIS FILE IS DELIBERATELY PURE — no DB, no I/O, no LLM. It is the one place the
 // transition rules live, so they can be read at a glance and unit-tested. The
-// phase engine (Stage 2) calls transitionPa / transitionModality and never
-// mutates a status field directly — that invariant is what keeps the lifecycle
-// honest instead of drifting in prose. See the redesign plan.
+// phase engine calls transitionStage and never mutates `stage` directly — that
+// invariant is what keeps the lifecycle honest instead of drifting in prose.
 
 // ─── Vocabularies ──────────────────────────────────────────────────────────────
 
 // 'ongoing' is retired — a recurring commitment is a Project now (it has the
-// progress/contingency/notes machinery a recurring thing actually needs), which
-// spawns concrete one-off Items as it comes time to schedule each instance. See
-// the 'projects' protocol and Review's projects-phase spawn ritual.
+// progress/contingency/notes machinery a recurring thing actually needs).
 // 'task' fills a gap 'ongoing' used to paper over: a plain one-off with no real
 // calendar slot ('event') and no special handling ('memory'/'suggestion').
 export const ITEM_TYPES = ['task', 'event', 'memory', 'suggestion'] as const
 export type ItemType = (typeof ITEM_TYPES)[number]
 
-// PA-side lifecycle. `completed` carries a completedAt date on the row; the status
-// itself is just `completed`. `to-delete` is the only true sink — the wrap-up
-// phase removes those rows for real.
-export const PA_STATUSES = [
-  'new',
-  'pending',
-  'schedule',
-  'scheduled',
-  'contingent',
-  'completed',
-  'to-delete',
+// `completed`/`done` carries a completedAt date on the row; the stage itself is
+// just `done`. `cancelled` is the only true sink — wrap-up removes those rows
+// for real.
+export const STAGES = [
+  'backlog',   // exists, not yet committed to right now
+  'planned',   // committed — ready to be worked, or queued for a calendar slot
+  'scheduled', // has a real calendar slot
+  'blocked',   // stuck on something outside anyone's control (see Item.contingency)
+  'done',      // finished
+  'cancelled', // true sink
 ] as const
-export type PaStatus = (typeof PA_STATUSES)[number]
+export type Stage = (typeof STAGES)[number]
 
-// Submodality-side lifecycle. `sent-to-PA` means "escalate me": the notes-pass
-// phase spawns a fresh PA-targeted item from this one, then drops this one back to
-// `pending` (so the original keeps living in the modality's world).
-export const MODALITY_STATUSES = [
-  'new',
-  'pending',
-  'sent-to-PA',
-  'contingent',
-  'completed',
-  'to-delete',
-] as const
-export type ModalityStatus = (typeof MODALITY_STATUSES)[number]
+// ─── Transition table ──────────────────────────────────────────────────────────
+// from-stage → the stages it may legally move to (self-inclusion = "may stay").
+// Read this as the literal rules of the review phases; nothing else encodes them.
 
-// ─── Transition tables ─────────────────────────────────────────────────────────
-// from-state → the states it may legally move to (self-inclusion = "may stay").
-// Read these as the literal rules of the review phases; nothing else encodes them.
-
-export const PA_TRANSITIONS: Record<PaStatus, readonly PaStatus[]> = {
-  // A `new` note must be triaged out of `new` during the notes phase.
-  new: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
-  // A pending event may stay pending, go contingent on something else, get queued
-  // for the calendar (→ schedule), finished, or dropped.
-  pending: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
-  // Stuck on something outside Penny's control (see Item.contingency /
-  // contingencyUntil). The notes phase tries to move it off contingent once the
-  // condition clears; skipped entirely while contingencyUntil is still future.
-  contingent: ['pending', 'schedule', 'contingent', 'completed', 'to-delete'],
-  // Queued for the calendar. The calendar phase places it and marks it scheduled,
-  // or it can be pulled back to pending / contingent / dropped.
-  schedule: ['scheduled', 'pending', 'contingent', 'to-delete'],
-  // On the calendar. It later completes, gets re-queued, goes contingent (plans
-  // changed before it happened), or is dropped.
-  scheduled: ['completed', 'schedule', 'contingent', 'to-delete'],
-  // Done. Near-terminal: the weekly brief hides it via visibility, not a status
+export const STAGE_TRANSITIONS: Record<Stage, readonly Stage[]> = {
+  // A `backlog` item must be triaged out during the notes phase: committed
+  // (planned), stuck (blocked), finished, or dropped. May also just stay.
+  backlog: ['backlog', 'planned', 'blocked', 'done', 'cancelled'],
+  // Committed. Gets a calendar slot (scheduled), goes blocked, finishes, is
+  // dropped, or simply stays planned (still waiting on a slot).
+  planned: ['planned', 'scheduled', 'blocked', 'done', 'cancelled'],
+  // On the calendar. Can be pulled back to planned (plans changed before it
+  // happened), go blocked, finish, or be dropped.
+  scheduled: ['scheduled', 'planned', 'blocked', 'done', 'cancelled'],
+  // Stuck on something outside anyone's control (see Item.contingency /
+  // contingencyUntil). Skipped entirely in triage while contingencyUntil is
+  // still future. Can resolve back into any live stage once unstuck.
+  blocked: ['backlog', 'planned', 'scheduled', 'blocked', 'done', 'cancelled'],
+  // Done. Near-terminal: the weekly brief hides it via visibility, not a stage
   // change. The only move left is an explicit deletion request.
-  completed: ['to-delete'],
+  done: ['cancelled'],
   // True sink — removed for real in wrap-up.
-  'to-delete': [],
+  cancelled: [],
 }
 
-export const MODALITY_TRANSITIONS: Record<ModalityStatus, readonly ModalityStatus[]> = {
-  // A `new` note must be triaged out of `new` during notes-read.
-  new: ['pending', 'sent-to-PA', 'contingent', 'completed', 'to-delete'],
-  // May stay pending, be escalated to Penny, go contingent, finished, or dropped.
-  pending: ['pending', 'sent-to-PA', 'contingent', 'completed', 'to-delete'],
-  // Escalation in flight. notes-pass copies it to a PA item, then returns this
-  // one to pending. Can also simply be dropped.
-  'sent-to-PA': ['pending', 'to-delete'],
-  // Stuck on something outside this self's control (see Item.contingency /
-  // contingencyUntil). notes-read tries to move it off contingent once the
-  // condition clears; skipped entirely while contingencyUntil is still future.
-  contingent: ['pending', 'sent-to-PA', 'completed', 'to-delete'],
-  // Done (acknowledged in notes-read). Only an explicit deletion remains.
-  completed: ['to-delete'],
-  // True sink.
-  'to-delete': [],
-}
-
-// States an item may take when it FIRST enters a world (from a null status).
-// Penny may mint an item straight as `schedule`; a submodality may mint one
-// `contingent`. Terminal/derived states (scheduled, completed, to-delete,
-// sent-to-PA) are never valid first states — they imply a prior lifecycle.
-export const PA_ENTRY_STATES: readonly PaStatus[] = ['new', 'pending', 'schedule', 'contingent']
-export const MODALITY_ENTRY_STATES: readonly ModalityStatus[] = ['new', 'pending', 'contingent']
+// Stages an item may take when it FIRST enters the world (from a null stage).
+// `scheduled`/`done`/`cancelled` are never valid first stages — they imply a
+// prior lifecycle. An item CAN be born `blocked` (e.g. created already known
+// to be stuck on something).
+export const ENTRY_STAGES: readonly Stage[] = ['backlog', 'planned', 'blocked']
 
 // ─── Type guards ───────────────────────────────────────────────────────────────
 
 export function isItemType(t: string | null | undefined): t is ItemType {
   return !!t && (ITEM_TYPES as readonly string[]).includes(t)
 }
-export function isPaStatus(s: string | null | undefined): s is PaStatus {
-  return !!s && (PA_STATUSES as readonly string[]).includes(s)
-}
-export function isModalityStatus(s: string | null | undefined): s is ModalityStatus {
-  return !!s && (MODALITY_STATUSES as readonly string[]).includes(s)
+export function isStage(s: string | null | undefined): s is Stage {
+  return !!s && (STAGES as readonly string[]).includes(s)
 }
 
 // ─── Transition checks ─────────────────────────────────────────────────────────
 
-export interface TransitionResult<S extends string> {
+export interface TransitionResult {
   ok: boolean
-  from: S | null
-  to: S
+  from: Stage | null
+  to: Stage
   /** Present only when ok === false — a human-readable reason the move is illegal. */
   reason?: string
 }
 
-/** Legal next PA states from `from` (entry states when `from` is null). */
-export function nextPaStatuses(from: PaStatus | null): readonly PaStatus[] {
-  return from === null ? PA_ENTRY_STATES : PA_TRANSITIONS[from]
+/** Legal next stages from `from` (entry stages when `from` is null). */
+export function nextStages(from: Stage | null): readonly Stage[] {
+  return from === null ? ENTRY_STAGES : STAGE_TRANSITIONS[from]
 }
 
-/** Legal next modality states from `from` (entry states when `from` is null). */
-export function nextModalityStatuses(from: ModalityStatus | null): readonly ModalityStatus[] {
-  return from === null ? MODALITY_ENTRY_STATES : MODALITY_TRANSITIONS[from]
-}
-
-export function canTransitionPa(from: PaStatus | null, to: PaStatus): boolean {
-  return nextPaStatuses(from).includes(to)
-}
-export function canTransitionModality(from: ModalityStatus | null, to: ModalityStatus): boolean {
-  return nextModalityStatuses(from).includes(to)
+export function canTransitionStage(from: Stage | null, to: Stage): boolean {
+  return nextStages(from).includes(to)
 }
 
 /**
- * Validate a PA-side move. Returns a result instead of throwing so the engine can
+ * Validate a stage move. Returns a result instead of throwing so the engine can
  * surface the reason rather than crash a review mid-phase. The engine treats a
- * non-ok result as "do not write" — it never forces an illegal status onto a row.
+ * non-ok result as "do not write" — it never forces an illegal stage onto a row.
  */
-export function transitionPa(from: PaStatus | null, to: PaStatus): TransitionResult<PaStatus> {
-  if (!isPaStatus(to)) return { ok: false, from, to, reason: `"${to}" is not a PA status` }
-  if (canTransitionPa(from, to)) return { ok: true, from, to }
+export function transitionStage(from: Stage | null, to: Stage): TransitionResult {
+  if (!isStage(to)) return { ok: false, from, to, reason: `"${to}" is not a stage` }
+  if (canTransitionStage(from, to)) return { ok: true, from, to }
   return {
     ok: false,
     from,
     to,
-    reason: `PA status cannot move ${from ?? '(new item)'} → ${to}; allowed: ${nextPaStatuses(from).join(', ') || '(none — terminal)'}`,
+    reason: `Stage cannot move ${from ?? '(new item)'} → ${to}; allowed: ${nextStages(from).join(', ') || '(none — terminal)'}`,
   }
 }
 
-export function transitionModality(
-  from: ModalityStatus | null,
-  to: ModalityStatus
-): TransitionResult<ModalityStatus> {
-  if (!isModalityStatus(to)) return { ok: false, from, to, reason: `"${to}" is not a modality status` }
-  if (canTransitionModality(from, to)) return { ok: true, from, to }
-  return {
-    ok: false,
-    from,
-    to,
-    reason: `Modality status cannot move ${from ?? '(new item)'} → ${to}; allowed: ${nextModalityStatuses(from).join(', ') || '(none — terminal)'}`,
-  }
-}
-
-// ─── Terminal helpers ──────────────────────────────────────────────────────────
-// Only `to-delete` is a hard sink (no outgoing edges). `completed` is "soft" —
+// ─── Terminal helper ───────────────────────────────────────────────────────────
+// Only `cancelled` is a hard sink (no outgoing edges). `done` is "soft" —
 // finished, but a deletion can still follow.
 
-export function isPaTerminal(s: PaStatus): boolean {
-  return PA_TRANSITIONS[s].length === 0
-}
-export function isModalityTerminal(s: ModalityStatus): boolean {
-  return MODALITY_TRANSITIONS[s].length === 0
+export function isStageTerminal(s: Stage): boolean {
+  return STAGE_TRANSITIONS[s].length === 0
 }

@@ -8,8 +8,7 @@ export interface ItemSnapshot {
   id: string
   name: string
   target: string
-  paStatus: string | null
-  modalityStatus: string | null
+  stage: string | null
   visibility: boolean
   // Tracked editable fields — so a change to any of these can't slip past unseen.
   type: string
@@ -28,7 +27,7 @@ const TRACKED_FIELDS = ['name', 'type', 'priority', 'duration', 'dayTime', 'proj
 
 export type EngineChip =
   | { kind: 'created'; id: string; name: string; target: string; status: string }
-  | { kind: 'status'; id: string; name: string; side: 'pa' | 'modality'; from: string | null; to: string }
+  | { kind: 'status'; id: string; name: string; from: string | null; to: string }
   | { kind: 'field'; id: string; name: string; field: string; from: string | null; to: string | null }
   | { kind: 'deleted'; id: string; name: string }
 
@@ -48,7 +47,7 @@ export function computeChips(before: ItemSnapshot[], after: ItemSnapshot[]): Eng
         id: a.id,
         name: a.name,
         target: a.target,
-        status: a.paStatus ?? a.modalityStatus ?? 'new',
+        status: a.stage ?? 'backlog',
       })
     }
   }
@@ -57,11 +56,8 @@ export function computeChips(before: ItemSnapshot[], after: ItemSnapshot[]): Eng
   for (const a of after) {
     const b = beforeById.get(a.id)
     if (!b || !a.visibility || !b.visibility) continue
-    if (a.paStatus !== b.paStatus) {
-      chips.push({ kind: 'status', id: a.id, name: a.name, side: 'pa', from: b.paStatus, to: a.paStatus ?? '∅' })
-    }
-    if (a.modalityStatus !== b.modalityStatus) {
-      chips.push({ kind: 'status', id: a.id, name: a.name, side: 'modality', from: b.modalityStatus, to: a.modalityStatus ?? '∅' })
+    if (a.stage !== b.stage) {
+      chips.push({ kind: 'status', id: a.id, name: a.name, from: b.stage, to: a.stage ?? '∅' })
     }
     for (const f of TRACKED_FIELDS) {
       if (a[f] !== b[f]) {
@@ -89,7 +85,7 @@ export function chipLabel(c: EngineChip): string {
     case 'created':
       return `new item · "${c.name}" · target = ${c.target} · ${c.status}`
     case 'status':
-      return `"${c.name}" · ${c.side}Status ${c.from ?? '∅'} → ${c.to}`
+      return `"${c.name}" · stage ${c.from ?? '∅'} → ${c.to}`
     case 'field':
       // notes can be long free text — show that it changed, not the full diff.
       return c.field === 'notes'

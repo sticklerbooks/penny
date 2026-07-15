@@ -115,13 +115,10 @@ export function buildSystemPrompt(
   // NAMES (so she knows they exist — read_project_notes or the projects
   // protocol gets the detail) and ITEM COUNTS (so she and {name} can decide
   // whether a Review is worth doing right now). No content is dumped by
-  // default; that's what Review and search_items are for. A future-contingent
+  // default; that's what Review and query_table are for. A future-contingent
   // item/project is hidden from these counts too, same as in Review — there's
   // no point surfacing something neither side can act on yet.
-  const isActive = (i: ItemRow) => {
-    const status = i.target === 'pa' ? i.paStatus : i.modalityStatus
-    return status !== 'completed' && status !== 'to-delete'
-  }
+  const isActive = (i: ItemRow) => i.stage !== 'done' && i.stage !== 'cancelled'
   const lensItems = items
     .filter(isActive)
     .filter((i) => isPA || i.target === modalityId)
@@ -150,12 +147,11 @@ export function buildSystemPrompt(
 
   // ── Renderers ──────────────────────────────────────────────────────────────
   // Counts only, not content — "is there anything worth going into Review
-  // for" rather than the backlog itself. search_items (live counts every
-  // status, every domain you're allowed to see) is one call away for detail.
-  const statusOf = (i: ItemRow) => (i.target === 'pa' ? i.paStatus : i.modalityStatus)
-  const newCount = lensItems.filter((i) => statusOf(i) === 'new').length
-  const pendingCount = lensItems.filter((i) => statusOf(i) === 'pending').length
-  const contingentCount = lensItems.filter((i) => statusOf(i) === 'contingent').length
+  // for" rather than the backlog itself. query_table (live counts every
+  // stage, every domain you're allowed to see) is one call away for detail.
+  const backlogCount = lensItems.filter((i) => i.stage === 'backlog').length
+  const plannedCount = lensItems.filter((i) => i.stage === 'planned').length
+  const blockedCount = lensItems.filter((i) => i.stage === 'blocked').length
   const urgentCount = lensItems.filter((i) => i.priority === 5).length
   const overdueCount = lensItems.filter((i) => {
     if (!i.dueDate) return false
@@ -164,7 +160,7 @@ export function buildSystemPrompt(
     return dd < today
   }).length
   const itemsText = lensItems.length > 0
-    ? `${newCount} new · ${pendingCount} pending · ${urgentCount} urgent (p5) · ${overdueCount} overdue — search_items for detail, or start_review to work through them with ${userName}.`
+    ? `${backlogCount} backlog · ${plannedCount} planned · ${blockedCount} blocked · ${urgentCount} urgent (p5) · ${overdueCount} overdue — query_table for detail, or start_review to work through them with ${userName}.`
     : '  (nothing tracked yet)'
 
   const projectsText =
@@ -322,7 +318,7 @@ GROUND RULES
 ═══════════════════════════════════════════════════════════════════════
 Your tools run silently — ${userName} never sees the calls. Use them; don't ask permission, these are to help you do things right.
 Before doing any category of work (calendar, email, drive, projects, items…), call load_protocol(which) FIRST and follow it. Never work from memory.
-⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any item or project, use search_items. If the item or project already exists, even if it's worded a little differently, do not make a duplicate (or near duplicate) one. If there is a match, or a close match, add to or edit what's already there. Only create a new item or project if it is genuinely novel.`
+⚠️ SEARCH BEFORE YOU CREATE — every time. Before adding any item or project, use query_table. If the item or project already exists, even if it's worded a little differently, do not make a duplicate (or near duplicate) one. If there is a match, or a close match, add to or edit what's already there. Only create a new item or project if it is genuinely novel.`
 
   // ── Assemble from the .md template ─────────────────────────────────────────
   const template = loadPromptTemplate(modality)

@@ -5,14 +5,11 @@
 import { prisma } from '@/lib/db'
 import { MODALITIES } from '@/lib/modalities'
 import { checkSubmodality, type SubmodalityVerdict } from './selectors'
-import { notesPassQueue } from './selectors'
 import {
   createItem,
-  setItemStatus,
   hardDeleteItem,
   searchItems,
 } from '@/lib/items/item-store'
-import type { ModalityStatus } from '@/lib/items/fsm'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => prisma as any
@@ -47,7 +44,7 @@ export async function runSubmodalitiesPrep(
       // Dedup: don't book a second talk if one is already queued/scheduled.
       const existing = await searchItems(profileId, { target: 'pa' })
       const already = existing.some(
-        (i) => i.name === `Talk to ${m.displayName}` && (i.paStatus === 'schedule' || i.paStatus === 'scheduled')
+        (i) => i.name === `Talk to ${m.displayName}` && (i.stage === 'planned' || i.stage === 'scheduled')
       )
       if (!already) {
         await createItem(profileId, {
@@ -58,7 +55,7 @@ export async function runSubmodalitiesPrep(
           createdBy: 'pa',
           duration: `${verdict.durationMinutes} min`,
           priority: 3,
-          paStatus: 'schedule',
+          stage: 'planned',
         })
       }
     }
@@ -74,46 +71,10 @@ export async function runSubmodalitiesPrep(
   return verdicts
 }
 
-// ─── notes-pass phase (submodality) ─────────────────────────────────────────────
-// For each item flagged sent-to-PA, spawn a fresh PA-targeted copy and return the
-// original to pending (it keeps living in the self's world). Runs when notes-pass
-// completes. Uses the same Note-2 queue the self reviewed.
-export async function runNotesPassCopyUp(
-  profileId: string,
-  sessionStartedAt: Date
-): Promise<{ copied: number }> {
-  const all = await searchItems(profileId, {})
-  const queue = notesPassQueue(
-    all.map((i) => ({ id: i.id, modalityStatus: i.modalityStatus as ModalityStatus | null, createdAt: i.createdAt })),
-    sessionStartedAt
-  )
-  const byId = new Map(all.map((i) => [i.id, i]))
-  let copied = 0
-  for (const q of queue) {
-    if (q.modalityStatus !== 'sent-to-PA') continue // only the ones actually escalated
-    const it = byId.get(q.id)!
-    await createItem(profileId, {
-      name: it.name,
-      description: it.description,
-      type: it.type,
-      target: 'pa',
-      createdBy: it.createdBy,
-      projectId: it.projectId,
-      priority: it.priority,
-      duration: it.duration,
-      dayTime: it.dayTime,
-      paStatus: 'new',
-    })
-    await setItemStatus(it.id, 'modality', 'pending') // sent-to-PA → pending
-    copied++
-  }
-  return { copied }
-}
-
 // ─── wrap-up phase (both) ───────────────────────────────────────────────────────
-// Hard-delete everything flagged to-delete, then reset the reviewed self's state:
-// date of last contact = now, needs-attention = 0. (Memory-writing + brief rewrite
-// are left to the self's own tools / a later pass.)
+// Hard-delete everything at stage='cancelled', then reset the reviewed self's
+// state: date of last contact = now, needs-attention = 0. (Memory-writing +
+// brief rewrite are left to the self's own tools / a later pass.)
 export async function runWrapUp(
   profileId: string,
   modalityId: string,
@@ -122,7 +83,7 @@ export async function runWrapUp(
   const all = await searchItems(profileId, { visibleOnly: false })
   let deleted = 0
   for (const it of all) {
-    if (it.paStatus === 'to-delete' || it.modalityStatus === 'to-delete') {
+    if (it.stage === 'cancelled') {
       await hardDeleteItem(it.id)
       deleted++
     }

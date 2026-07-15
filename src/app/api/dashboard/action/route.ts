@@ -9,8 +9,8 @@
 //     same FSM-gated item-store Review uses, so the change is automatically
 //     visible the next time this item comes up in a Review.
 //   Class B (flag for her):   stale, contingent, note — appended to the item's
-//     notes log (append_note); contingent also flips modalityStatus → 'contingent' so
-//     it surfaces in her next notes-read queue with no extra wiring.
+//     notes log (append_note); contingent also flips stage → 'blocked' so it
+//     surfaces in the next notes-read queue with no extra wiring.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
@@ -47,9 +47,13 @@ export async function POST(req: NextRequest) {
   const due = newDueDate ? new Date(newDueDate + 'T12:00:00') : null
 
   if (itemType === 'project') {
-    // Project stays its own model (untouched by the Item migration).
+    // Project rows have no stage of their own — a goal-kind project's progress
+    // is computed live from its children (see the dashboard route), so there's
+    // no "mark this project done" cell to flip. "done" here means archive it
+    // (visibility: false), the same hide-without-delete semantics an Item's
+    // 'done' stage has, just expressed through the field Project actually has.
     if (kind === 'done') {
-      await prisma.project.update({ where: { id: itemId }, data: { progress: 10 } })
+      await prisma.project.update({ where: { id: itemId }, data: { visibility: false } })
     } else if (kind === 'stale' || kind === 'contingent' || kind === 'note') {
       const stamp = now.toISOString().slice(0, 10)
       const p = await prisma.project.findUnique({ where: { id: itemId } })
@@ -63,19 +67,18 @@ export async function POST(req: NextRequest) {
     // Task/event are both just Items now.
     const item = await prisma.item.findUnique({ where: { id: itemId } })
     if (!item) return NextResponse.json({ error: `item ${itemId} not found` }, { status: 404 })
-    const side: 'pa' | 'modality' = item.target === 'pa' ? 'pa' : 'modality'
 
     if (kind === 'done') {
-      const res = await setItemStatus(itemId, side, 'completed')
+      const res = await setItemStatus(itemId, 'done')
       if (!res.ok) return NextResponse.json({ error: res.reason }, { status: 400 })
     } else if (kind === 'moved' && due) {
       await updateItemFields(itemId, { dueDate: due })
     } else if (kind === 'scheduled') {
-      const res = await setItemStatus(itemId, 'pa', 'scheduled')
+      const res = await setItemStatus(itemId, 'scheduled')
       if (!res.ok) return NextResponse.json({ error: res.reason }, { status: 400 })
     } else if (kind === 'stale' || kind === 'contingent' || kind === 'note') {
       await appendItemNote(itemId, `Adam: ${kind}${body?.trim() ? ` — ${body.trim()}` : ''}`)
-      if (kind === 'contingent') await setItemStatus(itemId, side, 'contingent')
+      if (kind === 'contingent') await setItemStatus(itemId, 'blocked')
     }
   }
 

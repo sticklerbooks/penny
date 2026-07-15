@@ -1,10 +1,10 @@
 // Nightly hygiene cron — RETIRED. This used to run a prose-driven LLM pass each
 // night to catch duplicates/staleness left over from a tool surface that didn't
-// prevent them. The Item tool surface (search-first creation, append_note instead
-// of minting a new item) is correct by construction, so this job no longer has
-// anything to clean up. Kept as a 200 no-op rather than deleted outright, in case
-// the external Railway cron schedule still calls it — remove the schedule there
-// when convenient.
+// prevent them. The Item tool surface (search-first creation, appending to an
+// existing row instead of minting a new item) is correct by construction, so
+// this job no longer has anything to clean up. Kept as a 200 no-op rather than
+// deleted outright, in case the external Railway cron schedule still calls it —
+// remove the schedule there when convenient.
 
 import { NextRequest, NextResponse } from 'next/server'
 

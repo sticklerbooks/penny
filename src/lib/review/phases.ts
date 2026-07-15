@@ -22,11 +22,15 @@ export const PA_PHASES = [
 ] as const
 export type PaPhase = (typeof PA_PHASES)[number]
 
-// A submodality's review — narrower: her own domain, then hand work up to Penny.
+// A submodality's review — narrower: her own domain. There is no separate
+// "notes-pass / escalate to Penny" phase: status belongs to the task, not the
+// viewer, so committing an item (set_item_status → 'planned') during notes-read
+// IS handing it to Penny — she picks up every 'planned' item across every
+// target directly, with no separate hand-off copy to make. (Until 2026-06-25
+// this was a distinct phase that spawned a duplicate PA-targeted Item.)
 export const SUB_PHASES = [
   'notes-read',
   'projects',
-  'notes-pass',
   'wrap-up',
 ] as const
 export type SubPhase = (typeof SUB_PHASES)[number]

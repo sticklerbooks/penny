@@ -4,11 +4,17 @@
 // these inline and refuses (returns the offenders) until they come back empty, so
 // it is impossible to leave a phase with work unfinished.
 //
-// Two kinds of exit condition, per the spec:
-//   • status invariant   — a forbidden status may not remain (e.g. nothing 'new').
-//   • consideration       — every item in the queue must be marked discussed, even
-//                           one deliberately left unchanged.
-// A phase may require either, both, or neither. All pure + unit-tested.
+// One kind of exit condition now that stage is unified, per item-in-queue:
+//   • consideration — every item in the queue must be marked discussed, even one
+//                      deliberately left unchanged (e.g. still 'backlog' is a
+//                      legitimate, considered resting place — same as old
+//                      'pending' was). The forced "must not still be 'new'" rule
+//                      from the old dual-vocabulary model is gone along with
+//                      'new' itself: 'backlog' covers both "never looked at" and
+//                      "looked at, staying put," and discussion is what proves
+//                      you looked.
+// PA's calendar phase keeps its own pure status invariant — nothing may remain
+// queued for scheduling, independent of discussion.
 
 export interface GuardViolation {
   id: string
@@ -19,47 +25,20 @@ export interface GuardViolation {
 export interface GuardItem {
   id: string
   name: string
-  paStatus: string | null
-  modalityStatus: string | null
+  stage: string | null
 }
 
-// PA notes phase: nothing may stay 'new', and every triaged item must be discussed
-// (so a pending note you chose to leave as-is still proves you looked at it).
-export function notesExitViolations(queue: GuardItem[], discussed: Set<string>): GuardViolation[] {
-  const out: GuardViolation[] = []
-  for (const it of queue) {
-    if (it.paStatus === 'new') {
-      out.push({ id: it.id, name: it.name, reason: "still 'new' — triage it to a real status" })
-    } else if (!discussed.has(it.id)) {
-      out.push({ id: it.id, name: it.name, reason: 'not yet discussed this review' })
-    }
-  }
-  return out
-}
-
-// Submodality notes-read: nothing may stay 'new' (modality side); each discussed.
-export function notesReadExitViolations(queue: GuardItem[], discussed: Set<string>): GuardViolation[] {
-  const out: GuardViolation[] = []
-  for (const it of queue) {
-    if (it.modalityStatus === 'new') {
-      out.push({ id: it.id, name: it.name, reason: "still 'new' — resolve it to a real status" })
-    } else if (!discussed.has(it.id)) {
-      out.push({ id: it.id, name: it.name, reason: 'not yet discussed this review' })
-    }
-  }
-  return out
-}
-
-// PA calendar phase: nothing may remain queued for scheduling — every 'schedule'
-// must become 'scheduled' (or be pulled back). Pure status invariant, no discussion.
+// PA calendar phase: nothing may remain queued for scheduling — every 'planned'
+// item must become 'scheduled' (or be pulled back). Pure status invariant.
 export function calendarExitViolations(items: GuardItem[]): GuardViolation[] {
   return items
-    .filter((it) => it.paStatus === 'schedule')
-    .map((it) => ({ id: it.id, name: it.name, reason: "still 'schedule' — must be scheduled or removed" }))
+    .filter((it) => it.stage === 'planned')
+    .map((it) => ({ id: it.id, name: it.name, reason: "still 'planned' — must be scheduled or moved off the calendar queue" }))
 }
 
-// Projects / notes-pass: every item in the queue must be considered (discussed),
-// even if left unchanged. No forbidden status.
+// Notes / projects / any other consideration-gated phase: every item in the
+// queue must be considered (discussed), even if left unchanged. No forbidden
+// status.
 export function considerationViolations(
   queue: { id: string; name: string }[],
   discussed: Set<string>
