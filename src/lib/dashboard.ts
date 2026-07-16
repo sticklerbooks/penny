@@ -1,9 +1,8 @@
 // Dashboard helpers — pure date/bucketing logic shared by the read API and any
 // caller that needs to reason about agenda buckets the same way.
 //
-// The dashboard is the principal's out-of-band view: Adam sees what each modality
-// is actually holding (tasks, projects, pending events) and speaks to individual
-// items via ItemNote, without burning chat tokens. See src/app/api/dashboard/*.
+// The dashboard is the principal's out-of-band view of each modality's Items and
+// Projects. Its actions do not burn chat tokens. See src/app/api/dashboard/*.
 
 export const DASH_TZ = process.env.PENNY_TIMEZONE || 'America/New_York'
 
@@ -24,12 +23,8 @@ export function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-// Extract a YYYY-MM-DD from any of our date shapes:
-//   • Task.dueDate           → a Date, stored as UTC midnight of the calendar date
-//     (the executor does `new Date("2026-06-23")`). So the intended day is the UTC
-//     date portion — NOT a timezone-localized date, which would shift it back a day.
-//   • PendingCalendarEvent.date → free text: "2026-06-15", "By 2026-06-20", or null
-// Returns null when there's no parseable date (those items sink to the bottom).
+// Extract a YYYY-MM-DD from an Item due date. Returns null when there is no
+// parseable date, which places the Item in the undated bucket.
 export function dateOnly(d: Date | string | null | undefined): string | null {
   if (!d) return null
   if (typeof d === 'string') {

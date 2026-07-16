@@ -55,8 +55,6 @@ export interface CreateItemInput {
   contingencyUntil?: Date | null
   /** Initial stage. Defaults to 'backlog'. Validated as a legal entry stage. */
   stage?: Stage
-  /** Provenance tag for migrated rows (e.g. "task:abc"). */
-  sourceRef?: string | null
 }
 
 export async function createItem(profileId: string, input: CreateItemInput): Promise<ItemRow> {
@@ -82,15 +80,8 @@ export async function createItem(profileId: string, input: CreateItemInput): Pro
       contingencyUntil: input.contingencyUntil ?? null,
       stage,
       stageEnteredAt: now,
-      sourceRef: input.sourceRef ?? null,
     },
   })
-}
-
-/** Has a row with this provenance tag already been migrated? (cutover idempotency) */
-export async function itemExistsBySourceRef(profileId: string, sourceRef: string): Promise<boolean> {
-  const row = await db().item.findFirst({ where: { profileId, sourceRef }, select: { id: true } })
-  return !!row
 }
 
 /** Apply a stage change through the FSM. Returns the decision (ok/reason) so the

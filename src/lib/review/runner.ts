@@ -5,7 +5,7 @@
 
 import { prisma } from '@/lib/db'
 import { getModality } from '@/lib/modalities'
-import { getAnthropic, cachedSystem, PENNY_MODEL } from '@/lib/claude'
+import { cachedSystem, PENNY_MODEL } from '@/lib/claude'
 import { runAgenticLoop } from '@/lib/agentic-loop'
 import { searchItems, type ItemRow } from '@/lib/items/item-store'
 import { reviewToolSchemas, executeReviewTool, REVIEW_OWN_TOOL_NAMES, type ReviewToolContext } from '@/lib/items/item-tools'

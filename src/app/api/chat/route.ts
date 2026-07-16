@@ -7,7 +7,7 @@ import {
   cachedSystem,
   PENNY_MODEL,
 } from '@/lib/claude'
-import { parseActions } from '@/lib/actions'
+import { extractArtifact } from '@/lib/artifact'
 import { getModality, resolveModality } from '@/lib/modalities'
 import { touchActive } from '@/lib/modality-state'
 import { executeTool, type ToolContext } from '@/lib/tool-executor'
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
   // The heavy profile-scoped fan-out lives in an in-memory cache that any
   // mutating tool invalidates, so this is usually instant and never stale within
   // a conversation. See src/lib/context-cache.ts.
-  const { memories, items, clients, scheduledMessages, weeklyBrief, projects } =
+  const { items, clients, scheduledMessages, weeklyBrief, projects } =
     await getContextBundle(profile.id)
 
   // (The old switch-triggered close-out sweep lived here — retired. It existed
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
 
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
-    profile, memories, items, clients,
+    profile, items, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief,
     modalityBrief, projects, modalityIdentity
@@ -306,27 +306,14 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // POST-PROCESSING
         // ════════════════════════════════════════════════════════════════════
 
-        // Detect intake completion marker (written inline by model in old style;
-        // new style uses a tool, but keep this check for the transition period)
-        const intakeJustCompleted =
-          fullResponse.includes('<<INTAKE_COMPLETE>>') && !profile!.intakeComplete
-        let workingText = fullResponse.replace('<<INTAKE_COMPLETE>>', '')
+        const intakeState = profile!.intakeComplete
+          ? profile
+          : await prisma.profile.findUnique({ where: { id: profile!.id } })
+        const intakeJustCompleted = !profile!.intakeComplete && !!intakeState?.intakeComplete
+        let workingText = fullResponse
 
-        // Strip the only remaining inline marker (artifact) from the visible
-        // text and surface it. State mutations all happened via the tool
-        // executor above.
-        const { actions, cleanText } = parseActions(workingText)
+        const { artifact, cleanText } = extractArtifact(workingText)
         workingText = cleanText
-
-        // Extract artifact (first one wins)
-        const artifactAction = actions.find((a) => a.kind === 'artifact') ?? null
-
-        if (intakeJustCompleted) {
-          await prisma.profile.update({
-            where: { id: profile!.id },
-            data: { intakeComplete: true },
-          })
-        }
 
         // Stamp activity for nightly cron tracking
         await touchActive(profile!.id, currentModality.id)
@@ -353,9 +340,7 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
               activeModality,
               contextCleared,
               reviewStarted,
-              artifact: artifactAction
-                ? { filename: artifactAction.filename, content: artifactAction.content }
-                : null,
+              artifact,
             })}\n\n`
           )
         )

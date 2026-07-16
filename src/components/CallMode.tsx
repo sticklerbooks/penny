@@ -56,20 +56,14 @@ function getSpeechRecognizer(): SpeechRecognizerCtor | undefined {
 // ─── Streaming-speech helpers ────────────────────────────────────────────────
 
 // The text we're willing to speak from the raw stream so far. The chat endpoint
-// streams RAW deltas (including the inline <artifact> block and a few legacy
-// control tags), so we never feed those to TTS: hard-stop at an <artifact> tag
-// and strip stray markers.
+// streams raw deltas, so stop before an inline artifact block reaches TTS.
 function speakablePrefix(raw: string): string {
   const a = raw.search(/<artifact\b/i)
   return a >= 0 ? raw.slice(0, a) : raw
 }
 
-// Defensive per-sentence cleanup — strips any marker that slipped through.
 function stripMarkers(s: string): string {
-  return s
-    .replace(/<<INTAKE_COMPLETE>>/g, '')
-    .replace(/<\/?(?:complete_session|shift_complete|switch_modality|run_subroutine|artifact)\b[^>]*>/gi, '')
-    .trim()
+  return s.replace(/<\/?artifact\b[^>]*>/gi, '').trim()
 }
 
 // Pull complete sentences off the front of a buffer, leaving the trailing
@@ -484,8 +478,9 @@ export default function CallMode({
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   useEffect(() => {
     activeRef.current = true
-    startListening()
+    const timer = window.setTimeout(startListening, 0)
     return () => {
+      window.clearTimeout(timer)
       activeRef.current = false
       interruptedRef.current = true
       speechQueueRef.current = []
@@ -585,6 +580,7 @@ export default function CallMode({
               style={{ background: `linear-gradient(135deg, ${modality.color}, ${modality.color}bb)` }}
             >{modality.displayName[0]}</div>
           ) : (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={modality.avatarPath}
               className="w-32 h-32 rounded-full object-cover shadow-2xl"
@@ -616,7 +612,7 @@ export default function CallMode({
             className="text-center text-sm max-w-xs px-6 leading-relaxed"
             style={{ color: C.text, fontFamily: 'var(--font-geist-sans)' }}
           >
-            "{transcript}"
+            &ldquo;{transcript}&rdquo;
           </p>
         )}
 

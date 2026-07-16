@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ITEM_TYPES,
   STAGES,
   STAGE_TRANSITIONS,
   ENTRY_STAGES,

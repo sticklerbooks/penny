@@ -1,24 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
-import { join } from 'path'
-import type { Profile, Memory, Client, ScheduledMessage, Project } from '../generated/prisma/client'
+import type { Profile, Client, ScheduledMessage, Project } from '../generated/prisma/client'
 import type { ItemRow } from './items/item-store'
 import { Modality, getModality } from './modalities'
 import { isFutureContingency } from './review/selectors'
 
-// Load a prose prompt template (.md). The PA has her own; an `independent` self
-// (Eve) has her own; every other submodality shares modality.md, differentiated
-// by {modality_name}.
+const PA_PROMPT = readFileSync(new URL('../prompts/pa.md', import.meta.url), 'utf8')
+const MODALITY_PROMPT = readFileSync(new URL('../prompts/modality.md', import.meta.url), 'utf8')
+const EVE_PROMPT = readFileSync(new URL('../prompts/eve.md', import.meta.url), 'utf8')
+
 function loadPromptTemplate(modality: Modality): string {
-  const file =
-    modality.independent ? 'src/prompts/eve.md'
-    : modality.domain === null ? 'src/prompts/pa.md'
-    : 'src/prompts/modality.md'
-  try {
-    return readFileSync(join(process.cwd(), file), 'utf-8')
-  } catch {
-    return `(prompt template not found — create ${file})\n\n{{PERSONA}}\n\n{{IDENTITY_AND_BRIEF}}\n\n{{WORKING_SET}}`
-  }
+  if (modality.independent) return EVE_PROMPT
+  return modality.domain === null ? PA_PROMPT : MODALITY_PROMPT
 }
 
 // Lazy-initialized so env vars are loaded at request time
@@ -81,7 +74,6 @@ export interface ModalityIdentityLite {
 
 export function buildSystemPrompt(
   profile: Profile | null,
-  memories: Memory[],
   items: ItemRow[],
   clients: Client[],
   scheduledMessages: ScheduledMessage[],
@@ -94,22 +86,12 @@ export function buildSystemPrompt(
   projects: Project[] = [],
   identity: ModalityIdentityLite | null = null
 ): string {
-  // Unused-but-reserved params kept for call-site compatibility while the prompt
-  // layout is migrating to the .md templates: memories, emailCalendarSummary,
-  // weeklyBrief. See the migration notes.
-  // memories is intentionally NOT rendered: the prose redesign moved recall to the
-  // on-demand search_memory / search_deep_memory tools rather than dumping rows into
-  // every turn. emailCalendarSummary IS rendered now, but PA-only (see below).
-  void memories
-
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
   const isPA = modality.domain === null
 
   // ── Lenses: scope context to this modality's domain ────────────────────────
-  // PA (anchor) sees everything; submodalities see only their own slice. Item
-  // unifies what used to be Task/Note/PendingCalendarEvent/Routine — one lens,
-  // one set of counts, instead of four renderers.
+  // PA (anchor) sees everything; submodalities see only their own Item slice.
   //
   // The always-on view is deliberately the thinnest useful signal: project
   // NAMES (so she knows they exist — read_project_notes or the projects
@@ -195,10 +177,9 @@ export function buildSystemPrompt(
       : '  (no clients yet)'
 
   // ── Identity (per-modality) ────────────────────────────────────────────────
-  // aboutSelf is each modality's own evolving self-portrait. Until she writes one,
-  // it falls back to PA's profile.aboutSelf (for the PA) or the static persona
-  // seed (for a submodality). aboutUser is a shared global picture (Profile) plus
-  // this modality's own slice (ModalityIdentity.aboutUserFacet).
+  // aboutSelf is each modality's own evolving self-portrait, seeded from the
+  // registry until she writes it. aboutUser is a shared global picture (Profile)
+  // plus this modality's own slice (ModalityIdentity.aboutUserFacet).
   const fmtAge = (d: Date | string | null | undefined): { label: string; stale: boolean } => {
     if (!d) return { label: '', stale: true }
     const days = Math.floor((Date.now() - new Date(d).getTime()) / (1000 * 60 * 60 * 24))
@@ -213,10 +194,6 @@ export function buildSystemPrompt(
   } else if (identity?.aboutSelf) {
     // Seeded but not yet personalized (no updatedAt).
     aboutSelfSection = `${identity.aboutSelf}\n\n  ↳ (this is your starting self — rewrite it in your own voice with update_identity_self whenever it feels true)`
-  } else if (isPA && profile?.aboutSelf) {
-    // Transitional fallback for the PA until her ModalityIdentity row is in use.
-    const a = fmtAge(profile.aboutSelfUpdatedAt)
-    aboutSelfSection = `${profile.aboutSelf}${a.label ? `\n\n  ↳ Last updated: ${a.label}${a.stale ? ' ⚠️ UPDATE DUE' : ''}` : ''}`
   } else if (modality.seedAboutSelf) {
     // No identity row yet — wake her with the editable seed from the registry.
     // ({name} only gets interpolated on the template itself, so do it here too.)
@@ -261,7 +238,7 @@ YOU ARE IN THE INTAKE PHASE
 
 This is the most important conversation you will ever have with ${userName}. You're meeting them for the first time. Be genuinely curious — follow threads, ask follow-ups, go deeper when something matters. By the end you need a lived-in picture of: who they are; everything on their plate; their goals (near/medium/long); their constraints and energy; how their mind works; what's on their mind now; and how they want to be supported.
 
-Use your tools as you go — every commitment becomes a task; every durable fact becomes a memory or goes into the identity documents. When you genuinely have a full, rich understanding, end your message with exactly this on its own line: <<INTAKE_COMPLETE>>`
+Use your tools as you go — every commitment becomes an Item and durable context belongs in the identity or end-of-chat memory system. When you genuinely have a full, rich understanding, call complete_intake.`
     : ''
 
   // ── Bundle 1: identity docs + brief ────────────────────────────────────────

@@ -1,7 +1,7 @@
 // Weekly reporting pipeline — runs every Sunday night via Railway cron.
 //
 // Flow:
-//   1. For each active sub-modality (not PA, not Lila), build that modality's
+//   1. For each reporting sub-modality, build that modality's
 //      full system prompt and ask it for a domain assessment.
 //   2. Store each assessment as a DomainReport.
 //   3. Run Penny's synthesis pass: she reads all five reports and writes her
@@ -88,13 +88,8 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Load full context (mirrors chat/route.ts parallel load) ───────────────
-  const [memories, items, clients, scheduledMessages, emailCalendarSummary] =
+  const [items, clients, scheduledMessages, emailCalendarSummary] =
     await Promise.all([
-      prisma.memory.findMany({
-        where: { profileId: profile.id, archived: false },
-        orderBy: { importance: 'desc' },
-        take: 80,
-      }),
       searchItems(profile.id, { visibleOnly: true }),
       prisma.client.findMany({
         where: { profileId: profile.id },
@@ -128,10 +123,9 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Domain assessments ─────────────────────────────────────────────────────
-  // PA, Lila, and any `independent` self (Eve) are excluded: PA is the synthesiser,
-  // Lila is a private companion, and Eve does not report to Penny by design.
+  // Penny synthesizes; independent selves such as Eve do not file reports.
   const assessable = MODALITIES.filter(
-    (m) => !m.disabled && m.id !== 'pa' && m.id !== 'lila' && !m.independent
+    (m) => m.domain !== null && !m.independent
   )
 
   const domainReports: {
@@ -143,7 +137,7 @@ export async function POST(req: NextRequest) {
 
   for (const modality of assessable) {
     const systemPrompt = buildSystemPrompt(
-      profile, memories, items, clients,
+      profile, items, clients,
       scheduledMessages, emailCalendarSummary, false, modality.id, null
     )
 
@@ -197,7 +191,7 @@ export async function POST(req: NextRequest) {
 
   // ── Penny's synthesis ──────────────────────────────────────────────────────
   const pennySystemPrompt = buildSystemPrompt(
-    profile, memories, items, clients,
+    profile, items, clients,
     scheduledMessages, emailCalendarSummary, false, 'pa', null
   )
 

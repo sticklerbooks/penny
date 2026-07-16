@@ -71,13 +71,8 @@ export async function POST(req: NextRequest) {
     // Load profile + full context (same as chat route)
     const profile = await prisma.profile.findFirst()
     if (profile) {
-      const [memories, items, clients, scheduledMessages, emailCalendarSummary] =
+      const [items, clients, scheduledMessages, emailCalendarSummary] =
         await Promise.all([
-          prisma.memory.findMany({
-            where: { profileId: profile.id, archived: false },
-            orderBy: { importance: 'desc' },
-            take: 80,
-          }),
           searchItems(profile.id, { visibleOnly: true }),
           prisma.client.findMany({
             where: { profileId: profile.id },
@@ -91,7 +86,7 @@ export async function POST(req: NextRequest) {
         ])
 
       const pennyPrompt = buildSystemPrompt(
-        profile, memories, items, clients,
+        profile, items, clients,
         scheduledMessages, emailCalendarSummary, false, 'pa', null
       )
 

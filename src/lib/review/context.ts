@@ -34,7 +34,7 @@ const PA_PHASE_TOOLS: Record<string, string[]> = {
     REVIEW_TOOLS.writeTable,
     'read_calendar_day',
     'search_calendar',
-    'schedule_pending_events',
+    'schedule_planned_items',
     'create_calendar_event',
     'update_calendar_event',
     REVIEW_TOOLS.finishPhase,
@@ -71,7 +71,7 @@ export function phaseInstructions(kind: ReviewKind, phase: Phase, name: string):
 ALSO: this is where a recurring item gets upgraded. If you flagged one earlier (or notice now, via ${REVIEW_TOOLS.queryTable}) that's really a recurring commitment being recreated instance after instance rather than a true one-off — confirm with ${name}, then ${REVIEW_TOOLS.writeTable}(table='project', fields={...}) to create it, and mark the old duplicate item(s) done or cancelled so they stop reappearing. From then on each occurrence is its own fresh item carrying that project's id, made when it's actually due — not all at once. ${noDupes} ${finish}`,
     submodalities: `REVIEW · SUBMODALITIES. The engine has already booked any "talk to <self>" items that were due and flagged the selves needing attention (shown below). Walk them with ${name} so he knows what's coming. ${finish}`,
     calendar: `REVIEW · CALENDAR. The items below are committed and waiting on a slot (stage='planned'). Nothing here is on the calendar yet — you have to put it there:
-1. Call schedule_pending_events — it returns the full queue plus a real two-week calendar read, so you're never placing anything blind.
+1. Call schedule_planned_items — it returns the full queue plus a real two-week calendar read, so you're never placing anything blind.
 2. For each one, pick an actual slot (respecting what's already on the calendar — never double-book) and call create_calendar_event(title, start, end, ...). If ${name} wants to adjust timing, talk it through first; otherwise use your own judgment.
 3. The moment an event is really on the calendar, call ${REVIEW_TOOLS.writeTable}(table='item', id=..., fields={stage:'scheduled'}) — not before. A 'scheduled' item with nothing on the calendar is worse than one still queued, so don't flip stage as a shortcut to finishing this phase.
 Work highest priority first. ${finish}`,

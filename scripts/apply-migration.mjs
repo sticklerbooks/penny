@@ -1,5 +1,5 @@
 // Apply a .sql migration file to the Turso DB, statement by statement.
-// The Prisma CLI can't read libsql:// URLs, so additive migrations go through here.
+// The Prisma CLI can't read libsql:// URLs, so migrations go through here.
 //
 //   node scripts/apply-migration.mjs prisma/migrations/add-dashboard-itemnotes.sql
 //
@@ -39,6 +39,7 @@ const statements = raw
   .filter(Boolean)
 
 const benign = ['duplicate column', 'already exists']
+let failed = false
 
 for (const sql of statements) {
   const label = sql.replace(/\s+/g, ' ').slice(0, 70)
@@ -49,9 +50,11 @@ for (const sql of statements) {
     if (benign.some((b) => e.message?.toLowerCase().includes(b))) {
       console.log(`⚠ skip (exists): ${label}`)
     } else {
+      failed = true
       console.error(`✗ FAILED: ${label}\n   ${e.message}`)
     }
   }
 }
 
 console.log('\nDone.')
+if (failed) process.exitCode = 1

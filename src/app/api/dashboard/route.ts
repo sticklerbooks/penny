@@ -3,10 +3,8 @@
 // The principal's read view of one modality's world: active items and projects.
 // No LLM — pure Prisma/Item reads, so it costs nothing to open and refresh.
 // Mirrors the chat lens (target === id; PA sees everything) so the dashboard
-// shows exactly what she's holding. Items unify what used to be split across
-// Task/PendingCalendarEvent; the wire shape below (`type: 'task' | 'event'`) is
-// kept as-is so the existing UI needs no changes — an Item of type 'event' maps
-// to 'event', everything else maps to 'task'.
+// shows exactly what she's holding. Event Items use the event presentation;
+// every other Item uses the task presentation.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
@@ -81,8 +79,7 @@ export async function GET(req: NextRequest) {
   const today = todayInTz()
   const weekEnd = addDays(today, 6)
 
-  // An item's accumulated free-write log, shown as a single block — Item.notes
-  // replaced the separate ItemNote flag system (see CLAUDE.md / Stage B notes).
+  // An Item's accumulated free-write log, shown as a single block.
   const notesFor = (notes: string): { notes: NoteLite[]; unacked: number } =>
     notes
       ? { notes: [{ id: 'log', kind: 'notes', body: notes, createdAt: new Date().toISOString(), acknowledged: true }], unacked: 0 }

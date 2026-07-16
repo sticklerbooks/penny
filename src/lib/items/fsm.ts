@@ -1,12 +1,8 @@
 // The Item lifecycle state machine — the single source of truth for how an Item
 // moves through review (PA and submodality alike).
 //
-// Status belongs to the TASK, not to whoever's looking at it. One `stage`,
-// shared by every viewer: PA's queries span every `target`, a submodality's
-// queries filter to her own — same field, different filter, not a second
-// status vocabulary. (Until 2026-06-25 this was two parallel fields,
-// `paStatus`/`modalityStatus`, with an escalation-copy dance between them —
-// retired in favor of this.)
+// Status belongs to the Item, not to whoever is viewing it. PA queries every
+// target; a submodality filters to her own. Both read the same `stage` field.
 //
 // THIS FILE IS DELIBERATELY PURE — no DB, no I/O, no LLM. It is the one place the
 // transition rules live, so they can be read at a glance and unit-tested. The

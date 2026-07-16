@@ -10,7 +10,7 @@ export default async function ModalityDashboardPage({
   params: Promise<{ modality: string }>
 }) {
   const { modality } = await params
-  const found = MODALITIES.find((m) => m.id === modality && !m.disabled)
+  const found = MODALITIES.find((m) => m.id === modality)
   if (!found) notFound()
   return <ModalityAgenda modalityId={found.id} />
 }

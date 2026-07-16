@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       })
     }
   } else {
-    // Task/event are both just Items now.
+    // Both dashboard task and event rows are Items.
     const item = await prisma.item.findUnique({ where: { id: itemId } })
     if (!item) return NextResponse.json({ error: `item ${itemId} not found` }, { status: 404 })
 

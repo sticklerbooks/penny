@@ -125,12 +125,8 @@ function speakablePrefix(raw: string): string {
   return a >= 0 ? raw.slice(0, a) : raw
 }
 
-// Strip any control marker that slipped into the text stream.
 function stripMarkers(s: string): string {
-  return s
-    .replace(/<<INTAKE_COMPLETE>>/g, '')
-    .replace(/<\/?(?:complete_session|shift_complete|switch_modality|run_subroutine|artifact)\b[^>]*>/gi, '')
-    .trim()
+  return s.replace(/<\/?artifact\b[^>]*>/gi, '').trim()
 }
 
 // Pull complete sentences off the front of a buffer, leaving the trailing

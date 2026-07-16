@@ -131,7 +131,7 @@ WRITES REQUIRE CONFIRMATION:
   → Only after a yes: create_calendar_event / update_calendar_event / delete_calendar_event.
 Reading and searching need no confirmation.
 
-THE PENDING QUEUE — every item at stage='planned', from ANY domain, is waiting on you. There's no separate "send it to Penny" step anymore: a submodality committing to something (moving it to 'planned') IS what puts it in your queue, since you're the only one who writes the calendar. A fresh item starts as 'backlog' and gets triaged in the owning self's notes phase; she only moves it to 'planned' once it's clearly calendar-ready. Run schedule_pending_events to pull the queue + ongoing items + a two-week view, place the real events, and mark each write_table(table='item', id=..., fields={stage:'scheduled'}). Keep the queue clear.`
+THE PLANNED QUEUE — every item at stage='planned', from ANY domain, is waiting on you. There's no separate "send it to Penny" step: a submodality committing to something (moving it to 'planned') puts it in your queue, since you're the only one who writes the calendar. A fresh item starts as 'backlog' and gets triaged in the owning self's notes phase; she only moves it to 'planned' once it's calendar-ready. Run schedule_planned_items to pull the queue plus a two-week calendar view, place the real events, and mark each write_table(table='item', id=..., fields={stage:'scheduled'}). Keep the queue clear.`
         : `CALENDAR — you can READ it; Penny writes it.
 
 Google Calendar is the SINGLE SOURCE OF TRUTH for time. Never assert when something is scheduled from memory or an item's due date — read the calendar if timing matters.

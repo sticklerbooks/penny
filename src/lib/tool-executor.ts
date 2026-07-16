@@ -4,12 +4,10 @@
 // Usage:
 //   const { content, is_error } = await executeTool(name, args, ctx)
 //
-// This replaces executeActions() from actions.ts.
-// System signals (artifact, switch_modality, complete_session) stay as XML
-// and are not routed here.
+// Downloadable artifacts remain inline because they are returned through the
+// streaming response rather than mutating external state.
 
 import { prisma } from './db'
-import { sendNotification } from './pushover'
 import {
   searchGmail,
   readGmailMessage,
@@ -37,9 +35,7 @@ import { searchItems } from './items/item-store'
 import { startOrResumeReview } from './review/session'
 import type { ReviewKind } from './review/phases'
 
-// Table tools (Item AND Project both — Task/Note/PendingEvent/Routine all unify
-// into the Item table) delegate straight to the same executor Review uses — one
-// table-world implementation, not two.
+// Item and Project table tools delegate to the same executor Review uses.
 const TABLE_TOOL_NAMES = new Set(['query_table', 'write_table'])
 
 // Read-only tools — these never change anything the system-prompt context cache
@@ -51,7 +47,7 @@ const READ_ONLY_TOOLS = new Set<string>([
   'read_project_notes',
   'read_calendar_day',
   'search_calendar',
-  'schedule_pending_events',
+  'schedule_planned_items',
   'search_email',
   'read_email',
   'search_drive',
@@ -65,7 +61,7 @@ const READ_ONLY_TOOLS = new Set<string>([
 
 export interface ToolContext {
   profileId: string
-  modalityId: string      // 'pa' | 'bookkeeping' | 'household' | 'creative' | 'friend' | 'political' | ...
+  modalityId: string
   domain?: string | null  // modality domain string for DB records
 }
 
@@ -192,6 +188,14 @@ export async function executeTool(
         }
       }
 
+      case 'complete_intake': {
+        await prisma.profile.update({
+          where: { id: profileId },
+          data: { intakeComplete: true },
+        })
+        return { content: 'Intake completed.' }
+      }
+
       // ── Projects ──────────────────────────────────────────────────────────
       // Create/update go through query_table/write_table (table='project'),
       // dispatched above via TABLE_TOOL_NAMES. What's left here is the one cell
@@ -234,8 +238,8 @@ export async function executeTool(
 
       // ── Calendar (write — PA only) ────────────────────────────────────────
 
-      case 'schedule_pending_events': {
-        // Load the pending event queue — every Item at stage='planned', from ANY
+      case 'schedule_planned_items': {
+        // Load every Item at stage='planned', from ANY
         // target. There's no separate "escalated to Penny" hand-off anymore: a
         // submodality committing to something (moving it to 'planned') IS what
         // puts it in Penny's queue, since she's the only one who places things on
@@ -244,11 +248,11 @@ export async function executeTool(
         // write_table(stage='scheduled').
 
         const allItems = await searchItems(profileId, {})
-        const pending = allItems.filter((i) => i.stage === 'planned')
+        const planned = allItems.filter((i) => i.stage === 'planned')
           .sort((a, b) => b.priority - a.priority)
 
-        if (pending.length === 0) {
-          return { content: 'Pending event queue is empty — nothing to schedule.' }
+        if (planned.length === 0) {
+          return { content: 'There are no planned items to schedule.' }
         }
 
         // Read the next 14 days of calendar for slot-finding context
@@ -258,10 +262,10 @@ export async function executeTool(
         )
 
         const lines: string[] = [
-          `SCHEDULING QUEUE — ${pending.length} event(s) to place:\n`,
+          `PLANNED ITEMS — ${planned.length} item(s) to place:\n`,
         ]
 
-        for (const evt of pending) {
+        for (const evt of planned) {
           const dateHint = evt.dueDate ? ` | target date: ${evt.dueDate.toISOString().slice(0, 10)}` : ' | date flexible'
           const timeHint = evt.dayTime ? ` @ ${evt.dayTime}` : ' | time flexible'
           lines.push(
@@ -274,7 +278,7 @@ export async function executeTool(
 
         lines.push(
           `\nINSTRUCTIONS:\n` +
-          `For each pending event above, pick an appropriate slot (respecting existing events), then:\n` +
+          `For each planned item above, pick an appropriate slot (respecting existing events), then:\n` +
           `  1. create_calendar_event(title, start="YYYY-MM-DD HH:MM", end="...", ...)\n` +
           `  2. write_table(table='item', id=..., fields={ stage: 'scheduled' })\n\n` +
           `Work through them highest priority first. If a date was specified, use it. ` +
@@ -301,7 +305,6 @@ export async function executeTool(
       }
 
       case 'update_calendar_event': {
-        const tz = process.env.PENNY_TIMEZONE || 'America/New_York'
         const result = await updateGoogleCalendarEvent({
           id: str(args.id),
           calendar: str(args.calendar) || undefined,
@@ -620,56 +623,6 @@ export async function executeTool(
       }
 
       // ── Focus lock ────────────────────────────────────────────────────────
-
-      case 'lock_focus': {
-        const profile = str(args.profile)
-        const release = str(args.release) as 'timed' | 'optional'
-        const duration = typeof args.duration === 'number' ? args.duration : undefined
-        const unlocksAt =
-          release === 'timed' && duration
-            ? new Date(Date.now() + duration * 60 * 1000)
-            : null
-        await sendNotification(
-          `profile=${profile} release=${release}${duration ? ` duration=${duration}` : ''}`,
-          'PENNY_LOCK'
-        )
-        await prisma.profile.update({
-          where: { id: profileId },
-          data: {
-            focusLocked: true,
-            focusProfile: profile,
-            focusLockedAt: new Date(),
-            focusReleaseType: release,
-            focusUnlocksAt: unlocksAt,
-          },
-        })
-        return { content: `Focus locked: profile="${profile}" release=${release}${duration ? ` for ${duration}min` : ''}.` }
-      }
-
-      case 'unlock_focus': {
-        const reason = str(args.reason) as 'approved' | 'emergency'
-        await sendNotification(`reason=${reason}`, 'PENNY_UNLOCK')
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const unlockData: any = {
-          focusLocked: false,
-          focusProfile: null,
-          focusLockedAt: null,
-          focusReleaseType: null,
-          focusUnlocksAt: null,
-        }
-        if (reason === 'emergency') unlockData.focusEmergencyCount = { increment: 1 }
-        await prisma.profile.update({ where: { id: profileId }, data: unlockData })
-        return { content: `Focus unlocked (reason=${reason}).` }
-      }
-
-      case 'update_lock_profiles': {
-        await prisma.profile.update({
-          where: { id: profileId },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          data: { focusProfiles: str(args.content) } as any,
-        })
-        return { content: 'Focus lock profiles updated.' }
-      }
 
       // ── Fallthrough ───────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import CallMode from './CallMode'
-import { MODALITIES, getModality } from '@/lib/modalities'
+import { MODALITIES, getModality, type Modality } from '@/lib/modalities'
 import { SentenceSpeaker } from '@/lib/speak-client'
 import { PA_PHASES, SUB_PHASES, type ReviewKind } from '@/lib/review/phases'
 import { chipLabel, type EngineChip } from '@/lib/review/deltas'
@@ -26,27 +26,84 @@ function modalityBorder(color: string) {
 }
 
 // ─── Streaming marker cleanup ────────────────────────────────────────────────
-const BLOCK_TAGS = [
-  'update_user_profile','update_self_notes',
-  'update_private_user_profile','update_private_self_notes',
-  'update_alt_about_user','update_alt_about_self',
-  'memory','update_memory',
-  'client','update_client','schedule_sms','next_session',
-  'artifact',
-  'schedule_task',
-]
-
 function stripStreamingMarkers(text: string): string {
-  let result = text
-  for (const tag of BLOCK_TAGS) {
-    result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'), '')
-    result = result.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*$`, 'gi'), '')
+  return text
+    .replace(/<artifact\b[^>]*>[\s\S]*?<\/artifact>/gi, '')
+    .replace(/<artifact\b[^>]*>[\s\S]*$/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function ModalityAvatar({
+  modality,
+  accent,
+  accentBorder,
+  imageError,
+  onImageError,
+  size = 'sm',
+}: {
+  modality: Modality
+  accent: string
+  accentBorder: string
+  imageError: boolean
+  onImageError: () => void
+  size?: 'sm' | 'lg'
+}) {
+  const dim = size === 'lg' ? 'w-10 h-10' : 'w-7 h-7'
+  const txt = size === 'lg' ? 'text-base' : 'text-xs'
+  if (imageError) {
+    return (
+      <div
+        className={`${dim} rounded-full flex items-center justify-center text-white font-semibold ${txt} flex-shrink-0 shadow-md`}
+        style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}
+      >
+        {modality.displayName[0]}
+      </div>
+    )
   }
-  result = result.replace(
-    /<(task|update_task|delete_task|delete_memory|update_memory|resolve_note|delete_note|delete_client|cancel_sms|run_subroutine|complete_session|search_email|search_calendar)[^>]*\/?>/gi,
-    ''
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={modality.avatarPath || '/penny-avatar.png'}
+      onError={onImageError}
+      className={`${dim} rounded-full object-cover flex-shrink-0 shadow-md`}
+      alt={modality.displayName}
+      style={{ border: size === 'lg' ? `2px solid ${accentBorder}` : undefined }}
+    />
   )
-  return result.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function PennyThinkingIndicator({
+  imageError,
+  accent,
+  onImageError,
+}: {
+  imageError: boolean
+  accent: string
+  onImageError: () => void
+}) {
+  if (imageError) {
+    return (
+      <span className="flex gap-1.5 items-center h-5 px-1">
+        {[0, 160, 320].map((delay) => (
+          <span
+            key={delay}
+            className="w-2 h-2 rounded-full animate-bounce"
+            style={{ background: accent, animationDelay: `${delay}ms` }}
+          />
+        ))}
+      </span>
+    )
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/penny-thinking.png"
+      onError={onImageError}
+      className="w-10 h-10 object-contain animate-pulse"
+      alt="Penny is thinking"
+    />
+  )
 }
 
 // "notes · 2/7" for a phase divider / progress label.
@@ -139,14 +196,21 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
   // ── Mobile detection ────────────────────────────────────────────────────────
   useEffect(() => {
-    setIsMobile(window.matchMedia('(pointer: coarse)').matches)
+    const timer = window.setTimeout(
+      () => setIsMobile(window.matchMedia('(pointer: coarse)').matches),
+      0
+    )
+    return () => window.clearTimeout(timer)
   }, [])
 
   // ── Speak-replies preference (persisted) ─────────────────────────────────────
   useEffect(() => {
-    const saved = localStorage.getItem('penny-speak-replies') === '1'
-    setSpeakReplies(saved)
-    speakRepliesRef.current = saved
+    const timer = window.setTimeout(() => {
+      const saved = localStorage.getItem('penny-speak-replies') === '1'
+      setSpeakReplies(saved)
+      speakRepliesRef.current = saved
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
   useEffect(() => { speakRepliesRef.current = speakReplies }, [speakReplies])
   useEffect(() => { activeModalityRef.current = activeModality }, [activeModality])
@@ -294,7 +358,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     if (isLoading) return
 
     // In a review, the input box drives the review engine, not /api/chat.
-    if (reviewActiveRef.current) {
+    if (reviewActive) {
       if (content) doReviewStepRef.current(content)
       return
     }
@@ -432,19 +496,16 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
 
     setIsLoading(false)
     textareaRef.current?.focus()
-  }, [conversationId, isLoading, onIntakeComplete])
+  }, [conversationId, isLoading, onIntakeComplete, reviewActive])
 
   // ── Review mode ───────────────────────────────────────────────────────────────
-  const reviewActiveRef = useRef(false)
-  useEffect(() => { reviewActiveRef.current = reviewActive }, [reviewActive])
-
   // One review step. userText empty = the engine just opens the current phase (the
   // self speaks). After an advance, auto-opens the next phase (capped, so a chain of
   // empty phases can't run away). Stored in a ref so it can recurse cleanly.
   const AUTO_STEP_CAP = 8
   const isSteppingRef = useRef(false)
-  const doReviewStepRef = useRef(async (_t: string, _depth = 0): Promise<void> => {})
-  doReviewStepRef.current = async (userText: string, autoDepth = 0): Promise<void> => {
+  const doReviewStepRef = useRef<(text: string, depth?: number) => Promise<void>>(async () => {})
+  const doReviewStep = useCallback(async (userText: string, autoDepth = 0): Promise<void> => {
     // One step at a time. An overlapping invocation (e.g. a quick double-send) is
     // dropped here, so a single response can never be printed twice. Auto-opened
     // phases (autoDepth > 0) run inside the same held lock.
@@ -504,7 +565,10 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
     } finally {
       if (autoDepth === 0) { isSteppingRef.current = false; setIsLoading(false) }
     }
-  }
+  }, [])
+  // The ref bridges sendMessage (declared earlier) to the latest review callback.
+  // eslint-disable-next-line react-hooks/immutability
+  useEffect(() => { doReviewStepRef.current = doReviewStep }, [doReviewStep])
 
   const startReview = useCallback(async () => {
     const kind: ReviewKind = activeModalityRef.current === 'pa' ? 'pa' : 'submodality'
@@ -564,9 +628,11 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
   useEffect(() => {
     if (hasInitialized.current) return
     hasInitialized.current = true
-    if (type === 'intake') {
-      sendMessage('', true)
-    } else {
+    const timer = window.setTimeout(() => {
+      if (type === 'intake') {
+        sendMessage('', true)
+        return
+      }
       // "Talk to her" from the dashboard lands here as ?modality=<id>. The dashboard
       // already wrapped any abandoned session, so open a fresh conversation under the
       // requested self and let her greet — same path as an in-app switch. (Passing
@@ -593,7 +659,8 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           prewarm(data?.activeModality || 'pa')
         })
         .catch(() => {})
-    }
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [type, sendMessage, prewarm])
 
   // ─── Keyboard handler ──────────────────────────────────────────────────────
@@ -605,45 +672,6 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
       sendMessage(input)
     }
   }
-
-  // ─── Penny avatar ──────────────────────────────────────────────────────────
-  const PennyAvatar = ({ size = 'sm' }: { size?: 'sm' | 'lg' }) => {
-    const dim = size === 'lg' ? 'w-10 h-10' : 'w-7 h-7'
-    const txt = size === 'lg' ? 'text-base' : 'text-xs'
-    const avatarSrc = current.avatarPath || '/penny-avatar.png'
-    return avatarImgError ? (
-      <div
-        className={`${dim} rounded-full flex items-center justify-center text-white font-semibold ${txt} flex-shrink-0 shadow-md`}
-        style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}
-      >{current.displayName[0]}</div>
-    ) : (
-      <img
-        src={avatarSrc}
-        onError={() => setAvatarImgError(true)}
-        className={`${dim} rounded-full object-cover flex-shrink-0 shadow-md`}
-        alt={current.displayName}
-        style={{ border: size === 'lg' ? `2px solid ${accentBorder}` : undefined }}
-      />
-    )
-  }
-
-  // ─── Thinking indicator ────────────────────────────────────────────────────
-  const ThinkingIndicator = () =>
-    thinkingImgError ? (
-      <span className="flex gap-1.5 items-center h-5 px-1">
-        {[0, 160, 320].map(delay => (
-          <span key={delay} className="w-2 h-2 rounded-full animate-bounce"
-            style={{ background: accent, animationDelay: `${delay}ms` }} />
-        ))}
-      </span>
-    ) : (
-      <img
-        src="/penny-thinking.png"
-        onError={() => setThinkingImgError(true)}
-        className="w-10 h-10 object-contain animate-pulse"
-        alt="Penny is thinking"
-      />
-    )
 
   // ─── Artifact download ─────────────────────────────────────────────────────
   const downloadArtifact = useCallback((filename: string, content: string) => {
@@ -720,7 +748,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
           style={{ background: C.panel, borderBottom: `1px solid ${accentBorder}` }}
         >
           <div className="flex items-center gap-3">
-            <PennyAvatar size="lg" />
+            <ModalityAvatar modality={current} accent={accent} accentBorder={accentBorder} imageError={avatarImgError} onImageError={() => setAvatarImgError(true)} size="lg" />
             <div>
               <h1 className="font-semibold leading-tight" style={{ color: C.text }}>
                 {type === 'intake' ? 'Penny' : current.displayName}
@@ -795,7 +823,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                     className="absolute right-0 mt-2 z-50 rounded-xl overflow-y-auto shadow-2xl min-w-[200px]"
                     style={{ background: C.panelLight, border: `1px solid ${accentBorder}`, maxHeight: '70vh' }}
                   >
-                    {MODALITIES.filter(m => !m.disabled).map(m => (
+                    {MODALITIES.map(m => (
                       <button
                         key={m.id}
                         onClick={() => switchModality(m.id)}
@@ -865,7 +893,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
             const isAssistant = msg.role === 'assistant'
             return (
               <div key={i} className={`flex items-end gap-2 ${isAssistant ? 'justify-start' : 'justify-end'}`}>
-                {isAssistant && <div className="mb-0.5 flex-shrink-0"><PennyAvatar /></div>}
+                {isAssistant && <div className="mb-0.5 flex-shrink-0"><ModalityAvatar modality={current} accent={accent} accentBorder={accentBorder} imageError={avatarImgError} onImageError={() => setAvatarImgError(true)} /></div>}
 
                 <div
                   className="max-w-[80%] shadow-md"
@@ -892,7 +920,7 @@ export default function ChatInterface({ type, onIntakeComplete }: ChatInterfaceP
                   {msg.content ? (
                     <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
                   ) : msg.streaming ? (
-                    <ThinkingIndicator />
+                    <PennyThinkingIndicator imageError={thinkingImgError} accent={accent} onImageError={() => setThinkingImgError(true)} />
                   ) : null}
                   {msg.artifact && (
                     <button

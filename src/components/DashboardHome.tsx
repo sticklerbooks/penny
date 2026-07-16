@@ -17,7 +17,7 @@ export default function DashboardHome() {
     fetch('/api/wrap-abandoned', { method: 'POST' }).catch(() => {})
   }, [])
 
-  const selves = MODALITIES.filter((m) => !m.disabled)
+  const selves = MODALITIES
 
   return (
     <div style={{ minHeight: '100dvh', background: C.base, color: C.text, padding: '2rem 1.25rem 4rem' }}>

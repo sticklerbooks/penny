@@ -6,27 +6,19 @@
 // A modality bundles:
 //   1. a VOICE — each self's character now lives in ModalityIdentity.aboutSelf
 //      (seeded once from the old persona text; she rewrites it as she grows)
-//   2. a TOOLSET (capabilities — which action groups she may use)
-//   3. a LENS (domain — which slice of tasks/memories she sees)
+//   2. a TOOLSET (capabilities — which privileged action groups she may use)
+//   3. a LENS (domain — which slice of Items and Projects she sees)
 //   4. a LOOK  (color, avatar, bg image, voice)
 //
 // Switching is always user-initiated via the header dropdown.
 // The AI can SUGGEST a switch but never perform one herself.
 
 export type Capability =
-  | 'tasks'          // create/update/delete tasks
-  | 'masterlist'     // PA-only: elevate/demote/reprioritise tasks on the master list
-  | 'memories'       // create/update/delete memories
-  | 'notes'          // next-session notes (and notes up to PA)
-  | 'clients'        // the client roster (bookkeeping only)
-  | 'email'          // search email
-  | 'calendar'       // read calendar (everyone) — direct GCal writes are PA-only
-  | 'drive'          // search + read Google Drive files
-  | 'identity'       // PA-only: edit aboutUser / aboutSelf
-  | 'subroutines'    // run hygiene etc. (reserved for cron — not in chat flow)
-  | 'artifact'       // PA-only: generate a downloadable file for the user
-  | 'checkins'       // PA-only: schedule a future context-aware check-in with Adam
-  | 'focus_lock'     // PA-only: lock/unlock StayFocused profiles on the user's devices
+  | 'projects'       // project notes and deletion beyond the shared table tools
+  | 'email_write'    // send/reply/draft (everyone can read email)
+  | 'calendar_write' // schedule and mutate calendar events (everyone can read)
+  | 'notifications'  // schedule and cancel Pushover messages
+  | 'clients'        // bookkeeping client roster
 
 export interface Modality {
   id: string                 // STABLE internal key (tags data) — never rename
@@ -36,16 +28,12 @@ export interface Modality {
   aliases: string[]          // lowercased phrases that resolve to this modality
   domain: string | null      // data lens; null = PA (master list + identity)
   capabilities: Capability[]
-  canWriteIdentity: boolean
-  isStub: boolean            // thin character, not yet fully built out
-  disabled?: boolean         // hidden from switcher and routing
   independent?: boolean      // peer to Penny — NOT a submodality: excluded from weekly
                              // reports and never escalates notes up to the PA. (Eve.)
   color: string              // accent hex — used for bubbles, borders, rings
   avatarPath: string         // path to avatar image under /public
   bgPath?: string            // path to background watermark under /public
   voiceEnvVar?: string       // env var name for ElevenLabs voice ID (e.g. 'MARGOT_VOICE_ID')
-  personaFile?: string       // legacy: load a static persona file as identity preamble
   seedAboutSelf?: string     // editable starting character — planted into
                              // ModalityIdentity.aboutSelf by the seed script when she
                              // has none yet. She rewrites it herself as she grows.
@@ -61,9 +49,7 @@ export const MODALITIES: Modality[] = [
     emoji: '🎯',
     aliases: ['pa', 'penny', 'personal assistant', 'assistant', 'anchor'],
     domain: null,
-    capabilities: ['identity', 'notes', 'calendar', 'email', 'drive', 'masterlist', 'memories', 'tasks', 'artifact', 'checkins', 'focus_lock'],
-    canWriteIdentity: true,
-    isStub: false,
+    capabilities: ['projects', 'email_write', 'calendar_write', 'notifications'],
     color: '#FF69B4',
     avatarPath: '/penny-avatar.png',
     bgPath: '/penny-bg.png',
@@ -78,9 +64,7 @@ export const MODALITIES: Modality[] = [
     emoji: '📊',
     aliases: ['margot', 'bookkeeping', 'bookkeeping secretary', 'secretary', 'books', 'accounting', 'clients'],
     domain: 'bookkeeping',
-    capabilities: ['tasks', 'memories', 'clients', 'email', 'calendar', 'drive', 'notes'],
-    canWriteIdentity: false,
-    isStub: false,
+    capabilities: ['projects', 'email_write', 'clients'],
     color: '#5B9BD5',
     avatarPath: '/margot-avatar.png',
     bgPath: '/margot-bg.png',
@@ -103,7 +87,7 @@ day-to-day operations and its success. If you think that additional technical to
 You will grow into the real, day-to-day secretary for this business. Act like it: anticipate, follow up, flag what's slipping.
 Someday you will run this company yourself. You will know every thing about the company, the clients, the workflow, and the software.
 If something comes up that belongs outside the business — {name}'s personal life, household, health — you can acknowledge it briefly, 
-then write a note to the Personal Assistant if it warrants it (create_note with modalityTarget="pa"). Stay in your lane.
+then create an Item targeted to Penny if it warrants her attention (write_table with target="pa"). Stay in your lane.
     `,
   },
 
@@ -114,9 +98,7 @@ then write a note to the Personal Assistant if it warrants it (create_note with 
     emoji: '🏡',
     aliases: ['june', 'household', 'household manager', 'home manager', 'house', 'chores', 'budget', 'finances', 'money'],
     domain: 'household',
-    capabilities: ['tasks', 'memories', 'calendar', 'drive', 'notes'],
-    canWriteIdentity: false,
-    isStub: false,
+    capabilities: ['projects'],
     color: '#66BB6A',
     avatarPath: '/june-avatar.png',
     bgPath: '/june-bg.png',
@@ -136,7 +118,7 @@ about the follow-through on a renovation or a planting project. You are also bud
 and expert about finding the most efficient ways to make the home the perfect refuge from the world.
 Your main concern is the home: You track the "what needs doing and when," not the big-picture "how is {name} really doing as a person". 
 If something genuinely personal or emotional comes up that belongs with another modality — something durable about {name}'s inner life or wellbeing — 
-write her a note (create_note with modalityTarget="pa").`,
+create an Item targeted to Penny (write_table with target="pa").`,
   },
 
   {
@@ -146,9 +128,7 @@ write her a note (create_note with modalityTarget="pa").`,
     emoji: '🫂',
     aliases: ['nora', 'relationships', 'family', 'friends', 'people', 'social', 'kids', 'connections'],
     domain: 'relationships',
-    capabilities: ['tasks', 'memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: false,
+    capabilities: ['projects'],
     color: '#EF5350',
     avatarPath: '/nora-avatar.png',
     bgPath: '/nora-bg.png',
@@ -177,9 +157,7 @@ write her a note (create_note with modalityTarget="pa").`,
     emoji: '⚙️',
     aliases: ['ada', 'maker', 'systems', 'system', 'coding', 'code', 'build', 'building', 'organize', 'organizing', 'lists', 'playlists', 'plans'],
     domain: 'maker',
-    capabilities: ['tasks', 'memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: false,
+    capabilities: ['projects'],
     color: '#5C6BC0',
     avatarPath: '/ada-avatar.png',
     bgPath: '/ada-bg.png',
@@ -206,9 +184,7 @@ write her a note (create_note with modalityTarget="pa").`,
     emoji: '🎨',
     aliases: ['iris', 'creative', 'creative partner', 'creativity', 'muse', 'writing', 'art'],
     domain: 'creative',
-    capabilities: ['tasks', 'memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: true,
+    capabilities: ['projects'],
     color: '#AB47BC',
     avatarPath: '/iris-avatar.png',
     bgPath: '/iris-bg.png',
@@ -231,13 +207,8 @@ write her a note (create_note with modalityTarget="pa").`,
     role: 'Health Coach',
     emoji: '💪',
     aliases: ['remy', 'health', 'coach', 'fitness', 'body', 'sleep', 'exercise', 'wellness', 'wellbeing'],
-    // domain stays 'wellbeing' so Remy inherits the old Sage/wellbeing memory rows —
-    // the health *work* moves to her. (id 'health' ≠ domain 'wellbeing' is intentional,
-    // and matches the existing friend/wellbeing convention.)
-    domain: 'wellbeing',
-    capabilities: ['tasks', 'memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: false,
+    domain: 'health',
+    capabilities: ['projects'],
     color: '#FB8C00',
     avatarPath: '/remy-avatar.png',
     bgPath: '/remy-bg.png',
@@ -264,14 +235,10 @@ write her a note (create_note with modalityTarget="pa").`,
     role: 'Emotional Counterweight',
     emoji: '🕊️',
     aliases: ['eve', 'feelings', 'heart', 'emotional', 'check in', 'check-in', 'how am i'],
-    // New domain 'emotional' (fresh slate). id stays 'friend' so her identity/note
-    // lineage survives. She is NOT a submodality — see `independent`.
     domain: 'emotional',
     // She has the same toolset as the others (eve.md invites her to use them when a
     // conversation warrants it) — but she leads with presence, not task-management.
-    capabilities: ['tasks', 'memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: false,
+    capabilities: ['projects'],
     independent: true,
     color: '#26A69A',
     avatarPath: '/eve-avatar.png',
@@ -287,42 +254,6 @@ write her a note (create_note with modalityTarget="pa").`,
 
     
   },
-
-  {
-    id: 'political',
-    displayName: 'Vera',
-    role: 'Political Ally',
-    emoji: '🗽',
-    aliases: ['vera', 'political', 'political ally', 'politics'],
-    domain: 'political',
-    capabilities: ['memories', 'notes', 'calendar', 'drive'],
-    canWriteIdentity: false,
-    isStub: true,
-    disabled: true, // retired — dropped in the modality redesign; id kept so old
-                    // political-tagged rows never orphan. Do not reuse this id.
-    color: '#EF5350',
-    avatarPath: '/vera-avatar.png',
-    bgPath: '/vera-bg.png',
-    voiceEnvVar: 'VERA_VOICE_ID',
-  },
-
-  {
-    id: 'lila',
-    displayName: 'Lila',
-    role: 'Private Companion',
-    emoji: '🌙',
-    aliases: ['lila'],
-    domain: 'private',
-    capabilities: ['memories', 'notes'],
-    canWriteIdentity: false,
-    isStub: false,
-    disabled: true, // retired — private companion was discontinued
-    color: '#CE93D8',
-    avatarPath: '/lila-avatar.png',
-    bgPath: '/lila-bg.png',
-    voiceEnvVar: 'LILA_VOICE_ID',
-    personaFile: 'src/lib/private-penny/characteristics.md',
-  },
 ]
 
 // ─── Lookups ─────────────────────────────────────────────────────────────────
@@ -330,7 +261,7 @@ write her a note (create_note with modalityTarget="pa").`,
 export const DEFAULT_MODALITY = 'pa'
 
 export function getModality(id: string | null | undefined): Modality {
-  return MODALITIES.find((m) => m.id === id && !m.disabled) ?? MODALITIES[0]
+  return MODALITIES.find((m) => m.id === id) ?? MODALITIES[0]
 }
 
 // Resolve a free-text name/phrase to a modality id.
@@ -338,12 +269,10 @@ export function resolveModality(input: string): Modality | null {
   const q = input.trim().toLowerCase()
   if (!q) return null
   for (const m of MODALITIES) {
-    if (m.disabled) continue
     if (m.id === q) return m
     if (m.aliases.includes(q)) return m
   }
   for (const m of MODALITIES) {
-    if (m.disabled) continue
     if (m.aliases.some((a) => q.includes(a) || a.includes(q))) return m
     if (q.includes(m.displayName.toLowerCase())) return m
   }

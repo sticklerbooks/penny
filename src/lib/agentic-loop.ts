@@ -30,9 +30,8 @@ export interface AgenticLoopOptions {
   /** Called after each tool executes. Useful for logging / progress indicators. */
   onToolCall?: (name: string, result: { content: string; is_error?: boolean }) => void
   /**
-   * Tool dispatcher. Defaults to the legacy executeTool (old Task/Note/etc. world).
-   * The review engine passes its own Item-aware executor so its loop stays decoupled
-   * from the legacy tool surface it's replacing.
+   * Tool dispatcher. Defaults to the normal application executor. Review passes
+   * its phase-aware executor so it can enforce session controls and exit guards.
    */
   executeToolFn?: (
     name: string,

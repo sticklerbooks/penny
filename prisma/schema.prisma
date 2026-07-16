@@ -19,53 +19,23 @@ model Profile {
   emailCalendarSummary  String?
   emailCalendarCachedAt DateTime?
 
-  // Living documents — full overwrites, updated at least weekly by Penny
+  // Shared picture of the user — a full overwrite maintained by Penny
   aboutUser          String?
   aboutUserUpdatedAt DateTime?
-  aboutSelf          String?
-  aboutSelfUpdatedAt DateTime?
 
-  // Lila's own identity documents — separate from the PA's
-  privateAboutUser          String?
-  privateAboutUserUpdatedAt DateTime?
-  privateAboutSelf          String?
-  privateAboutSelfUpdatedAt DateTime?
-
-  // Alt-mode (alt-Penny) identity documents — separate from both PA and Lila
-  altAboutUser          String?
-  altAboutUserUpdatedAt DateTime?
-  altAboutSelf          String?
-  altAboutSelfUpdatedAt DateTime?
-
-  // Focus Lock — Penny's device-locking system
-  focusLocked         Boolean   @default(false)
-  focusProfile        String?   // the StayFocused profile name
-  focusLockedAt       DateTime?
-  focusReleaseType    String?   // "timed" | "optional"
-  focusUnlocksAt      DateTime? // null for optional-release locks
-  focusEmergencyCount Int       @default(0)
-  focusProfiles       String?   // Penny-maintained list: one "name: description" per line
-
-  memories             Memory[]
-  conversations        Conversation[]
-  tasks                Task[]
-  notes                Note[]
-  projects             Project[]
-  pendingCalendarEvents PendingCalendarEvent[]
-  routines             Routine[]
-  modalityBriefs       ModalityBrief[]
-  modalityIdentities   ModalityIdentity[]
-  deepMemories         DeepMemory[]
-  memoryLog            MemoryLog[]
-  clients              Client[]
-  scheduledMessages    ScheduledMessage[]
-  domainReports        DomainReport[]
-  weeklyBriefs         WeeklyBrief[]
-  scheduledTasks       ScheduledTask[]
-  outerLives           OuterLife[]
-  itemNotes            ItemNote[]
-  items                Item[]
-  reviewSessions       ReviewSession[]
+  conversations      Conversation[]
+  projects           Project[]
+  modalityBriefs     ModalityBrief[]
+  modalityIdentities ModalityIdentity[]
+  deepMemories       DeepMemory[]
+  memoryLog          MemoryLog[]
+  clients            Client[]
+  scheduledMessages  ScheduledMessage[]
+  domainReports      DomainReport[]
+  weeklyBriefs       WeeklyBrief[]
+  scheduledTasks     ScheduledTask[]
+  items              Item[]
+  reviewSessions     ReviewSession[]
 }
 
 model Client {
@@ -88,24 +58,6 @@ model Client {
   grossRevenue      Float?
   billingStatus     String?
   notes             String?
-
-  tasks Task[]
-}
-
-model Memory {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-
-  profileId String
-  profile   Profile @relation(fields: [profileId], references: [id])
-
-  category       String
-  content        String
-  importance     Int      @default(5)
-  archived       Boolean  @default(false)
-  lastReferenced DateTime?
-  domain         String?  // which modality domain owns this memory (null = global/identity)
-  altModeScope   String?  // if set, only visible when in alt-mode for this modality id
 }
 
 model Conversation {
@@ -113,12 +65,11 @@ model Conversation {
   createdAt DateTime @default(now())
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
   type           String
-  closed         Boolean  @default(false)
-  activeModality String   @default("pa")
-  isAltMode      Boolean  @default(false)
+  closed         Boolean   @default(false)
+  activeModality String    @default("pa")
   messages       Message[]
 }
 
@@ -133,133 +84,41 @@ model Message {
   content String
 }
 
-model Task {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
-
-  clientId  String?
-  client    Client?  @relation(fields: [clientId], references: [id])
-
-  projectId String?
-  project   Project? @relation(fields: [projectId], references: [id])
-
-  linkedCalendarEventId String? // ID of a PendingCalendarEvent, if this task is tied to one
-
-  name              String   // one-word or short label
-  description       String   // full description of what needs doing
-  dueDate           DateTime?
-  dueTime           String?  // time constraint in natural language if not a specific time
-  priority          Int      @default(2) // 1–4; 4 = urgent
-  contingentOn      String?  // free text: another task ID, external condition, or decision needed
-  assignedModality  String   // which modality owns this task
-  // status: Unstarted | Started | Waiting on Contingency | Mostly Complete | Complete
-  status            String   @default("Unstarted")
-  notes             String?  // modality observations, equivalent to old pennyNotes
-
-  completedAt       DateTime? // when marked done (by Adam via dashboard, or by the modality)
-  archivedAt        DateTime? // when swept out of view after a weekly brief credited it
-}
-
 model Project {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  name              String
-  description       String
-  progress          Int      @default(0)  // 0–10; STALE for kind='goal' — see `kind` below.
-                                           // Kept only as a rollback safety net; the dashboard
-                                           // computes goal-kind progress live from child Items.
-  expectedDuration  String   // "sometime this year", "next few weeks", etc.
-  contingencies     String?  // "can only be worked on in summer", "needs Jessica home", etc.
-  assignedModality  String
+  name             String
+  description      String
+  progress         Int     @default(0) // 0–10; STALE for kind='goal' — see `kind` below.
+  // Kept only as a rollback safety net; the dashboard
+  // computes goal-kind progress live from child Items.
+  expectedDuration String // "sometime this year", "next few weeks", etc.
+  contingencies    String? // "can only be worked on in summer", "needs Jessica home", etc.
+  assignedModality String
   // Detailed notes live in DeepMemory as "project-{id}-notes" — not stored here
 
   // ── Redesign additions (additive; nullable/defaulted) ──
-  termType   String?  // short | medium | long — the Short/Medium/Long-Term bucket
-  visibility Boolean  @default(true)  // soft-delete / archive (hidden when false)
+  termType         String? // short | medium | long — the Short/Medium/Long-Term bucket
+  visibility       Boolean   @default(true) // soft-delete / archive (hidden when false)
   // 'goal': has a real end-state — progress is computed live as the fraction of
   // its non-cancelled child Items at stage='done'. 'ongoing': a recurring
   // commitment that never hits 100% by design (e.g. "stay in touch with
   // friends") — shown as active-item-count + last-touched instead of a bar.
   // Distinct from termType, which is a duration bucket, not a completion shape.
-  kind String @default("goal") // goal | ongoing
+  kind             String    @default("goal") // goal | ongoing
   // A REAL date, not parsed from `contingencies`' free text. When set and still
   // in the future, this project is skipped entirely in the projects review phase
   // — not just discussed less. Null = no known recheck date; gets discussed as
   // usual despite having a contingency note.
   contingencyUntil DateTime?
-
-  tasks Task[]
 }
 
-model PendingCalendarEvent {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
-
-  projectId String?  // optional link to a Project
-
-  name              String
-  description       String?
-  date              String?  // "2026-06-15" or "By 2026-06-20" or null if fully flexible
-  startTime         String?  // time constraints in natural language ("morning", "after 3pm")
-  duration          String   // required: "1 hour", "30–45 min", etc.
-  location          String?
-  priority          Int      @default(2) // 1–4; 4 = must happen on time
-  assignedModality  String   @default("pa")
-  scheduled         Boolean  @default(false)  // true once written to GCal and removed from queue
-  scheduledAt       DateTime?
-
-  completedAt       DateTime? // when the event actually happened / was marked done — distinct from `scheduled`
-  archivedAt        DateTime? // when swept out of view after a weekly brief credited it
-}
-
-model Routine {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
-
-  description       String
-  frequency         String   // "Weekly", "Tuesdays", "Most weeks in the latter half", etc.
-  priority          Int      // 1–4; 4 = absolutely obligatory
-  flexibility       Int      // 1–4; 4 = must happen at this specific time, 1 = whenever
-  dayTime           String?  // "Thursday mornings", "Saturdays at 9am", "Afternoons"
-  assignedModality  String   // loaded only during scheduling subroutine, not in default context
-}
-
-model Note {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
-
-  title           String
-  content         String
-  expiresAt       DateTime  // mandatory; max 2 weeks from creation
-  modalityTarget  String    // which modality should see this note
-  source          String?   // which modality wrote it
-  // resolution: Open | Resolved | Ignored
-  resolution      String    @default("Open")
-}
-
-// Unified work item — the redesign's single operational record, collapsing the old
-// Task / Note / PendingCalendarEvent / Routine split into one row keyed by `type`.
+// Penny's single operational record, keyed by `type`.
 // It carries TWO independent lifecycle fields; the transition rules live in
 // src/lib/items/fsm.ts, NEVER inline here or in prose. The old tables remain until
 // the Stage 3 cutover, and nothing queries Item yet — this is just the foundation.
@@ -272,25 +131,25 @@ model Item {
   updatedAt DateTime @updatedAt
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  projectId String?  // optional link to a Project
+  projectId String? // optional link to a Project
 
   name        String
   description String
-  notes       String   @default("") // free-write log a self appends to as she learns
-                                     // more about this item — NOT a reason to mint a
-                                     // new Item. append_note adds a line; update_item's
-                                     // notes param overwrites the whole field.
-  type        String   // event | memory | suggestion (see ItemType in fsm.ts)
-  createdBy   String   // modality id that created it
-  target      String   // modality id (or 'pa') this item is for
+  notes       String @default("") // free-write log a self appends to as she learns
+  // more about this item — NOT a reason to mint a
+  // new Item. append_note adds a line; update_item's
+  // notes param overwrites the whole field.
+  type        String // event | memory | suggestion (see ItemType in fsm.ts)
+  createdBy   String // modality id that created it
+  target      String // modality id (or 'pa') this item is for
 
-  priority    Int      @default(2)  // 0–5
-  duration    String?  // for events: "30 min", "1 hour"
-  dayTime     String?  // timing/recurrence hint: "Tuesday mornings", "weekdays 9am"
-  dueDate     DateTime? // a specific due date (one-offs). Dated items due >10 days
-                        // out are skipped in the notes review (see selectors).
+  priority Int       @default(2) // 0–5
+  duration String? // for events: "30 min", "1 hour"
+  dayTime  String? // timing/recurrence hint: "Tuesday mornings", "weekdays 9am"
+  dueDate  DateTime? // a specific due date (one-offs). Dated items due >10 days
+  // out are skipped in the notes review (see selectors).
 
   // Why this can't move right now, and when to stop ignoring it. contingency is
   // the free-text reason ("waiting on the IRS"), shown inline instead of asking
@@ -300,34 +159,20 @@ model Item {
   contingency      String    @default("")
   contingencyUntil DateTime?
 
-  // Lifecycle — written ONLY through the FSM (src/lib/items/fsm.ts), never inline.
-  // STALE — superseded by `stage` below. Kept (unused, unwritten) as a rollback
-  // safety net until a separate, explicitly-confirmed cleanup migration drops them.
-  paStatus       String?  // new|pending|schedule|scheduled|contingent|completed|to-delete
-  modalityStatus String?  // new|pending|sent-to-PA|contingent|completed|to-delete
-
   // Status belongs to the task, not to whoever's looking at it: ONE stage shared
   // by every viewer (PA queries across all `target`s; a submodality filters to
   // her own). `contingency`/`contingencyUntil` above are the reason + recheck
   // date that accompany stage='blocked' — not a separate system.
-  stage          String?   // backlog|planned|scheduled|blocked|done|cancelled
+  stage          String? // backlog|planned|scheduled|blocked|done|cancelled
   // Stamped by the FSM chokepoint on every stage change — distinct from
   // `createdAt` (how old the item is) and `updatedAt` (any field touched).
   // Answers "how long has this sat in its current stage," which is what
   // staleness detection actually needs.
   stageEnteredAt DateTime?
 
-  visibility   Boolean   @default(true)  // soft-delete / archive (hidden when false)
-  completedAt  DateTime?
-  scheduledAt  DateTime?
-
-  calendarEventId String?  // reserved: GCal event id once scheduled (Stage 4+)
-  // STALE — the escalation-copy flow this backed is retired (no more spawning a
-  // second Item to hand work to Penny; she queries stage='planned' across every
-  // target directly). Left unused, unwritten, as a rollback safety net.
-  escalatedToId   String?
-  sourceRef       String?  // provenance for the Stage-3 cutover, e.g. "task:<id>" /
-                           // "note:<id>" — makes the migration idempotent + reversible
+  visibility  Boolean   @default(true) // soft-delete / archive (hidden when false)
+  completedAt DateTime?
+  scheduledAt DateTime?
 
   @@index([profileId, target])
   @@index([profileId, projectId])
@@ -347,47 +192,18 @@ model ReviewSession {
   updatedAt DateTime @updatedAt
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  kind        String   // 'pa' | 'submodality'
-  modalityId  String   // 'pa' for Penny's review, else the submodality id
-  phase       String   // current phase name (see review/phases.ts)
-  status      String   @default("active") // active | completed | abandoned
-  startedAt   DateTime @default(now())
+  kind        String // 'pa' | 'submodality'
+  modalityId  String // 'pa' for Penny's review, else the submodality id
+  phase       String // current phase name (see review/phases.ts)
+  status      String    @default("active") // active | completed | abandoned
+  startedAt   DateTime  @default(now())
   completedAt DateTime?
 
   discussedItemIds String? // JSON string[] — item ids marked discussed this session
 
   @@index([profileId, status])
-}
-
-// The principal→item channel. Adam speaks to a specific Task / PendingCalendarEvent
-// / Project from the dashboard without burning chat tokens. Keyed by (itemType,
-// itemId) so the note is glued to its item and rendered inline beneath it.
-//
-//   kind = done | moved | scheduled | stale | blocked | note
-//     done/moved/scheduled — Adam already mutated the item directly (Class A); this
-//                    is the audit trail + reason. Self-executing, no ack needed.
-//                    (scheduled is reserved/deferred — the events-vs-GCal design is
-//                    postponed; the kind exists so the channel is future-proof.)
-//     stale/blocked/note — a flag/request (Class B): the modality reads it, acts,
-//                    then acknowledges. Adam can flag-for-deletion but never delete.
-model ItemNote {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
-
-  itemType String   // 'task' | 'event' | 'project'
-  itemId   String   // id of the Task / PendingCalendarEvent / Project
-  kind     String   // done | moved | stale | blocked | note | scheduled
-  body     String?  // Adam's reason / explanation / note
-
-  acknowledged   Boolean   @default(false) // a modality has read + acted on it (Class B)
-  acknowledgedAt DateTime?
-
-  @@index([profileId, itemType, itemId])
 }
 
 // ── Memory tiers ──────────────────────────────────────────────────────────────
@@ -396,11 +212,11 @@ model ModalityBrief {
   id        String   @id @default(cuid())
   updatedAt DateTime @updatedAt
 
-  profileId  String
-  profile    Profile @relation(fields: [profileId], references: [id])
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
 
   modalityId String
-  content    String?  // null until first close_session; shown as empty brief until then
+  content    String? // null until first close_session; shown as empty brief until then
 
   @@unique([profileId, modalityId])
 }
@@ -417,9 +233,9 @@ model ModalityIdentity {
 
   modalityId String
 
-  aboutSelf               String?   // this modality's own self-portrait (first-person)
+  aboutSelf               String? // this modality's own self-portrait (first-person)
   aboutSelfUpdatedAt      DateTime?
-  aboutUserFacet          String?   // this modality's slice of the user
+  aboutUserFacet          String? // this modality's slice of the user
   aboutUserFacetUpdatedAt DateTime?
 
   @@unique([profileId, modalityId])
@@ -435,9 +251,9 @@ model DeepMemory {
   profileId String
   profile   Profile @relation(fields: [profileId], references: [id])
 
-  domain    String?  // modality domain that owns this document
-  name      String   // document key, e.g. "sideways-in-time", "project-abc123-notes"
-  content   String
+  domain  String? // modality domain that owns this document
+  name    String // document key, e.g. "sideways-in-time", "project-abc123-notes"
+  content String
 
   @@unique([profileId, name])
 }
@@ -450,24 +266,22 @@ model MemoryLog {
   profileId String
   profile   Profile @relation(fields: [profileId], references: [id])
 
-  domain    String?  // modality domain
-  label     String   // short description of what this entry captures
-  content   String
+  domain  String? // modality domain
+  label   String // short description of what this entry captures
+  content String
 }
 
-// NextSessionNote retired — replaced by Note model above.
-
 model ModalityState {
-  id        String   @id @default(cuid())
+  id        String @id @default(cuid())
   profileId String
 
-  modalityId     String
-  lastActiveAt   DateTime?  // last time this modality was active in a turn
-  lastCompletedAt DateTime? // last time it ran a Shift/Session Complete — also the
-                            // submodality "date of last contact" the review uses
+  modalityId       String
+  lastActiveAt     DateTime? // last time this modality was active in a turn
+  lastCompletedAt  DateTime? // last time it ran a Shift/Session Complete — also the
+  // submodality "date of last contact" the review uses
   // Redesign: 0–5 "needs attention" dial. Nightly cleanup +1; the review wrap-up
   // resets it to 0. Drives the submodalities phase's "talk to <self>" generation.
-  needsAttention Int       @default(0)
+  needsAttention   Int       @default(0)
   // Last time this modality's end_chat memory pass ran. Null = never — the pass
   // then covers every message this modality has ever sent. Deliberately separate
   // from lastCompletedAt (Review's "last contact" signal) — different lifecycles.
@@ -480,15 +294,15 @@ model ModalityState {
 // Iris, Remy). Eve is independent and never files. One row per modality per week;
 // the cron endpoint writes these and Penny reads them.
 model DomainReport {
-  id         String   @id @default(cuid())
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
 
-  profileId  String
-  profile    Profile  @relation(fields: [profileId], references: [id])
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  modalityId String   // e.g. 'bookkeeping', 'household', 'relationships', 'maker', 'creative', 'health'
-  adjective  String?  // headline word / phrase extracted from the first line of reportText
-  reportText String   // full assessment response from the modality
+  modalityId String // e.g. 'bookkeeping', 'household', 'relationships', 'maker', 'creative', 'health'
+  adjective  String? // headline word / phrase extracted from the first line of reportText
+  reportText String // full assessment response from the modality
   weekOf     DateTime // timestamp of the cron run that generated this report
 }
 
@@ -501,8 +315,8 @@ model ScheduledTask {
   createdAt DateTime  @default(now())
   profileId String
   profile   Profile   @relation(fields: [profileId], references: [id])
-  topic     String    // Penny's note to her future self: what to assess and why
-  runAt     DateTime  // when to execute (stored as UTC)
+  topic     String // Penny's note to her future self: what to assess and why
+  runAt     DateTime // when to execute (stored as UTC)
   ran       Boolean   @default(false)
   ranAt     DateTime?
 }
@@ -512,9 +326,9 @@ model WeeklyBrief {
   createdAt DateTime @default(now())
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  briefText String   // Penny's synthesised summary (her private notes)
+  briefText String // Penny's synthesised summary (her private notes)
   weekOf    DateTime
   flagged   Boolean  @default(false) // true if at least one domain needs Adam's attention
 }
@@ -524,35 +338,16 @@ model WeeklyBrief {
 // One row per modality. Only `ledger` is ever injected into a self's chat context,
 // and it's length-capped (see OUTER_LIFE_LEDGER_MAX). `bible` and `storyline` are
 // the Showrunner's private writer's notes — extensive, never shown to anyone.
-model OuterLife {
-  id        String   @id @default(cuid())
-  updatedAt DateTime @updatedAt
-
-  profileId String
-  profile   Profile @relation(fields: [profileId], references: [id])
-
-  modalityId String
-
-  ledger     String?   // compact, first-person "what's going on with me lately" — INJECTED (capped)
-  bible      String?   // extensive backstory: age, family, work, hobbies, health, aesthetics — Showrunner-only
-  storyline  String?   // append-only log of authored life events — Showrunner-only
-
-  seeded     Boolean   @default(false)  // has the opening backstory been generated yet?
-  lastTickAt DateTime?
-
-  @@unique([profileId, modalityId])
-}
-
 model ScheduledMessage {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
 
   profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id])
+  profile   Profile @relation(fields: [profileId], references: [id])
 
-  message   String
-  sendAt    DateTime
-  sent      Boolean  @default(false)
-  sentAt    DateTime?
-  label     String?  // optional label so Penny can reference it, e.g. "morning briefing"
+  message String
+  sendAt  DateTime
+  sent    Boolean   @default(false)
+  sentAt  DateTime?
+  label   String? // optional label so Penny can reference it, e.g. "morning briefing"
 }

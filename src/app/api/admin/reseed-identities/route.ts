@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     (req.nextUrl.searchParams.get('exclude') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
   )
   const profiles = await prisma.profile.findMany()
-  const seedable = MODALITIES.filter((m) => !m.disabled && m.seedAboutSelf && !exclude.has(m.id))
+  const seedable = MODALITIES.filter((m) => m.seedAboutSelf && !exclude.has(m.id))
 
   const results: { profileId: string; modalityId: string; action: 'seeded' | 'skipped' }[] = []
 

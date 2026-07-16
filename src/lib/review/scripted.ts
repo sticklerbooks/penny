@@ -14,7 +14,7 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => prisma as any
 
-const submodalities = () => MODALITIES.filter((m) => !m.disabled && m.domain !== null && !m.independent)
+const submodalities = () => MODALITIES.filter((m) => m.domain !== null && !m.independent)
 
 // ─── submodalities phase (Penny) ────────────────────────────────────────────────
 // Book a "talk to <self>" for any self that's overdue/flagged, and bump attention

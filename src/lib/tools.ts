@@ -5,12 +5,12 @@
 // The model sees tool descriptions and calls them with structured JSON args.
 // The executor (tool-executor.ts) maps tool name → DB/API action.
 //
-// System actions that stay as XML (control routing / UI):
-//   artifact, switch_modality, complete_session
+// Downloadable artifacts remain inline so their content can stream to the UI.
 
 import type Anthropic from '@anthropic-ai/sdk'
 import { LIVE_PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
 import { reviewToolSchemas } from './items/item-tools'
+import { getModality, type Capability } from './modalities'
 
 type Tool = Anthropic.Tool
 
@@ -31,6 +31,13 @@ const startReview: Tool = {
     'The MOMENT the user agrees to a review, your very next action is to call THIS TOOL — not a prose reply. ' +
     'Saying "sure, let\'s review!" without calling the tool does nothing: the review only begins when this fires. ' +
     "Calling it hands the conversation to a separate script, so don't narrate what's about to happen — just call it.",
+  input_schema: { type: 'object', properties: {} },
+}
+
+const completeIntake: Tool = {
+  name: 'complete_intake',
+  description:
+    'Mark the initial intake complete once you genuinely understand the user, their priorities, and how they want Penny to help.',
   input_schema: { type: 'object', properties: {} },
 }
 
@@ -128,11 +135,11 @@ const searchCalendar: Tool = {
 
 // ─── Calendar tools (write — PA only) ────────────────────────────────────────
 
-const schedulePendingEvents: Tool = {
-  name: 'schedule_pending_events',
+const schedulePlannedItems: Tool = {
+  name: 'schedule_planned_items',
   description:
-    'Run the full scheduling subroutine: read the pending event queue, load routines, ' +
-    'check the calendar, place events on GCal. PA only. Call when the queue has items that need scheduling.',
+    'Load every planned Item plus the next two weeks of Google Calendar so Penny can place them. ' +
+    'PA only. Call when planned items need calendar slots.',
   input_schema: {
     type: 'object',
     properties: {},
@@ -144,7 +151,7 @@ const createCalendarEvent: Tool = {
   name: 'create_calendar_event',
   description:
     'Write a confirmed event directly to Google Calendar. Use only after timing has been decided. ' +
-    'PA only — prefer schedule_pending_events for queue-based scheduling.',
+    'PA only — prefer schedule_planned_items for queue-based scheduling.',
   input_schema: {
     type: 'object',
     properties: {
@@ -627,64 +634,6 @@ const searchLog: Tool = {
 
 // ─── Focus lock tools (Margot / bookkeeping only) ─────────────────────────────
 
-const lockFocus: Tool = {
-  name: 'lock_focus',
-  description:
-    "Activate a focus lock on Adam's devices using a named StayFocused profile.",
-  input_schema: {
-    type: 'object',
-    properties: {
-      profile: {
-        type: 'string',
-        description: 'Name of the StayFocused profile to activate.',
-      },
-      release: {
-        type: 'string',
-        enum: ['timed', 'optional'],
-        description:
-          '"timed" = unlocks automatically after duration. "optional" = stays until Adam explicitly unlocks.',
-      },
-      duration: {
-        type: 'integer',
-        description: 'Duration in minutes. Required when release = "timed".',
-      },
-    },
-    required: ['profile', 'release'],
-  },
-}
-
-const unlockFocus: Tool = {
-  name: 'unlock_focus',
-  description: 'Release an active focus lock.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      reason: {
-        type: 'string',
-        enum: ['approved', 'emergency'],
-        description: '"approved" = planned/expected release. "emergency" = break-glass override.',
-      },
-    },
-    required: ['reason'],
-  },
-}
-
-const updateLockProfiles: Tool = {
-  name: 'update_lock_profiles',
-  description:
-    'Fully replace the list of named focus lock profiles and their descriptions. Full overwrite.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      content: {
-        type: 'string',
-        description: 'Full list — one "name: description" per line.',
-      },
-    },
-    required: ['content'],
-  },
-}
-
 // ─── Capability groups ────────────────────────────────────────────────────────
 //
 // Tools are composed into sets. getToolsForModality() combines them.
@@ -705,8 +654,8 @@ const CORE_TOOLS: Tool[] = [
   loadProtocol,
   // Hands the conversation to the Review system
   startReview,
-  // The item/project table surface (Task/Note/PendingEvent/Routine all unify into
-  // the Item table; see src/lib/items/item-tools.ts)
+  completeIntake,
+  // The Item/Project table surface
   ...TABLE_TOOLS,
   // Calendar read (everyone reads; only PA writes via CALENDAR_WRITE_TOOLS)
   readCalendarDay,
@@ -727,8 +676,8 @@ const CORE_TOOLS: Tool[] = [
 /**
  * The end_chat memory pass's toolset — deep memory, the log, identity, and the
  * brief. Granted ONLY to that dedicated pass (src/lib/memory-pass.ts), never to
- * live chat. search_memory and the flat Memory table are retired entirely — see
- * the 'memory' protocol for why (identity now covers what flat Memory used to).
+ * live chat. Identity, DeepMemory, MemoryLog, and the running brief are the
+ * complete memory surface.
  */
 export const MEMORY_PASS_TOOLS: Tool[] = [
   rewriteBrief,
@@ -752,9 +701,9 @@ const EMAIL_WRITE_TOOLS: Tool[] = [sendEmail, replyEmail, createDraft]
 /** Push/SMS scheduling — PA only. */
 const NOTIFICATION_TOOLS: Tool[] = [scheduleSms, cancelSms]
 
-/** Direct GCal write access — PA only. Everyone else queues via create_pending_event. */
+/** Direct GCal write access — PA only. */
 const CALENDAR_WRITE_TOOLS: Tool[] = [
-  schedulePendingEvents,
+  schedulePlannedItems,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
@@ -763,8 +712,13 @@ const CALENDAR_WRITE_TOOLS: Tool[] = [
 /** Client management — Margot / bookkeeping only. */
 const CLIENT_TOOLS: Tool[] = [createClient, updateClient, deleteClient]
 
-/** Focus lock — defined but not currently granted to any modality (system not live). */
-const FOCUS_LOCK_TOOLS: Tool[] = [lockFocus, unlockFocus, updateLockProfiles]
+const CAPABILITY_TOOLS: Record<Capability, Tool[]> = {
+  projects: PROJECT_TOOLS,
+  email_write: EMAIL_WRITE_TOOLS,
+  calendar_write: CALENDAR_WRITE_TOOLS,
+  notifications: NOTIFICATION_TOOLS,
+  clients: CLIENT_TOOLS,
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -772,56 +726,16 @@ const FOCUS_LOCK_TOOLS: Tool[] = [lockFocus, unlockFocus, updateLockProfiles]
  * Returns the tools array for a given modality, scoped to what that modality
  * is permitted to do. Pass directly to the Anthropic API `tools` parameter.
  *
- * Active modality IDs: 'pa', 'bookkeeping', 'household', 'relationships', 'maker',
- * 'creative', 'health', 'friend' (Eve). ('political'/Vera + 'lila' are retired/disabled.)
- *
- * NOTE: tool grants are keyed off the id here, NOT off Modality.capabilities (which is
- * only used cosmetically, e.g. showClients). Adding a new modality means adding it here.
+ * Core tools are shared; additional grants come directly from the modality
+ * registry's capabilities.
  */
 export function getToolsForModality(modalityId: string): Tool[] {
-  switch (modalityId) {
-    // ── Personal Assistant (Penny) — the only self that writes the calendar,
-    //    sends notifications, and edits the identity documents. ─────────────
-    case 'pa':
-      return [
-        ...CORE_TOOLS,
-        ...PROJECT_TOOLS,
-        ...EMAIL_WRITE_TOOLS,
-        ...NOTIFICATION_TOOLS,
-        ...CALENDAR_WRITE_TOOLS,
-      ]
-
-    // ── Bookkeeping / Margot ────────────────────────────────────────────────
-    case 'bookkeeping':
-      return [
-        ...CORE_TOOLS,
-        ...PROJECT_TOOLS,
-        ...EMAIL_WRITE_TOOLS,
-        ...CLIENT_TOOLS,
-      ]
-
-    // ── Domain workers — same toolset: core + projects ──────────────────────
-    // ── Household / June ────────────────────────────────────────────────────
-    case 'household':
-    // ── Relationships / Nora ────────────────────────────────────────────────
-    case 'relationships':
-    // ── Maker / Ada ─────────────────────────────────────────────────────────
-    case 'maker':
-    // ── Creative / Iris ─────────────────────────────────────────────────────
-    case 'creative':
-    // ── Health / Remy ───────────────────────────────────────────────────────
-    case 'health':
-    // ── Emotional / Eve (independent — same tools; she chooses when to use) ──
-    case 'friend':
-      return [
-        ...CORE_TOOLS,
-        ...PROJECT_TOOLS,
-      ]
-
-    // ── Unknown / fallback ──────────────────────────────────────────────────
-    default:
-      return [...CORE_TOOLS]
+  const modality = getModality(modalityId)
+  const tools = [...CORE_TOOLS]
+  for (const capability of modality.capabilities) {
+    tools.push(...CAPABILITY_TOOLS[capability])
   }
+  return tools
 }
 
 /**
@@ -837,7 +751,6 @@ export function getAllTools(): Tool[] {
     ...NOTIFICATION_TOOLS,
     ...CALENDAR_WRITE_TOOLS,
     ...CLIENT_TOOLS,
-    ...FOCUS_LOCK_TOOLS,
   ]
 }
 
@@ -854,7 +767,7 @@ export {
   deleteProject,
   readCalendarDay,
   searchCalendar,
-  schedulePendingEvents,
+  schedulePlannedItems,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
@@ -882,7 +795,4 @@ export {
   writeDeepMemory,
   logEntry,
   searchLog,
-  lockFocus,
-  unlockFocus,
-  updateLockProfiles,
 }

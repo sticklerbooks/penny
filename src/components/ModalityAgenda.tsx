@@ -77,7 +77,10 @@ export default function ModalityAgenda({ modalityId }: { modalityId: string }) {
     setData(await r.json())
   }, [modalityId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const timer = window.setTimeout(load, 0)
+    return () => window.clearTimeout(timer)
+  }, [load])
 
   const accent = data?.modality.color ?? '#FF69B4'
 

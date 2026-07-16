@@ -46,7 +46,7 @@ export interface MemoryPassResult {
  *  ever, if it's never run). Drives the "every modality that talked" fan-out
  *  in /api/chat/end. */
 export async function modalitiesPendingMemoryPass(profileId: string): Promise<string[]> {
-  const liveModalityIds = new Set(MODALITIES.filter((m) => !m.disabled).map((m) => m.id))
+  const liveModalityIds = new Set(MODALITIES.map((m) => m.id))
 
   const convos = await prisma.conversation.findMany({
     where: { profileId },

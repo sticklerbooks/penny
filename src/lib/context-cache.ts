@@ -1,7 +1,7 @@
 // In-memory cache for the per-message "preamble" — the heavy fan-out of DB
 // queries the chat route runs before the model can start generating. This data
-// (memories, tasks, notes, clients, scheduled messages, projects, pending
-// events, weekly brief, and each modality's brief + identity) barely changes
+// (items, clients, scheduled messages, projects, weekly brief, and each
+// modality's brief + identity) barely changes
 // turn-to-turn, but against Turso (remote SQLite) every query is a network
 // round-trip. Re-fetching all of it on every keystroke-length voice turn was a
 // big chunk of the "thinking" lag.
@@ -15,11 +15,9 @@
 //     within a live conversation the cache is never stale: the moment Penny
 //     writes anything, the next turn refetches.
 //
-// The Profile row itself is deliberately NOT cached here — it carries focus-lock
-// state that must always be fresh, and it's a single cheap query.
+// The Profile row itself is deliberately NOT cached here; it is a single cheap query.
 
 import { prisma } from './db'
-import type { Memory } from '../generated/prisma/client'
 import type { WeeklyBriefSummary, ModalityIdentityLite } from './claude'
 import { searchItems } from './items/item-store'
 
@@ -30,15 +28,11 @@ const TTL_MS = 60_000 // backstop; writes invalidate explicitly
 async function fetchBundle(profileId: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any
-  // NOTE: memories are NOT fetched here — they're not rendered into any turn
-  // (recall is on-demand via search_memory / search_deep_memory). The
-  // email/calendar summary is also not here: it's PA-only and fetched in the
+  // The email/calendar summary is not here: it's PA-only and fetched in the
   // chat route just for her (its own 30-min cache covers repeat turns), so the
   // six submodalities never pay the Google + Haiku cost.
   const [items, clients, scheduledMessages, weeklyBrief, projects] =
     await Promise.all([
-      // The unified Task/Note/PendingEvent/Routine surface — claude.ts lenses and
-      // renders this one set per-modality the same way it used to lens four tables.
       searchItems(profileId, { visibleOnly: true }),
       prisma.client.findMany({
         where: { profileId },
@@ -57,7 +51,7 @@ async function fetchBundle(profileId: string) {
       }).catch(() => []),
     ])
 
-  return { memories: [] as Memory[], items, clients, scheduledMessages, weeklyBrief, projects }
+  return { items, clients, scheduledMessages, weeklyBrief, projects }
 }
 
 export type ContextBundle = Awaited<ReturnType<typeof fetchBundle>>
