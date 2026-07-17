@@ -14,6 +14,7 @@ import { executeTool, type ToolContext } from '@/lib/tool-executor'
 import { getToolsForModality } from '@/lib/tools'
 import { getContextBundle, getModalityBrief, getModalityIdentity } from '@/lib/context-cache'
 import { getEmailCalendarSummary } from '@/lib/email-calendar'
+import { getIntakeDashboard } from '@/lib/intake'
 
 export const dynamic = 'force-dynamic'
 
@@ -122,16 +123,20 @@ export async function POST(req: NextRequest) {
   // cache covers repeat turns), so the six submodalities never pay the Google +
   // Haiku cost for a summary they don't render.
   const emailCalendarSummary =
-    getModality(activeModality).domain === null
+    profile.intakeComplete && getModality(activeModality).domain === null
       ? await getEmailCalendarSummary(profile.id).catch(() => null)
       : null
+
+  const intakeDashboard = !profile.intakeComplete && activeModality === 'pa'
+    ? await getIntakeDashboard(profile.id).then((result) => result.text).catch(() => null)
+    : null
 
   // ── Build system prompt ────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(
     profile, items, clients,
     scheduledMessages, emailCalendarSummary,
     !profile.intakeComplete, activeModality, weeklyBrief,
-    modalityBrief, projects, modalityIdentity
+    modalityBrief, projects, modalityIdentity, intakeDashboard
   )
 
   const currentModality = getModality(activeModality)
@@ -188,12 +193,15 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         // can never produce a tool_use stop reason, so the loop below can't
         // iterate. Regular conversation still gets the full toolset and its
         // legitimate multi-round tool use.
-        const tools = isSilentTrigger ? undefined : getToolsForModality(activeModality)
+        const tools = isSilentTrigger
+          ? undefined
+          : getToolsForModality(activeModality, { isIntake: !profile!.intakeComplete })
 
         // Stream a single model turn: emit text deltas live, accumulate content
         // blocks (including tool_use input JSON), and report the stop reason.
         const streamTurn = async (
-          msgs: Anthropic.MessageParam[]
+          msgs: Anthropic.MessageParam[],
+          forceIntakeAudit = false
         ): Promise<{ blocks: StreamBlock[]; stopReason: string }> => {
           const blocks: StreamBlock[] = []
           let stopReason = 'end_turn'
@@ -202,6 +210,15 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
             max_tokens: 2048,
             system: cachedSystem(finalSystemPrompt),
             tools,
+            ...(forceIntakeAudit
+              ? {
+                  tool_choice: {
+                    type: 'tool' as const,
+                    name: 'update_intake_ledger',
+                    disable_parallel_tool_use: true,
+                  },
+                }
+              : {}),
             messages: msgs,
             stream: true,
           })
@@ -258,7 +275,12 @@ ${profile.userName || 'The user'} is talking to you out loud and hearing your re
         const MAX_ROUNDS = 10
         let round = 0
 
-        let turn = await streamTurn(loopMessages)
+        // Every real intake reply first passes through the private ledger. The
+        // visible response is generated only after that audit succeeds.
+        let turn = await streamTurn(
+          loopMessages,
+          !profile!.intakeComplete && !isSilentTrigger
+        )
         let finalized = finalizeBlocks(turn.blocks)
         loopMessages.push({ role: 'assistant', content: finalized })
 

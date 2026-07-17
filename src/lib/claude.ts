@@ -8,6 +8,7 @@ import { isFutureContingency } from './review/selectors'
 const PA_PROMPT = readFileSync(new URL('../prompts/pa.md', import.meta.url), 'utf8')
 const MODALITY_PROMPT = readFileSync(new URL('../prompts/modality.md', import.meta.url), 'utf8')
 const EVE_PROMPT = readFileSync(new URL('../prompts/eve.md', import.meta.url), 'utf8')
+const INTAKE_PROMPT = readFileSync(new URL('../prompts/intake.md', import.meta.url), 'utf8')
 
 function loadPromptTemplate(modality: Modality): string {
   if (modality.independent) return EVE_PROMPT
@@ -84,7 +85,8 @@ export function buildSystemPrompt(
   // Running brief maintained by the modality via rewrite_brief tool.
   modalityBrief: string | null = null,
   projects: Project[] = [],
-  identity: ModalityIdentityLite | null = null
+  identity: ModalityIdentityLite | null = null,
+  intakeDashboard: string | null = null
 ): string {
   const userName = profile?.userName || 'you'
   const modality: Modality = getModality(modalityId)
@@ -236,9 +238,9 @@ ${weeklyBrief.briefText.trim()}
 YOU ARE IN THE INTAKE PHASE
 ═══════════════════════════════════════════════════════════════════════
 
-This is the most important conversation you will ever have with ${userName}. You're meeting them for the first time. Be genuinely curious — follow threads, ask follow-ups, go deeper when something matters. By the end you need a lived-in picture of: who they are; everything on their plate; their goals (near/medium/long); their constraints and energy; how their mind works; what's on their mind now; and how they want to be supported.
+${INTAKE_PROMPT.replace(/\{name\}/g, userName)}
 
-Use your tools as you go — every commitment becomes an Item and durable context belongs in the identity or end-of-chat memory system. When you genuinely have a full, rich understanding, call complete_intake.`
+${intakeDashboard ?? 'The private intake dashboard is temporarily unavailable. Continue the conversation, but do not attempt to finish intake.'}`
     : ''
 
   // ── Bundle 1: identity docs + brief ────────────────────────────────────────
@@ -247,6 +249,9 @@ ${aboutSelfSection}
 
 🧑 ${userName.toUpperCase()}'S CORE IDENTITY — the shared picture of him${isPA ? ' (yours to keep current)' : ''}:
 ${globalUserSection}${facetSection}
+
+🤝 WORKING AGREEMENT — how this system should serve ${userName}:
+${profile?.workingAgreement?.trim() || '  (not established yet)'}
 
 📋 YOUR BRIEF — your most recent working thoughts on your domain:
 ${briefText}${weeklyBriefSection}`

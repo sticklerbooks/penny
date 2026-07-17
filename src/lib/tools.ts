@@ -11,6 +11,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { LIVE_PROTOCOL_NAMES, PROTOCOL_INDEX } from './protocols'
 import { reviewToolSchemas } from './items/item-tools'
 import { getModality, type Capability } from './modalities'
+import { INTAKE_TOOLS } from './intake'
 
 type Tool = Anthropic.Tool
 
@@ -31,13 +32,6 @@ const startReview: Tool = {
     'The MOMENT the user agrees to a review, your very next action is to call THIS TOOL — not a prose reply. ' +
     'Saying "sure, let\'s review!" without calling the tool does nothing: the review only begins when this fires. ' +
     "Calling it hands the conversation to a separate script, so don't narrate what's about to happen — just call it.",
-  input_schema: { type: 'object', properties: {} },
-}
-
-const completeIntake: Tool = {
-  name: 'complete_intake',
-  description:
-    'Mark the initial intake complete once you genuinely understand the user, their priorities, and how they want Penny to help.',
   input_schema: { type: 'object', properties: {} },
 }
 
@@ -654,7 +648,6 @@ const CORE_TOOLS: Tool[] = [
   loadProtocol,
   // Hands the conversation to the Review system
   startReview,
-  completeIntake,
   // The Item/Project table surface
   ...TABLE_TOOLS,
   // Calendar read (everyone reads; only PA writes via CALENDAR_WRITE_TOOLS)
@@ -729,7 +722,13 @@ const CAPABILITY_TOOLS: Record<Capability, Tool[]> = {
  * Core tools are shared; additional grants come directly from the modality
  * registry's capabilities.
  */
-export function getToolsForModality(modalityId: string): Tool[] {
+export function getToolsForModality(
+  modalityId: string,
+  opts: { isIntake?: boolean } = {}
+): Tool[] {
+  // Intake is observational: Penny maintains a private ledger, but she cannot
+  // turn the first conversation into an accidental operational backlog.
+  if (opts.isIntake) return [...INTAKE_TOOLS]
   const modality = getModality(modalityId)
   const tools = [...CORE_TOOLS]
   for (const capability of modality.capabilities) {
@@ -745,6 +744,7 @@ export function getToolsForModality(modalityId: string): Tool[] {
 export function getAllTools(): Tool[] {
   return [
     ...CORE_TOOLS,
+    ...INTAKE_TOOLS,
     ...MEMORY_PASS_TOOLS,
     ...PROJECT_TOOLS,
     ...EMAIL_WRITE_TOOLS,

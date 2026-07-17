@@ -34,6 +34,7 @@ import { executeReviewTool, type ReviewToolContext } from './items/item-tools'
 import { searchItems } from './items/item-store'
 import { startOrResumeReview } from './review/session'
 import type { ReviewKind } from './review/phases'
+import { completeIntake, INTAKE_TOOL_NAMES, updateIntakeLedger } from './intake'
 
 // Item and Project table tools delegate to the same executor Review uses.
 const TABLE_TOOL_NAMES = new Set(['query_table', 'write_table'])
@@ -151,6 +152,18 @@ export async function executeTool(
     return executeReviewTool(name, args, ctx as ReviewToolContext) // no reviewSessionId outside Review — see item-tools.ts
   }
 
+  if (INTAKE_TOOL_NAMES.has(name)) {
+    try {
+      if (name === 'update_intake_ledger') {
+        return { content: await updateIntakeLedger(profileId, args.updates) }
+      }
+      const result = await completeIntake(profileId, args)
+      return { content: result.content, ...(result.ok ? {} : { is_error: true }) }
+    } catch (error) {
+      return { content: `Private intake update failed: ${String(error)}`, is_error: true }
+    }
+  }
+
   try {
     switch (name) {
 
@@ -186,14 +199,6 @@ export async function executeTool(
             kind: session.kind, modalityId: session.modalityId, phase: session.phase,
           }),
         }
-      }
-
-      case 'complete_intake': {
-        await prisma.profile.update({
-          where: { id: profileId },
-          data: { intakeComplete: true },
-        })
-        return { content: 'Intake completed.' }
       }
 
       // ── Projects ──────────────────────────────────────────────────────────

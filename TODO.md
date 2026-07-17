@@ -1,5 +1,12 @@
 # Technical debt
 
+- Design and implement separate domain orientations for every submodality. They
+  should inherit Penny's global portrait and working agreement, then build their
+  own domain-specific coverage without repeating the master intake.
+- After the first real intake, review the preserved
+  `intake-modality-recommendations` decision matrix with the user and hard-code
+  the accepted roster. Dynamic runtime modality creation remains deliberately
+  deferred.
 - Generate the team roster in `pa.md`, `modality.md`, and `eve.md` from
   `MODALITIES` so the three prompt templates cannot drift.
 - Give prompt-template selection an explicit registry field if another

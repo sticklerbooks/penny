@@ -23,6 +23,11 @@ model Profile {
   aboutUser          String?
   aboutUserUpdatedAt DateTime?
 
+  // Always-loaded contract for how Penny and the cast should work with this
+  // user. Intake seeds it; later recalibration may replace it deliberately.
+  workingAgreement          String?
+  workingAgreementUpdatedAt DateTime?
+
   conversations      Conversation[]
   projects           Project[]
   modalityBriefs     ModalityBrief[]
@@ -36,6 +41,31 @@ model Profile {
   scheduledTasks     ScheduledTask[]
   items              Item[]
   reviewSessions     ReviewSession[]
+  intakeEntries      IntakeEntry[]
+}
+
+// Penny's private intake ledger. The catalog itself lives in src/lib/intake.ts;
+// rows exist only once Penny has learned or inferred something about an area.
+// Missing rows are deliberately equivalent to status="unknown".
+model IntakeEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id])
+
+  bucket         String // identity | state | relationship | handoff
+  key            String // stable catalog key, e.g. bio.preferred_name
+  status         String // touched | provisional | supported | known | not_applicable
+  content        String @default("") // Penny's current fact or interpretation
+  evidence       String @default("") // newline-delimited supporting observations
+  contradictions String @default("") // newline-delimited counterevidence / tension
+  openQuestion   String @default("") // what remains unclear, kept private
+
+  @@unique([profileId, key])
+  @@index([profileId, bucket])
+  @@index([profileId, status])
 }
 
 model Client {

@@ -34,6 +34,19 @@ IDs, domains, presentation, and privileged tool capabilities.
 - Each self's evolving character lives in `ModalityIdentity.aboutSelf`, seeded
   from `Modality.seedAboutSelf`. The global picture of the user is
   `Profile.aboutUser`; non-PA selves maintain `aboutUserFacet`.
+- The initial Penny intake is a private, conversational coverage process. Its
+  fixed catalog and scoring live in `src/lib/intake.ts`; persisted judgments live
+  in `IntakeEntry`. Never expose bucket names, keys, statuses, evidence, or scores
+  in the user-facing conversation.
+- During intake, Penny receives only `update_intake_ledger` and
+  `complete_intake`. Intake must not create operational records or mutate
+  external services. Finalization seeds `Profile.aboutUser`, the always-loaded
+  `Profile.workingAgreement`, three named intake documents, and Penny's brief.
+- Every substantive intake reply is forced through a private ledger audit before
+  Penny can answer. Finalization also assesses all 20 functional modality
+  candidates, recommends 3–5, and preserves the complete decision matrix in the
+  `intake-modality-recommendations` DeepMemory document. It does not create or
+  rewrite runtime modalities.
 - Eve (`id: 'friend'`, `independent: true`) is a peer rather than a reporting
   submodality and uses `src/prompts/eve.md`.
 - After changing identity seeds, use the protected reseed endpoint deliberately.
@@ -60,7 +73,8 @@ or prose-only completion mechanism.
 
 ## Tool architecture
 
-Tool schemas live in `src/lib/tools.ts` and `src/lib/items/item-tools.ts`; runtime
+Tool schemas live in `src/lib/tools.ts`, `src/lib/intake.ts`, and
+`src/lib/items/item-tools.ts`; runtime
 dispatch lives in `src/lib/tool-executor.ts`. A tool rename or removal must update
 the schema, executor, read-only classification, protocols, and review grants
 together. `ALL_TOOL_NAMES` must contain only executable tools.
